@@ -13,7 +13,7 @@ from ..refactor import (
     rename_preview,
     suggest_refactorings,
 )
-from ._common import _get_store, _validate_repo_root
+from ._common import _get_store, _validate_repo_root, graph_error
 
 # ---------------------------------------------------------------------------
 # Tool 17: refactor_tool  [REFACTOR]
@@ -49,24 +49,19 @@ def refactor_func(
     """
     valid_modes = {"rename", "dead_code", "suggest"}
     if mode not in valid_modes:
-        return {
-            "status": "error",
-            "error": (
-                f"Invalid mode '{mode}'. "
-                f"Must be one of: {', '.join(sorted(valid_modes))}"
-            ),
-        }
+        return graph_error(
+            "INVALID_PARAMS",
+            f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(valid_modes))}",
+        )
 
     store, root = _get_store(repo_root)
     try:
         if mode == "rename":
             if not old_name or not new_name:
-                return {
-                    "status": "error",
-                    "error": (
-                        "rename mode requires both old_name and new_name."
-                    ),
-                }
+                return graph_error(
+                    "INVALID_PARAMS",
+                    "rename mode requires both old_name and new_name.",
+                )
             preview = rename_preview(store, old_name, new_name)
             if preview is None:
                 return {
@@ -83,44 +78,33 @@ def refactor_func(
                 ),
                 **preview,
             }
-            result["_hints"] = generate_hints(
-                "refactor", result, get_session()
-            )
+            result["_hints"] = generate_hints("refactor", result, get_session())
             return result
 
         elif mode == "dead_code":
-            dead = find_dead_code(
-                store, kind=kind, file_pattern=file_pattern
-            )
+            dead = find_dead_code(store, kind=kind, file_pattern=file_pattern)
             result = {
                 "status": "ok",
                 "summary": f"Found {len(dead)} dead code symbol(s).",
                 "dead_code": dead,
                 "total": len(dead),
             }
-            result["_hints"] = generate_hints(
-                "refactor", result, get_session()
-            )
+            result["_hints"] = generate_hints("refactor", result, get_session())
             return result
 
         else:  # suggest
             suggestions = suggest_refactorings(store)
             result = {
                 "status": "ok",
-                "summary": (
-                    f"Generated {len(suggestions)} "
-                    "refactoring suggestion(s)."
-                ),
+                "summary": (f"Generated {len(suggestions)} refactoring suggestion(s)."),
                 "suggestions": suggestions,
                 "total": len(suggestions),
             }
-            result["_hints"] = generate_hints(
-                "refactor", result, get_session()
-            )
+            result["_hints"] = generate_hints("refactor", result, get_session())
             return result
 
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PARSE_ERROR", str(exc))
     finally:
         store.close()
 
@@ -148,13 +132,9 @@ def apply_refactor_func(
         Status with count of applied edits and modified files.
     """
     try:
-        root = (
-            _validate_repo_root(Path(repo_root))
-            if repo_root
-            else find_project_root()
-        )
+        root = _validate_repo_root(Path(repo_root)) if repo_root else find_project_root()
     except (RuntimeError, ValueError) as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PATH_NOT_FOUND", str(exc))
 
     result = apply_refactor(refactor_id, root)
     return result

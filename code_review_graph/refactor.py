@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from .flows import _has_framework_decorator, _matches_entry_name
 from .graph import GraphStore, _sanitize_name
+from .response import graph_error
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ def _cleanup_expired() -> int:
     """Remove expired refactors from the pending dict.  Returns count removed."""
     now = time.time()
     expired = [
-        rid for rid, r in _pending_refactors.items()
+        rid
+        for rid, r in _pending_refactors.items()
         if now - r["created_at"] > REFACTOR_EXPIRY_SECONDS
     ]
     for rid in expired:
@@ -76,25 +78,29 @@ def rename_preview(
     edits: list[dict[str, Any]] = []
 
     # --- Definition site ---
-    edits.append({
-        "file": node.file_path,
-        "line": node.line_start,
-        "old": old_name,
-        "new": new_name,
-        "confidence": "high",
-    })
+    edits.append(
+        {
+            "file": node.file_path,
+            "line": node.line_start,
+            "old": old_name,
+            "new": new_name,
+            "confidence": "high",
+        }
+    )
 
     # --- Call sites (CALLS edges targeting this node) ---
     call_edges = store.get_edges_by_target(node.qualified_name)
     for edge in call_edges:
         if edge.kind == "CALLS":
-            edits.append({
-                "file": edge.file_path,
-                "line": edge.line,
-                "old": old_name,
-                "new": new_name,
-                "confidence": "high",
-            })
+            edits.append(
+                {
+                    "file": edge.file_path,
+                    "line": edge.line,
+                    "old": old_name,
+                    "new": new_name,
+                    "confidence": "high",
+                }
+            )
 
     # Also search by bare name for unqualified edges.
     bare_edges = store.search_edges_by_target_name(old_name, kind="CALLS")
@@ -102,13 +108,15 @@ def rename_preview(
     for edge in bare_edges:
         key = (edge.file_path, edge.line)
         if key not in seen:
-            edits.append({
-                "file": edge.file_path,
-                "line": edge.line,
-                "old": old_name,
-                "new": new_name,
-                "confidence": "high",
-            })
+            edits.append(
+                {
+                    "file": edge.file_path,
+                    "line": edge.line,
+                    "old": old_name,
+                    "new": new_name,
+                    "confidence": "high",
+                }
+            )
             seen.add(key)
 
     # --- Import sites (IMPORTS_FROM edges targeting this node) ---
@@ -117,13 +125,15 @@ def rename_preview(
         if edge.kind == "IMPORTS_FROM":
             key = (edge.file_path, edge.line)
             if key not in seen:
-                edits.append({
-                    "file": edge.file_path,
-                    "line": edge.line,
-                    "old": old_name,
-                    "new": new_name,
-                    "confidence": "high",
-                })
+                edits.append(
+                    {
+                        "file": edge.file_path,
+                        "line": edge.line,
+                        "old": old_name,
+                        "new": new_name,
+                        "confidence": "high",
+                    }
+                )
                 seen.add(key)
 
     # --- Stats ---
@@ -148,7 +158,10 @@ def rename_preview(
 
     logger.info(
         "rename_preview: created refactor %s (%s -> %s, %d edits)",
-        refactor_id, old_name, new_name, len(edits),
+        refactor_id,
+        old_name,
+        new_name,
+        len(edits),
     )
     return preview
 
@@ -200,7 +213,6 @@ def find_dead_code(
     dead: list[dict[str, Any]] = []
 
     for node in candidates:
-
         # Skip test nodes.
         if node.is_test:
             continue
@@ -216,13 +228,15 @@ def find_dead_code(
         has_importers = any(e.kind == "IMPORTS_FROM" for e in incoming)
 
         if not has_callers and not has_test_refs and not has_importers:
-            dead.append({
-                "name": _sanitize_name(node.name),
-                "qualified_name": _sanitize_name(node.qualified_name),
-                "kind": node.kind,
-                "file": node.file_path,
-                "line": node.line_start,
-            })
+            dead.append(
+                {
+                    "name": _sanitize_name(node.name),
+                    "qualified_name": _sanitize_name(node.qualified_name),
+                    "kind": node.kind,
+                    "file": node.file_path,
+                    "line": node.line_start,
+                }
+            )
 
     logger.info("find_dead_code: found %d dead symbols", len(dead))
     return dead
@@ -248,12 +262,14 @@ def suggest_refactorings(store: GraphStore) -> list[dict[str, Any]]:
     # --- Dead code suggestions ---
     dead = find_dead_code(store)
     for d in dead:
-        suggestions.append({
-            "type": "remove",
-            "description": f"Remove unused {d['kind'].lower()} '{d['name']}'",
-            "symbols": [d["qualified_name"]],
-            "rationale": "No callers, no test references, no importers, not an entry point.",
-        })
+        suggestions.append(
+            {
+                "type": "remove",
+                "description": f"Remove unused {d['kind'].lower()} '{d['name']}'",
+                "symbols": [d["qualified_name"]],
+                "rationale": "No callers, no test references, no importers, not an entry point.",
+            }
+        )
 
     # --- Cross-community move suggestions ---
     # Only attempt if communities table exists and has data.
@@ -268,9 +284,7 @@ def suggest_refactorings(store: GraphStore) -> list[dict[str, Any]]:
             for qn in member_qns:
                 node_community[qn] = cid
 
-        community_names: dict[int, str] = {
-            r["id"]: r["name"] for r in community_rows
-        }
+        community_names: dict[int, str] = {r["id"]: r["name"] for r in community_rows}
 
         # Check functions called only by members of a different community.
         all_funcs = store.get_nodes_by_kind(["Function"])
@@ -281,8 +295,7 @@ def suggest_refactorings(store: GraphStore) -> list[dict[str, Any]]:
                 continue
 
             incoming_calls = [
-                e for e in store.get_edges_by_target(fnode.qualified_name)
-                if e.kind == "CALLS"
+                e for e in store.get_edges_by_target(fnode.qualified_name) if e.kind == "CALLS"
             ]
             if not incoming_calls:
                 continue
@@ -301,18 +314,20 @@ def suggest_refactorings(store: GraphStore) -> list[dict[str, Any]]:
                     tgt_name = community_names.get(
                         target_community, f"community-{target_community}"
                     )
-                    suggestions.append({
-                        "type": "move",
-                        "description": (
-                            f"Move '{_sanitize_name(fnode.name)}' from "
-                            f"'{src_name}' to '{tgt_name}'"
-                        ),
-                        "symbols": [_sanitize_name(fnode.qualified_name)],
-                        "rationale": (
-                            f"Function is in community '{src_name}' but only "
-                            f"called by members of community '{tgt_name}'."
-                        ),
-                    })
+                    suggestions.append(
+                        {
+                            "type": "move",
+                            "description": (
+                                f"Move '{_sanitize_name(fnode.name)}' from "
+                                f"'{src_name}' to '{tgt_name}'"
+                            ),
+                            "symbols": [_sanitize_name(fnode.qualified_name)],
+                            "rationale": (
+                                f"Function is in community '{src_name}' but only "
+                                f"called by members of community '{tgt_name}'."
+                            ),
+                        }
+                    )
 
     logger.info("suggest_refactorings: produced %d suggestions", len(suggestions))
     return suggestions
@@ -348,7 +363,7 @@ def apply_refactor(
 
     if preview is None:
         logger.warning("apply_refactor: unknown or expired refactor_id %s", refactor_id)
-        return {"status": "error", "error": f"Refactor '{refactor_id}' not found or expired."}
+        return graph_error("NOT_FOUND", f"Refactor '{refactor_id}' not found or expired.")
 
     # Check expiry explicitly.
     age = time.time() - preview["created_at"]
@@ -356,7 +371,11 @@ def apply_refactor(
         with _refactor_lock:
             _pending_refactors.pop(refactor_id, None)
         logger.warning("apply_refactor: refactor %s expired (%.0fs old)", refactor_id, age)
-        return {"status": "error", "error": f"Refactor '{refactor_id}' has expired."}
+        return graph_error(
+            "NOT_FOUND",
+            f"Refactor '{refactor_id}' has expired.",
+            recovery="Re-run refactor_tool(mode='rename') to create a new preview.",
+        )
 
     edits = preview.get("edits", [])
     if not edits:
@@ -370,12 +389,13 @@ def apply_refactor(
         except ValueError:
             logger.error(
                 "apply_refactor: path traversal blocked for %s (repo_root=%s)",
-                edit_path, repo_root,
+                edit_path,
+                repo_root,
             )
-            return {
-                "status": "error",
-                "error": f"Edit path '{edit['file']}' is outside repo root.",
-            }
+            return graph_error(
+                "FILE_OUTSIDE_ROOT",
+                f"Edit path '{edit['file']}' is outside repo root.",
+            )
 
     # --- Apply edits ---
     files_modified: set[str] = set()
@@ -398,7 +418,9 @@ def apply_refactor(
 
         if old_text not in content:
             logger.warning(
-                "apply_refactor: old text %r not found in %s", old_text, file_path,
+                "apply_refactor: old text %r not found in %s",
+                old_text,
+                file_path,
             )
             continue
 

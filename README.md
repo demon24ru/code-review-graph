@@ -239,7 +239,7 @@ code-review-graph serve            # Start MCP server
 </details>
 
 <details>
-<summary><strong>23 MCP tools</strong></summary>
+<summary><strong>28 MCP tools</strong></summary>
 <br>
 
 Your AI assistant uses these automatically once the graph is built.
@@ -269,6 +269,11 @@ Your AI assistant uses these automatically once the graph is built.
 | `get_wiki_page_tool` | Retrieve a specific wiki page |
 | `list_repos_tool` | List registered repositories |
 | `cross_repo_search_tool` | Search across all registered repositories |
+| `analyze_edit_region_tool` | Blast radius of a specific line range in a file |
+| `audit_workspace_tool` | Consolidated dead code + large functions + cycle audit with health score |
+| `trace_dataflow_tool` | Forward BFS data-flow tracing from source to sink |
+| `export_scip_tool` | Export graph to SCIP-compatible JSON |
+| `import_scip_tool` | Import SCIP JSON document into the graph |
 
 **MCP Prompts** (5 workflow templates):
 `review_changes`, `architecture_map`, `debug_issue`, `onboard_developer`, `pre_merge_check`

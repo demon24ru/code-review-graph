@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..graph import GraphStore
+from ..response import graph_error
 from ..search import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def list_repos_func() -> dict[str, Any]:
             "repos": repos,
         }
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PARSE_ERROR", str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -71,10 +72,7 @@ def cross_repo_search_func(
         if not repos:
             return {
                 "status": "ok",
-                "summary": (
-                    "No repositories registered. "
-                    "Use 'register' to add repos."
-                ),
+                "summary": ("No repositories registered. Use 'register' to add repos."),
                 "results": [],
             }
 
@@ -90,9 +88,7 @@ def cross_repo_search_func(
             try:
                 store = GraphStore(str(db_path))
                 try:
-                    results = hybrid_search(
-                        store, query, kind=kind, limit=limit
-                    )
+                    results = hybrid_search(store, query, kind=kind, limit=limit)
                     alias = repo_entry.get("alias", repo_path.name)
                     for r in results:
                         r["repo"] = alias
@@ -102,14 +98,10 @@ def cross_repo_search_func(
                 finally:
                     store.close()
             except Exception as exc:
-                logger.warning(
-                    "Search failed for %s: %s", repo_path, exc
-                )
+                logger.warning("Search failed for %s: %s", repo_path, exc)
 
         # Sort all results by score descending
-        all_results.sort(
-            key=lambda r: r.get("score", 0), reverse=True
-        )
+        all_results.sort(key=lambda r: r.get("score", 0), reverse=True)
 
         return {
             "status": "ok",
@@ -121,4 +113,4 @@ def cross_repo_search_func(
             "repos_searched": searched_repos,
         }
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PARSE_ERROR", str(exc))

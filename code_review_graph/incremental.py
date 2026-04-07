@@ -139,8 +139,10 @@ def _git_branch_info(repo_root: Path) -> tuple[str, str]:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True,
-            cwd=str(repo_root), timeout=_GIT_TIMEOUT,
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root),
+            timeout=_GIT_TIMEOUT,
         )
         if result.returncode == 0:
             branch = result.stdout.strip()
@@ -149,14 +151,17 @@ def _git_branch_info(repo_root: Path) -> tuple[str, str]:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True,
-            cwd=str(repo_root), timeout=_GIT_TIMEOUT,
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root),
+            timeout=_GIT_TIMEOUT,
         )
         if result.returncode == 0:
             sha = result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return branch, sha
+
 
 _SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9_.~^/@{}\-]+$")
 
@@ -228,22 +233,25 @@ def get_all_tracked_files(repo_root: Path) -> list[str]:
 
 
 def collect_all_files(repo_root: Path) -> list[str]:
-    """Collect all parseable files in the repo, respecting ignore patterns."""
+    """Collect all parseable files in the repo, respecting ignore patterns.
+
+    Includes both git-tracked files and untracked files (not yet committed),
+    so newly created files are indexed without requiring ``git add`` first.
+    """
     ignore_patterns = _load_ignore_patterns(repo_root)
     parser = CodeParser()
     files = []
 
-    # Prefer git ls-files for tracked files
+    # Tracked files via git ls-files
     tracked = get_all_tracked_files(repo_root)
     if tracked:
-        candidates = tracked
+        # Also include untracked (new, not yet git-added) files
+        untracked = _get_untracked_files(repo_root)
+        seen = set(tracked)
+        candidates = list(tracked) + [f for f in untracked if f not in seen]
     else:
-        # Fallback: walk directory
-        candidates = [
-            str(p.relative_to(repo_root))
-            for p in repo_root.rglob("*")
-            if p.is_file()
-        ]
+        # Fallback: walk directory when git is not available
+        candidates = [str(p.relative_to(repo_root)) for p in repo_root.rglob("*") if p.is_file()]
 
     for rel_path in candidates:
         if _should_ignore(rel_path, ignore_patterns):
@@ -289,9 +297,10 @@ def find_dependents(store: GraphStore, file_path: str) -> list[str]:
 def run_post_build_hooks(store: GraphStore) -> dict:
     """Run post-parse analysis: signatures, flows, communities, search index."""
     import sqlite3
+
     results = {}
     warnings = []
-    
+
     # 1. Signatures
     try:
         rows = store.get_nodes_without_signature()
@@ -299,7 +308,8 @@ def run_post_build_hooks(store: GraphStore) -> dict:
             node_id, name, kind, params, ret = row[0], row[1], row[2], row[3], row[4]
             if kind in ("Function", "Test"):
                 sig = f"def {name}({params or ''})"
-                if ret: sig += f" -> {ret}"
+                if ret:
+                    sig += f" -> {ret}"
             elif kind == "Class":
                 sig = f"class {name}"
             else:
@@ -313,6 +323,7 @@ def run_post_build_hooks(store: GraphStore) -> dict:
     # 2. FTS index
     try:
         from .search import rebuild_fts_index
+
         results["fts_indexed"] = rebuild_fts_index(store)
     except Exception as e:
         logger.warning(f"FTS index rebuild failed: {e}")
@@ -321,6 +332,7 @@ def run_post_build_hooks(store: GraphStore) -> dict:
     # 3. Flows
     try:
         from .flows import store_flows, trace_flows
+
         flows = trace_flows(store)
         results["flows_detected"] = store_flows(store, flows)
     except Exception as e:
@@ -330,6 +342,7 @@ def run_post_build_hooks(store: GraphStore) -> dict:
     # 4. Communities
     try:
         from .communities import detect_communities, store_communities
+
         comms = detect_communities(store)
         results["communities_detected"] = store_communities(store, comms)
     except Exception as e:
@@ -394,19 +407,45 @@ def full_build(repo_root: Path, store: GraphStore) -> dict:
     }
 
 
+def _get_untracked_files(repo_root: Path) -> list[str]:
+    """Return untracked (new, not yet git-added) files in the repo."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root),
+            timeout=_GIT_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return []
+        return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+
 def incremental_update(
     repo_root: Path,
     store: GraphStore,
     base: str = "HEAD~1",
     changed_files: list[str] | None = None,
 ) -> dict:
-    """Incremental update: re-parse changed + dependent files only."""
+    """Incremental update: re-parse changed + untracked + dependent files only."""
     parser = CodeParser()
     ignore_patterns = _load_ignore_patterns(repo_root)
 
     # Determine changed files
     if changed_files is None:
         changed_files = get_changed_files(repo_root, base)
+
+    # Always include untracked files so newly created files are indexed
+    # without requiring a full rebuild or a git commit/add.
+    untracked = _get_untracked_files(repo_root)
+    if untracked:
+        existing_set = set(changed_files)
+        for f in untracked:
+            if f not in existing_set:
+                changed_files.append(f)
 
     if not changed_files:
         return {
@@ -563,9 +602,7 @@ def watch(repo_root: Path, store: GraphStore) -> None:
                 self._pending.add(abs_path)
                 if self._timer is not None:
                     self._timer.cancel()
-                self._timer = threading.Timer(
-                    _DEBOUNCE_SECONDS, self._flush
-                )
+                self._timer = threading.Timer(_DEBOUNCE_SECONDS, self._flush)
                 self._timer.start()
 
         def _flush(self):
@@ -591,14 +628,14 @@ def watch(repo_root: Path, store: GraphStore) -> None:
                 fhash = hashlib.sha256(source).hexdigest()
                 nodes, edges = parser.parse_bytes(path, source)
                 store.store_file_nodes_edges(abs_path, nodes, edges, fhash)
-                store.set_metadata(
-                    "last_updated", time.strftime("%Y-%m-%dT%H:%M:%S")
-                )
+                store.set_metadata("last_updated", time.strftime("%Y-%m-%dT%H:%M:%S"))
                 store.commit()
                 rel = str(path.relative_to(repo_root))
                 logger.info(
                     "Updated: %s (%d nodes, %d edges)",
-                    rel, len(nodes), len(edges),
+                    rel,
+                    len(nodes),
+                    len(edges),
                 )
             except Exception as e:
                 logger.error("Error updating %s: %s", abs_path, e)
@@ -611,11 +648,10 @@ def watch(repo_root: Path, store: GraphStore) -> None:
     logger.info("Watching %s for changes... (Ctrl+C to stop)", repo_root)
     try:
         import time as _time
+
         while True:
             _time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
     logger.info("Watch stopped.")
-
-

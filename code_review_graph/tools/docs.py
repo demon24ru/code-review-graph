@@ -7,7 +7,7 @@ from typing import Any
 
 from ..embeddings import EmbeddingStore, embed_all_nodes
 from ..incremental import get_db_path
-from ._common import _get_store
+from ._common import _get_store, graph_error
 
 # ---------------------------------------------------------------------------
 # Tool 7: embed_graph
@@ -41,13 +41,12 @@ def embed_graph(
     emb_store = EmbeddingStore(db_path, model=model)
     try:
         if not emb_store.available:
-            return {
-                "status": "error",
-                "error": (
-                    "sentence-transformers is not installed. "
-                    "Install with: pip install code-review-graph[embeddings]"
-                ),
-            }
+            return graph_error(
+                "INVALID_PARAMS",
+                "sentence-transformers is not installed. "
+                "Install with: pip install code-review-graph[embeddings]",
+                recovery="Run: pip install code-review-graph[embeddings]",
+            )
 
         newly_embedded = embed_all_nodes(store, emb_store)
         total = emb_store.count()
@@ -72,9 +71,7 @@ def embed_graph(
 # ---------------------------------------------------------------------------
 
 
-def get_docs_section(
-    section_name: str, repo_root: str | None = None
-) -> dict[str, Any]:
+def get_docs_section(section_name: str, repo_root: str | None = None) -> dict[str, Any]:
     """Return a specific section from the LLM-optimized reference.
 
     Used by skills and Claude Code to load only the exact documentation
@@ -105,11 +102,7 @@ def get_docs_section(
         pass
 
     # Fallback: package directory (for uvx/pip installs)
-    pkg_docs = (
-        Path(__file__).parent.parent.parent
-        / "docs"
-        / "LLM-OPTIMIZED-REFERENCE.md"
-    )
+    pkg_docs = Path(__file__).parent.parent.parent / "docs" / "LLM-OPTIMIZED-REFERENCE.md"
     if pkg_docs.exists():
         pkg_root = pkg_docs.parent.parent
         if pkg_root not in search_roots:
@@ -133,15 +126,19 @@ def get_docs_section(
                 }
 
     available = [
-        "usage", "review-delta", "review-pr", "commands",
-        "legal", "watch", "embeddings", "languages", "troubleshooting",
+        "usage",
+        "review-delta",
+        "review-pr",
+        "commands",
+        "legal",
+        "watch",
+        "embeddings",
+        "languages",
+        "troubleshooting",
     ]
     return {
         "status": "not_found",
-        "error": (
-            f"Section '{section_name}' not found. "
-            f"Available: {', '.join(available)}"
-        ),
+        "error": (f"Section '{section_name}' not found. Available: {', '.join(available)}"),
     }
 
 
@@ -174,11 +171,7 @@ def generate_wiki_func(
     try:
         wiki_dir = root / ".code-review-graph" / "wiki"
         result = generate_wiki(store, wiki_dir, force=force)
-        total = (
-            result["pages_generated"]
-            + result["pages_updated"]
-            + result["pages_unchanged"]
-        )
+        total = result["pages_generated"] + result["pages_updated"] + result["pages_unchanged"]
         return {
             "status": "ok",
             "summary": (
@@ -191,7 +184,7 @@ def generate_wiki_func(
             **result,
         }
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PARSE_ERROR", str(exc))
     finally:
         store.close()
 
@@ -229,8 +222,6 @@ def get_wiki_page_func(
         }
     return {
         "status": "ok",
-        "summary": (
-            f"Wiki page for '{community_name}' ({len(content)} chars)"
-        ),
+        "summary": (f"Wiki page for '{community_name}' ({len(content)} chars)"),
         "content": content,
     }

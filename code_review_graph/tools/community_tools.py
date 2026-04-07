@@ -7,7 +7,7 @@ from typing import Any
 from ..communities import get_architecture_overview, get_communities
 from ..graph import node_to_dict
 from ..hints import generate_hints, get_session
-from ._common import _get_store
+from ._common import _get_store, graph_error
 
 # ---------------------------------------------------------------------------
 # Tool 13: list_communities  [EXPLORE]
@@ -36,20 +36,16 @@ def list_communities_func(
     """
     store, root = _get_store(repo_root)
     try:
-        communities = get_communities(
-            store, sort_by=sort_by, min_size=min_size
-        )
+        communities = get_communities(store, sort_by=sort_by, min_size=min_size)
         result: dict[str, object] = {
             "status": "ok",
             "summary": f"Found {len(communities)} communities",
             "communities": communities,
         }
-        result["_hints"] = generate_hints(
-            "list_communities", result, get_session()
-        )
+        result["_hints"] = generate_hints("list_communities", result, get_session())
         return result
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PARSE_ERROR", str(exc))
     finally:
         store.close()
 
@@ -99,9 +95,7 @@ def get_community_func(
         if community is None:
             return {
                 "status": "not_found",
-                "summary": (
-                    "No community found matching the given criteria."
-                ),
+                "summary": ("No community found matching the given criteria."),
             }
 
         if include_members:
@@ -120,12 +114,10 @@ def get_community_func(
             ),
             "community": community,
         }
-        result["_hints"] = generate_hints(
-            "get_community", result, get_session()
-        )
+        result["_hints"] = generate_hints("get_community", result, get_session())
         return result
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PARSE_ERROR", str(exc))
     finally:
         store.close()
 
@@ -166,11 +158,9 @@ def get_architecture_overview_func(
             ),
             **overview,
         }
-        result["_hints"] = generate_hints(
-            "get_architecture_overview", result, get_session()
-        )
+        result["_hints"] = generate_hints("get_architecture_overview", result, get_session())
         return result
     except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+        return graph_error("PARSE_ERROR", str(exc))
     finally:
         store.close()

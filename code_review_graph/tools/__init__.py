@@ -1,28 +1,34 @@
 """MCP tool definitions for the Code Review Graph server.
 
-Exposes 22 tools:
-1. build_or_update_graph  - full or incremental build
-2. get_impact_radius      - blast radius from changed files
-3. query_graph            - predefined graph queries
-4. get_review_context     - focused subgraph + review prompt
-5. semantic_search_nodes  - keyword + vector search across nodes
-6. list_graph_stats       - aggregate statistics
-7. embed_graph            - compute vector embeddings for semantic search
-8. get_docs_section       - token-optimized documentation retrieval
-9. find_large_functions   - find oversized functions/classes by line count
-10. list_flows            - list execution flows sorted by criticality
-11. get_flow              - get details of a single execution flow
-12. get_affected_flows    - find flows affected by changed files
-13. list_communities      - list detected code communities
-14. get_community         - get details of a single community
+Exposes 28 tools:
+1.  build_or_update_graph    - full or incremental build
+2.  get_impact_radius        - blast radius from changed files
+3.  query_graph              - predefined graph queries
+4.  get_review_context       - focused subgraph + review prompt
+5.  semantic_search_nodes    - keyword + vector search across nodes
+6.  list_graph_stats         - aggregate statistics
+7.  embed_graph              - compute vector embeddings for semantic search
+8.  get_docs_section         - token-optimized documentation retrieval
+9.  find_large_functions     - find oversized functions/classes by line count
+10. list_flows               - list execution flows sorted by criticality
+11. get_flow                 - get details of a single execution flow
+12. get_affected_flows       - find flows affected by changed files
+13. list_communities         - list detected code communities
+14. get_community            - get details of a single community
 15. get_architecture_overview - architecture overview from community structure
-16. detect_changes        - risk-scored change impact analysis for code review
-17. refactor_tool         - unified refactoring (rename preview, dead code, suggestions)
-18. apply_refactor_tool   - apply a previously previewed refactoring
-19. generate_wiki         - generate markdown wiki from community structure
-20. get_wiki_page         - retrieve a specific wiki page
-21. list_repos            - list registered repositories
-22. cross_repo_search     - search across all registered repositories
+16. detect_changes           - risk-scored change impact analysis for code review
+17. refactor_tool            - unified refactoring (rename preview, dead code, suggestions)
+18. apply_refactor_tool      - apply a previously previewed refactoring
+19. generate_wiki            - generate markdown wiki from community structure
+20. get_wiki_page            - retrieve a specific wiki page
+21. list_repos               - list registered repositories
+22. cross_repo_search        - search across all registered repositories
+23. find_files_by_pattern    - find files matching glob patterns
+24. analyze_edit_region      - blast radius of a specific line range in a file
+25. audit_workspace          - consolidated dead code + large functions + cycles audit
+26. trace_dataflow           - forward BFS data-flow tracing (source to sink)
+27. export_scip              - export graph to SCIP JSON
+28. import_scip              - import SCIP JSON into the graph
 """
 
 from __future__ import annotations
@@ -77,10 +83,16 @@ from .registry_tools import cross_repo_search_func, list_repos_func
 
 # -- review -----------------------------------------------------------------
 from .review import (
+    analyze_edit_region,
+    audit_workspace,
     detect_changes_func,
     get_affected_flows_func,
     get_review_context,
+    trace_dataflow,
 )
+
+# -- scip_tools -------------------------------------------------------------
+from .scip_tools import export_scip_func, import_scip_func
 
 __all__ = [
     # _common
@@ -115,9 +127,15 @@ __all__ = [
     "cross_repo_search_func",
     "list_repos_func",
     # review
+    "analyze_edit_region",
+    "audit_workspace",
     "detect_changes_func",
     "get_affected_flows_func",
     "get_review_context",
+    "trace_dataflow",
+    # scip_tools
+    "export_scip_func",
+    "import_scip_func",
     # re-exported for backward compat (used in test patches)
     "get_changed_files",
     "get_staged_and_unstaged",

@@ -12,7 +12,7 @@ from ..graph import edge_to_dict, node_to_dict
 from ..hints import generate_hints, get_session
 from ..incremental import get_changed_files, get_db_path, get_staged_and_unstaged
 from ..search import hybrid_search
-from ._common import _BUILTIN_CALL_NAMES, _get_store
+from ._common import _BUILTIN_CALL_NAMES, _get_store, graph_error
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def get_impact_radius(
                 changed_files = get_staged_and_unstaged(root)
 
         if not changed_files:
-            return {
+            no_change: dict[str, Any] = {
                 "status": "ok",
                 "summary": "No changed files detected.",
                 "changed_nodes": [],
@@ -70,24 +70,24 @@ def get_impact_radius(
                 "truncated": False,
                 "total_impacted": 0,
             }
+            no_change["_hints"] = generate_hints("get_impact_radius", no_change, get_session())
+            return no_change
 
         # Convert to absolute paths for graph lookup
         abs_files = [str(root / f) for f in changed_files]
-        result = store.get_impact_radius(
-            abs_files, max_depth=max_depth, max_nodes=max_results
-        )
+        raw = store.get_impact_radius(abs_files, max_depth=max_depth, max_nodes=max_results)
 
-        changed_dicts = [node_to_dict(n) for n in result["changed_nodes"]]
-        impacted_dicts = [node_to_dict(n) for n in result["impacted_nodes"]]
-        edge_dicts = [edge_to_dict(e) for e in result["edges"]]
-        truncated = result["truncated"]
-        total_impacted = result["total_impacted"]
+        changed_dicts = [node_to_dict(n) for n in raw["changed_nodes"]]
+        impacted_dicts = [node_to_dict(n) for n in raw["impacted_nodes"]]
+        edge_dicts = [edge_to_dict(e) for e in raw["edges"]]
+        truncated = raw["truncated"]
+        total_impacted = raw["total_impacted"]
 
         summary_parts = [
             f"Blast radius for {len(changed_files)} changed file(s):",
             f"  - {len(changed_dicts)} nodes directly changed",
             f"  - {len(impacted_dicts)} nodes impacted (within {max_depth} hops)",
-            f"  - {len(result['impacted_files'])} additional files affected",
+            f"  - {len(raw['impacted_files'])} additional files affected",
         ]
         if truncated:
             summary_parts.append(
@@ -95,17 +95,19 @@ def get_impact_radius(
                 f" of {total_impacted} impacted nodes"
             )
 
-        return {
+        result: dict[str, Any] = {
             "status": "ok",
             "summary": "\n".join(summary_parts),
             "changed_files": changed_files,
             "changed_nodes": changed_dicts,
             "impacted_nodes": impacted_dicts,
-            "impacted_files": result["impacted_files"],
+            "impacted_files": raw["impacted_files"],
             "edges": edge_dicts,
             "truncated": truncated,
             "total_impacted": total_impacted,
         }
+        result["_hints"] = generate_hints("get_impact_radius", result, get_session())
+        return result
     finally:
         store.close()
 
@@ -134,13 +136,10 @@ def query_graph(
     store, root = _get_store(repo_root)
     try:
         if pattern not in _QUERY_PATTERNS:
-            return {
-                "status": "error",
-                "error": (
-                    f"Unknown pattern '{pattern}'. "
-                    f"Available: {list(_QUERY_PATTERNS.keys())}"
-                ),
-            }
+            return graph_error(
+                "INVALID_PARAMS",
+                f"Unknown pattern '{pattern}'. Available: {list(_QUERY_PATTERNS.keys())}",
+            )
 
         results: list[dict] = []
         edges_out: list[dict] = []
@@ -148,19 +147,15 @@ def query_graph(
         # For callers_of, skip common builtins early (bare names only)
         # "Who calls .map()?" returns hundreds of useless hits.
         # Qualified names (e.g. "utils.py::map") bypass this filter.
-        if (
-            pattern == "callers_of"
-            and target in _BUILTIN_CALL_NAMES
-            and "::" not in target
-        ):
+        if pattern == "callers_of" and target in _BUILTIN_CALL_NAMES and "::" not in target:
             return {
-                "status": "ok", "pattern": pattern, "target": target,
+                "status": "ok",
+                "pattern": pattern,
+                "target": target,
                 "description": _QUERY_PATTERNS[pattern],
-                "summary": (
-                    f"'{target}' is a common builtin "
-                    "— callers_of skipped to avoid noise."
-                ),
-                "results": [], "edges": [],
+                "summary": (f"'{target}' is a common builtin — callers_of skipped to avoid noise."),
+                "results": [],
+                "edges": [],
             }
 
         # Resolve target - try as-is, then as absolute path, then search
@@ -180,31 +175,40 @@ def query_graph(
                     node = exact_match_candidates[0]
                     target = node.qualified_name
                 else:
+                    disambiguation_hints = [
+                        f"Try '{c.qualified_name}'" for c in exact_match_candidates
+                    ]
                     return {
                         "status": "ambiguous",
                         "summary": (
-                            f"Multiple EXACT matches for '{target}'. "
-                            "Please use a qualified name."
+                            f"Multiple EXACT matches found for '{target}'. "
+                            "Please specify the exact node you want by using its fully qualified name."
                         ),
+                        "disambiguation_hints": disambiguation_hints,
                         "candidates": [node_to_dict(c) for c in exact_match_candidates],
+                        "next_actions": ["query_graph", "semantic_search_nodes_tool"],
                     }
             elif len(candidates) == 1:
                 node = candidates[0]
                 target = node.qualified_name
             elif len(candidates) > 1:
+                disambiguation_hints = [f"Try '{c.qualified_name}'" for c in candidates]
                 return {
                     "status": "ambiguous",
                     "summary": (
-                        f"Multiple matches for '{target}'. "
-                        "Please use a qualified name."
+                        f"Multiple partial matches found for '{target}'. "
+                        "Please specify the exact node you want by using its fully qualified name."
                     ),
+                    "disambiguation_hints": disambiguation_hints,
                     "candidates": [node_to_dict(c) for c in candidates],
+                    "next_actions": ["query_graph", "semantic_search_nodes_tool"],
                 }
 
         if not node and pattern != "file_summary":
             return {
                 "status": "not_found",
-                "summary": f"No node found matching '{target}'.",
+                "summary": f"No node found matching '{target}'. If you are looking for a file, try using find_files_by_pattern_tool.",
+                "next_actions": ["find_files_by_pattern_tool", "semantic_search_nodes_tool"],
             }
 
         qn = node.qualified_name if node else target
@@ -244,16 +248,15 @@ def query_graph(
             # Find edges where target matches this file.
             # Use resolve() to canonicalize the path, matching how
             # _resolve_module_to_file stores edge targets.
-            abs_target = (
-                str((root / target).resolve()) if node is None
-                else node.file_path
-            )
+            abs_target = str((root / target).resolve()) if node is None else node.file_path
             for e in store.get_edges_by_target(abs_target):
                 if e.kind == "IMPORTS_FROM":
-                    results.append({
-                        "importer": e.source_qualified,
-                        "file": e.file_path,
-                    })
+                    results.append(
+                        {
+                            "importer": e.source_qualified,
+                            "file": e.file_path,
+                        }
+                    )
                     edges_out.append(edge_to_dict(e))
 
         elif pattern == "children_of":
@@ -292,18 +295,17 @@ def query_graph(
             for n in file_nodes:
                 results.append(node_to_dict(n))
 
-        return {
+        result = {
             "status": "ok",
             "pattern": pattern,
             "target": target,
             "description": _QUERY_PATTERNS[pattern],
-            "summary": (
-                f"Found {len(results)} result(s) "
-                f"for {pattern}('{target}')"
-            ),
+            "summary": (f"Found {len(results)} result(s) for {pattern}('{target}')"),
             "results": results,
             "edges": edges_out,
         }
+        result["_hints"] = generate_hints("query_graph", result, get_session())
+        return result
     finally:
         store.close()
 
@@ -341,7 +343,11 @@ def semantic_search_nodes(
     store, root = _get_store(repo_root)
     try:
         results = hybrid_search(
-            store, query, kind=kind, limit=limit, context_files=context_files,
+            store,
+            query,
+            kind=kind,
+            limit=limit,
+            context_files=context_files,
             model=model,
         )
 
@@ -353,14 +359,11 @@ def semantic_search_nodes(
             "status": "ok",
             "query": query,
             "search_mode": search_mode,
-            "summary": f"Found {len(results)} node(s) matching '{query}'" + (
-                f" (kind={kind})" if kind else ""
-            ),
+            "summary": f"Found {len(results)} node(s) matching '{query}'"
+            + (f" (kind={kind})" if kind else ""),
             "results": results,
         }
-        result["_hints"] = generate_hints(
-            "semantic_search_nodes", result, get_session()
-        )
+        result["_hints"] = generate_hints("semantic_search_nodes", result, get_session())
         return result
     finally:
         store.close()
@@ -408,13 +411,11 @@ def list_graph_stats(repo_root: str | None = None) -> dict[str, Any]:
             summary_parts.append("")
             summary_parts.append(f"Embeddings: {emb_count} nodes embedded")
             if not emb_store.available:
-                summary_parts.append(
-                    "  (install sentence-transformers for semantic search)"
-                )
+                summary_parts.append("  (install sentence-transformers for semantic search)")
         finally:
             emb_store.close()
 
-        return {
+        result: dict[str, Any] = {
             "status": "ok",
             "summary": "\n".join(summary_parts),
             "total_nodes": stats.total_nodes,
@@ -426,6 +427,8 @@ def list_graph_stats(repo_root: str | None = None) -> dict[str, Any]:
             "last_updated": stats.last_updated,
             "embeddings_count": emb_count,
         }
+        result["_hints"] = generate_hints("list_graph_stats", result, get_session())
+        return result
     finally:
         store.close()
 
@@ -437,12 +440,13 @@ def list_graph_stats(repo_root: str | None = None) -> dict[str, Any]:
 
 import fnmatch
 
+
 def find_files_by_pattern(
     patterns: list[str],
     repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Find files matching path patterns and retrieve their top-level nodes (classes/functions).
-    
+
     Useful for discovering the codebase structure without reading entire files.
     Allows agents to see both WHERE the file is, and WHAT it contains conceptually.
 
@@ -457,58 +461,69 @@ def find_files_by_pattern(
     try:
         all_files = store.get_all_files()
         matched_abs_files: set[str] = set()
-        
-        # Match using flexible fnmatch globs over relative paths
+
         for f in all_files:
             try:
                 rel_path = str(Path(f).relative_to(root))
             except ValueError:
                 rel_path = f
-                
+
+            # Normalise to forward slashes for consistent matching
+            rel_posix = Path(rel_path).as_posix()
+
             for pat in patterns:
-                # Add implicit wildcards to match substring globs passed by LLM (e.g. "*router*")
-                pat_eff = pat if pat.startswith("*") else f"*{pat}"
-                pat_eff = pat_eff if pat_eff.endswith("*") else f"{pat_eff}*"
-                
-                # Check both just in case: basic matching and flexible substring matching
-                if fnmatch.fnmatchcase(rel_path, pat) or fnmatch.fnmatchcase(rel_path, pat_eff):
+                pat_norm = pat.replace("\\", "/")
+
+                # --- Strategy 1: pathlib.PurePath.match() handles ** correctly ---
+                # e.g.  "**/response.py"  "src/**/*.ts"  "*.py"
+                if Path(rel_posix).match(pat_norm):
                     matched_abs_files.add(f)
                     break
-        
+
+                # --- Strategy 2: fnmatch on the full relative path ---
+                # e.g.  "code_review_graph/*.py"
+                if fnmatch.fnmatch(rel_posix, pat_norm):
+                    matched_abs_files.add(f)
+                    break
+
+                # --- Strategy 3: implicit substring wrap for bare names ---
+                # e.g.  "router"  →  "*router*"   (no wildcards at all)
+                if "*" not in pat_norm and "?" not in pat_norm:
+                    if fnmatch.fnmatch(rel_posix, f"*{pat_norm}*"):
+                        matched_abs_files.add(f)
+                        break
+
         results = []
         for abs_file in matched_abs_files:
             try:
                 rel_path = str(Path(abs_file).relative_to(root))
             except ValueError:
                 rel_path = abs_file
-                
+
             file_nodes = store.get_nodes_by_file(abs_file)
-            
+
             # Summarize content: classes and functions, ignore imports/variables/etc.
             # to keep context window footprint low.
             content_summary = []
             for n in file_nodes:
                 if n.kind in ("Class", "Function", "Test"):
-                    content_summary.append({
-                        "name": n.name,
-                        "kind": n.kind,
-                        "line": n.line_start
-                    })
-            
-            results.append({
-                "file": rel_path,
-                "node_summary": sorted(content_summary, key=lambda x: x["line"])
-            })
+                    content_summary.append({"name": n.name, "kind": n.kind, "line": n.line_start})
+
+            results.append(
+                {"file": rel_path, "node_summary": sorted(content_summary, key=lambda x: x["line"])}
+            )
 
         # Sort for deterministic output
         results.sort(key=lambda x: x["file"])
 
-        return {
+        out: dict[str, Any] = {
             "status": "ok",
             "summary": f"Found {len(results)} file(s) matching patterns: {patterns}",
             "patterns_used": patterns,
-            "results": results
+            "results": results,
         }
+        out["_hints"] = generate_hints("find_files_by_pattern", out, get_session())
+        return out
     finally:
         store.close()
 
@@ -552,11 +567,7 @@ def find_large_functions(
         results = []
         for n in nodes:
             d = node_to_dict(n)
-            d["line_count"] = (
-                (n.line_end - n.line_start + 1)
-                if n.line_start and n.line_end
-                else 0
-            )
+            d["line_count"] = (n.line_end - n.line_start + 1) if n.line_start and n.line_end else 0
             # Make file_path relative for readability
             try:
                 d["relative_path"] = str(Path(n.file_path).relative_to(root))
@@ -578,12 +589,14 @@ def find_large_functions(
         if len(results) > 10:
             summary_parts.append(f"  ... and {len(results) - 10} more")
 
-        return {
+        result: dict[str, Any] = {
             "status": "ok",
             "summary": "\n".join(summary_parts),
             "total_found": len(results),
             "min_lines": min_lines,
             "results": results,
         }
+        result["_hints"] = generate_hints("find_large_functions", result, get_session())
+        return result
     finally:
         store.close()

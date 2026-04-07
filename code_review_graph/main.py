@@ -18,11 +18,14 @@ from .prompts import (
     review_changes_prompt,
 )
 from .tools import (
+    analyze_edit_region,
     apply_refactor_func,
+    audit_workspace,
     build_or_update_graph,
     cross_repo_search_func,
     detect_changes_func,
     embed_graph,
+    export_scip_func,
     find_files_by_pattern,
     find_large_functions,
     generate_wiki_func,
@@ -34,6 +37,7 @@ from .tools import (
     get_impact_radius,
     get_review_context,
     get_wiki_page_func,
+    import_scip_func,
     list_communities_func,
     list_flows,
     list_graph_stats,
@@ -41,6 +45,7 @@ from .tools import (
     query_graph,
     refactor_func,
     semantic_search_nodes,
+    trace_dataflow,
 )
 
 # NOTE: Thread-safe for stdio MCP (single-threaded). If adding HTTP/SSE
@@ -74,9 +79,7 @@ def build_or_update_graph_tool(
         repo_root: Repository root path. Auto-detected from current directory if omitted.
         base: Git ref to diff against for incremental updates. Default: HEAD~1.
     """
-    return build_or_update_graph(
-        full_rebuild=full_rebuild, repo_root=repo_root, base=base
-    )
+    return build_or_update_graph(full_rebuild=full_rebuild, repo_root=repo_root, base=base)
 
 
 @mcp.tool()
@@ -98,8 +101,10 @@ def get_impact_radius_tool(
         base: Git ref for auto-detecting changes. Default: HEAD~1.
     """
     return get_impact_radius(
-        changed_files=changed_files, max_depth=max_depth,
-        repo_root=repo_root, base=base,
+        changed_files=changed_files,
+        max_depth=max_depth,
+        repo_root=repo_root,
+        base=base,
     )
 
 
@@ -128,7 +133,7 @@ def query_graph_tool(
     """
     import os
     from pathlib import Path
-    
+
     # Try to correctly find the graph.db repo base when triggered via MCP
     repo_root = repo_root or os.environ.get("CRG_REPO_ROOT") or str(Path.cwd())
     if not (Path(repo_root) / ".code-review-graph").exists():
@@ -162,9 +167,12 @@ def get_review_context_tool(
         base: Git ref for change detection. Default: HEAD~1.
     """
     return get_review_context(
-        changed_files=changed_files, max_depth=max_depth,
-        include_source=include_source, max_lines_per_file=max_lines_per_file,
-        repo_root=repo_root, base=base,
+        changed_files=changed_files,
+        max_depth=max_depth,
+        include_source=include_source,
+        max_lines_per_file=max_lines_per_file,
+        repo_root=repo_root,
+        base=base,
     )
 
 
@@ -260,14 +268,12 @@ def find_files_by_pattern_tool(
 
     Useful for discovering codebase structure without reading entire files.
     Allows agents to see both WHERE the file is, and WHAT it contains conceptually.
-    
+
     Args:
         patterns: List of glob patterns (e.g. ["*router*", "main.*", "src/**/*.ts"])
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return find_files_by_pattern(
-        patterns=patterns, repo_root=repo_root
-    )
+    return find_files_by_pattern(patterns=patterns, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -291,8 +297,11 @@ def find_large_functions_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return find_large_functions(
-        min_lines=min_lines, kind=kind, file_path_pattern=file_path_pattern,
-        limit=limit, repo_root=repo_root,
+        min_lines=min_lines,
+        kind=kind,
+        file_path_pattern=file_path_pattern,
+        limit=limit,
+        repo_root=repo_root,
     )
 
 
@@ -316,7 +325,10 @@ def list_flows_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return list_flows(
-        repo_root=repo_root, sort_by=sort_by, limit=limit, kind=kind,
+        repo_root=repo_root,
+        sort_by=sort_by,
+        limit=limit,
+        kind=kind,
     )
 
 
@@ -341,8 +353,10 @@ def get_flow_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return get_flow(
-        flow_id=flow_id, flow_name=flow_name,
-        include_source=include_source, repo_root=repo_root,
+        flow_id=flow_id,
+        flow_name=flow_name,
+        include_source=include_source,
+        repo_root=repo_root,
     )
 
 
@@ -364,7 +378,9 @@ def get_affected_flows_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return get_affected_flows_func(
-        changed_files=changed_files, base=base, repo_root=repo_root,
+        changed_files=changed_files,
+        base=base,
+        repo_root=repo_root,
     )
 
 
@@ -386,7 +402,9 @@ def list_communities_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return list_communities_func(
-        repo_root=repo_root, sort_by=sort_by, min_size=min_size,
+        repo_root=repo_root,
+        sort_by=sort_by,
+        min_size=min_size,
     )
 
 
@@ -412,8 +430,10 @@ def get_community_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return get_community_func(
-        community_name=community_name, community_id=community_id,
-        include_members=include_members, repo_root=repo_root,
+        community_name=community_name,
+        community_id=community_id,
+        include_members=include_members,
+        repo_root=repo_root,
     )
 
 
@@ -455,8 +475,10 @@ def detect_changes_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return detect_changes_func(
-        base=base, changed_files=changed_files,
-        include_source=include_source, max_depth=max_depth,
+        base=base,
+        changed_files=changed_files,
+        include_source=include_source,
+        max_depth=max_depth,
         repo_root=repo_root,
     )
 
@@ -492,8 +514,12 @@ def refactor_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return refactor_func(
-        mode=mode, old_name=old_name, new_name=new_name,
-        kind=kind, file_pattern=file_pattern, repo_root=repo_root,
+        mode=mode,
+        old_name=old_name,
+        new_name=new_name,
+        kind=kind,
+        file_pattern=file_pattern,
+        repo_root=repo_root,
     )
 
 
@@ -516,7 +542,8 @@ def apply_refactor_tool(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return apply_refactor_func(
-        refactor_id=refactor_id, repo_root=repo_root,
+        refactor_id=refactor_id,
+        repo_root=repo_root,
     )
 
 
@@ -582,6 +609,139 @@ def cross_repo_search_tool(
         limit: Maximum results per repo. Default: 20.
     """
     return cross_repo_search_func(query=query, kind=kind, limit=limit)
+
+
+@mcp.tool()
+def analyze_edit_region_tool(
+    file_path: str,
+    line_start: int,
+    line_end: int,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Analyze the blast radius of a specific line range within a file.
+
+    Unlike get_impact_radius_tool (whole-file), this tool focuses on the exact
+    lines being edited and reports which graph nodes overlap the region, which
+    external callers are affected, and which downstream functions are called.
+
+    Args:
+        file_path: Path to the file being edited (relative or absolute).
+        line_start: First line of the edit region (1-indexed).
+        line_end: Last line of the edit region (1-indexed, inclusive).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return analyze_edit_region(
+        file_path=file_path,
+        line_start=line_start,
+        line_end=line_end,
+        repo_root=repo_root,
+    )
+
+
+@mcp.tool()
+def audit_workspace_tool(
+    include_dead_code: bool = True,
+    include_large_functions: bool = True,
+    include_cycles: bool = True,
+    min_lines: int = 50,
+    file_pattern: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Consolidated workspace audit: dead code, large functions, and dependency cycles.
+
+    Runs multiple quality checks in a single call and returns a health score.
+    Equivalent to running refactor_tool(dead_code) + find_large_functions_tool +
+    cycle detection in one shot. Use before merging a PR.
+
+    Args:
+        include_dead_code: Detect unreferenced functions/classes. Default: True.
+        include_large_functions: Find oversized functions. Default: True.
+        include_cycles: Detect import/call cycles. Default: True.
+        min_lines: Minimum lines to flag a function as large. Default: 50.
+        file_pattern: Filter dead code / large functions by file path substring.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return audit_workspace(
+        include_dead_code=include_dead_code,
+        include_large_functions=include_large_functions,
+        include_cycles=include_cycles,
+        min_lines=min_lines,
+        file_pattern=file_pattern,
+        repo_root=repo_root,
+    )
+
+
+@mcp.tool()
+def trace_dataflow_tool(
+    source: str,
+    sink: Optional[str] = None,
+    max_depth: int = 6,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Trace data propagation from a source symbol to a sink (or all reachable nodes).
+
+    Performs a forward BFS from source over CALLS and IMPORTS_FROM edges.
+    If sink is provided, finds the shortest path and reports whether the data
+    can reach the sink. Without a sink, returns all reachable symbols.
+
+    Use to answer: "Can user-supplied data from parse_request reach execute_query?"
+
+    Args:
+        source: Qualified name or plain name of the source symbol.
+        sink: Optional qualified name or plain name of the target symbol.
+              If omitted, returns all symbols reachable from source.
+        max_depth: Maximum BFS hops. Default: 6.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return trace_dataflow(
+        source=source,
+        sink=sink,
+        max_depth=max_depth,
+        repo_root=repo_root,
+    )
+
+
+@mcp.tool()
+def export_scip_tool(
+    output_path: Optional[str] = None,
+    file_pattern: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Export the code knowledge graph to a SCIP-compatible JSON document.
+
+    Serialises all nodes and edges to the SCIP open standard (JSON subset)
+    so the graph can be consumed by external tools or re-imported elsewhere.
+
+    Args:
+        output_path: Destination file path. Defaults to
+            .code-review-graph/export.scip.json inside the repo root.
+        file_pattern: Restrict export to nodes whose file path contains this
+            substring. Omit to export the entire graph.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return export_scip_func(
+        output_path=output_path,
+        file_pattern=file_pattern,
+        repo_root=repo_root,
+    )
+
+
+@mcp.tool()
+def import_scip_tool(
+    scip_path: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Import a SCIP JSON document into the code knowledge graph.
+
+    Reads a .scip.json file (produced by export_scip_tool or compatible tools)
+    and upserts all symbols and relationships into the graph store.
+    Existing nodes with matching qualified names are updated in place.
+
+    Args:
+        scip_path: Path to the .scip.json file (absolute or relative to repo_root).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return import_scip_func(scip_path=scip_path, repo_root=repo_root)
 
 
 @mcp.prompt()

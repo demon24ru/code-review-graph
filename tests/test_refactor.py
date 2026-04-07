@@ -36,34 +36,68 @@ class TestRenamePreview:
     def _seed(self):
         """Seed the store with test data for rename tests."""
         # File nodes
-        self.store.upsert_node(NodeInfo(
-            kind="File", name="/repo/utils.py", file_path="/repo/utils.py",
-            line_start=1, line_end=50, language="python",
-        ))
-        self.store.upsert_node(NodeInfo(
-            kind="File", name="/repo/main.py", file_path="/repo/main.py",
-            line_start=1, line_end=30, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File",
+                name="/repo/utils.py",
+                file_path="/repo/utils.py",
+                line_start=1,
+                line_end=50,
+                language="python",
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File",
+                name="/repo/main.py",
+                file_path="/repo/main.py",
+                line_start=1,
+                line_end=30,
+                language="python",
+            )
+        )
         # Function to rename
-        self.store.upsert_node(NodeInfo(
-            kind="Function", name="helper", file_path="/repo/utils.py",
-            line_start=10, line_end=20, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="helper",
+                file_path="/repo/utils.py",
+                line_start=10,
+                line_end=20,
+                language="python",
+            )
+        )
         # Caller function
-        self.store.upsert_node(NodeInfo(
-            kind="Function", name="run", file_path="/repo/main.py",
-            line_start=5, line_end=15, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="run",
+                file_path="/repo/main.py",
+                line_start=5,
+                line_end=15,
+                language="python",
+            )
+        )
         # CALLS edge: run -> helper
-        self.store.upsert_edge(EdgeInfo(
-            kind="CALLS", source="/repo/main.py::run",
-            target="/repo/utils.py::helper", file_path="/repo/main.py", line=10,
-        ))
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source="/repo/main.py::run",
+                target="/repo/utils.py::helper",
+                file_path="/repo/main.py",
+                line=10,
+            )
+        )
         # IMPORTS_FROM edge: main.py imports helper
-        self.store.upsert_edge(EdgeInfo(
-            kind="IMPORTS_FROM", source="/repo/main.py",
-            target="/repo/utils.py::helper", file_path="/repo/main.py", line=1,
-        ))
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="IMPORTS_FROM",
+                source="/repo/main.py",
+                target="/repo/utils.py::helper",
+                file_path="/repo/main.py",
+                line=1,
+            )
+        )
         self.store.commit()
 
     def test_rename_preview_returns_edits_with_refactor_id(self):
@@ -89,7 +123,7 @@ class TestRenamePreview:
         assert len(edits) >= 3
         files = {e["file"] for e in edits}
         assert "/repo/utils.py" in files  # definition
-        assert "/repo/main.py" in files   # call site + import site
+        assert "/repo/main.py" in files  # call site + import site
 
     def test_rename_not_found(self):
         """rename_preview returns None if symbol not found."""
@@ -120,40 +154,82 @@ class TestFindDeadCode:
     def _seed(self):
         """Seed with a mix of used and unused functions."""
         # File
-        self.store.upsert_node(NodeInfo(
-            kind="File", name="/repo/app.py", file_path="/repo/app.py",
-            line_start=1, line_end=100, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File",
+                name="/repo/app.py",
+                file_path="/repo/app.py",
+                line_start=1,
+                line_end=100,
+                language="python",
+            )
+        )
         # A function that IS called
-        self.store.upsert_node(NodeInfo(
-            kind="Function", name="used_func", file_path="/repo/app.py",
-            line_start=10, line_end=20, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="used_func",
+                file_path="/repo/app.py",
+                line_start=10,
+                line_end=20,
+                language="python",
+            )
+        )
         # A function that is NOT called (dead code)
-        self.store.upsert_node(NodeInfo(
-            kind="Function", name="dead_func", file_path="/repo/app.py",
-            line_start=30, line_end=40, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="dead_func",
+                file_path="/repo/app.py",
+                line_start=30,
+                line_end=40,
+                language="python",
+            )
+        )
         # An entry point function (should be excluded)
-        self.store.upsert_node(NodeInfo(
-            kind="Function", name="main", file_path="/repo/app.py",
-            line_start=50, line_end=60, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="main",
+                file_path="/repo/app.py",
+                line_start=50,
+                line_end=60,
+                language="python",
+            )
+        )
         # A test function (should be excluded)
-        self.store.upsert_node(NodeInfo(
-            kind="Test", name="test_something", file_path="/repo/test_app.py",
-            line_start=1, line_end=10, language="python", is_test=True,
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Test",
+                name="test_something",
+                file_path="/repo/test_app.py",
+                line_start=1,
+                line_end=10,
+                language="python",
+                is_test=True,
+            )
+        )
 
         # Caller for used_func
-        self.store.upsert_node(NodeInfo(
-            kind="Function", name="caller", file_path="/repo/app.py",
-            line_start=70, line_end=80, language="python",
-        ))
-        self.store.upsert_edge(EdgeInfo(
-            kind="CALLS", source="/repo/app.py::caller",
-            target="/repo/app.py::used_func", file_path="/repo/app.py", line=75,
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="caller",
+                file_path="/repo/app.py",
+                line_start=70,
+                line_end=80,
+                language="python",
+            )
+        )
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source="/repo/app.py::caller",
+                target="/repo/app.py::used_func",
+                file_path="/repo/app.py",
+                line=75,
+            )
+        )
         self.store.commit()
 
     def test_find_dead_code(self):
@@ -206,15 +282,27 @@ class TestSuggestRefactorings:
 
     def _seed(self):
         """Seed with dead code to generate suggestions."""
-        self.store.upsert_node(NodeInfo(
-            kind="File", name="/repo/lib.py", file_path="/repo/lib.py",
-            line_start=1, line_end=50, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File",
+                name="/repo/lib.py",
+                file_path="/repo/lib.py",
+                line_start=1,
+                line_end=50,
+                language="python",
+            )
+        )
         # Unreferenced function -> removal suggestion
-        self.store.upsert_node(NodeInfo(
-            kind="Function", name="orphan_func", file_path="/repo/lib.py",
-            line_start=10, line_end=20, language="python",
-        ))
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="orphan_func",
+                file_path="/repo/lib.py",
+                line_start=10,
+                line_end=20,
+                language="python",
+            )
+        )
         self.store.commit()
 
     def test_suggest_refactorings(self):
@@ -256,7 +344,9 @@ class TestApplyRefactor:
         try:
             result = apply_refactor("nonexistent_id", tmp_dir)
             assert result["status"] == "error"
-            assert "not found" in result["error"].lower() or "expired" in result["error"].lower()
+            # graph_error uses "summary" field; legacy tests use "error"
+            msg = (result.get("summary") or result.get("error") or "").lower()
+            assert "not found" in msg or "expired" in msg
         finally:
             (tmp_dir / ".git").rmdir()
             tmp_dir.rmdir()
@@ -280,7 +370,8 @@ class TestApplyRefactor:
                 }
             result = apply_refactor(rid, tmp_dir)
             assert result["status"] == "error"
-            assert "expired" in result["error"].lower()
+            msg = (result.get("summary") or result.get("error") or "").lower()
+            assert "expired" in msg
         finally:
             (tmp_dir / ".git").rmdir()
             tmp_dir.rmdir()
@@ -297,19 +388,22 @@ class TestApplyRefactor:
                     "type": "rename",
                     "old_name": "old",
                     "new_name": "new",
-                    "edits": [{
-                        "file": "/etc/passwd",
-                        "line": 1,
-                        "old": "old",
-                        "new": "new",
-                        "confidence": "high",
-                    }],
+                    "edits": [
+                        {
+                            "file": "/etc/passwd",
+                            "line": 1,
+                            "old": "old",
+                            "new": "new",
+                            "confidence": "high",
+                        }
+                    ],
                     "stats": {"high": 1, "medium": 0, "low": 0},
                     "created_at": time.time(),
                 }
             result = apply_refactor(rid, tmp_dir)
             assert result["status"] == "error"
-            assert "outside repo root" in result["error"].lower()
+            msg = (result.get("summary") or result.get("error") or "").lower()
+            assert "outside repo root" in msg
         finally:
             (tmp_dir / ".git").rmdir()
             tmp_dir.rmdir()
@@ -328,13 +422,15 @@ class TestApplyRefactor:
                     "type": "rename",
                     "old_name": "old_func",
                     "new_name": "new_func",
-                    "edits": [{
-                        "file": str(target_file),
-                        "line": 1,
-                        "old": "old_func",
-                        "new": "new_func",
-                        "confidence": "high",
-                    }],
+                    "edits": [
+                        {
+                            "file": str(target_file),
+                            "line": 1,
+                            "old": "old_func",
+                            "new": "new_func",
+                            "confidence": "high",
+                        }
+                    ],
                     "stats": {"high": 1, "medium": 0, "low": 0},
                     "created_at": time.time(),
                 }
