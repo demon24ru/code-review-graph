@@ -25,6 +25,341 @@ def _slugify(name: str) -> str:
     return slug[:80] or "unnamed"
 
 
+# ---------------------------------------------------------------------------
+# Language-aware signature / doc-comment helpers
+# ---------------------------------------------------------------------------
+
+# Map language → markdown fence identifier
+_FENCE_MAP: dict[str, str] = {
+    "python": "python",
+    "javascript": "javascript",
+    "typescript": "typescript",
+    "tsx": "tsx",
+    "jsx": "jsx",
+    "java": "java",
+    "kotlin": "kotlin",
+    "scala": "scala",
+    "swift": "swift",
+    "go": "go",
+    "rust": "rust",
+    "c": "c",
+    "cpp": "cpp",
+    "c_sharp": "csharp",
+    "csharp": "csharp",
+    "php": "php",
+    "ruby": "ruby",
+    "dart": "dart",
+    "solidity": "solidity",
+    "lua": "lua",
+    "r": "r",
+    "perl": "perl",
+    "vue": "vue",
+}
+
+
+def _fence_language(lang: str) -> str:
+    """Return the markdown fence language identifier for a given language."""
+    return _FENCE_MAP.get(lang, lang or "text")
+
+
+def _build_signature(
+    name: str,
+    kind: str,
+    lang: str,
+    params: str | None,
+    return_type: str | None,
+) -> str:
+    """Build a language-aware signature string for wiki display.
+
+    Produces a one-line declaration that matches the conventions of each
+    supported language so the fenced code block is syntactically plausible.
+    """
+    p = params or ""
+    rt = return_type or ""
+
+    # ---- Python ----
+    if lang == "python":
+        kw = "class" if kind == "Class" else "def"
+        sig = f"{kw} {name}"
+        if kind != "Class":
+            sig += p if p.startswith("(") else f"({p})"
+            if rt and rt != "None":
+                sig += f" -> {rt}"
+        return sig + ":"
+
+    # ---- JavaScript / TypeScript / TSX / JSX ----
+    if lang in ("javascript", "typescript", "tsx", "jsx"):
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f": {rt}" if rt else ""
+        return f"function {name}{args}{ret} {{"
+
+    # ---- Java / Kotlin ----
+    if lang in ("java", "kotlin"):
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f"{rt} " if rt else "void "
+        return f"{ret}{name}{args} {{"
+
+    # ---- Scala ----
+    if lang == "scala":
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f": {rt}" if rt else ""
+        return f"def {name}{args}{ret} = {{"
+
+    # ---- Swift ----
+    if lang == "swift":
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f" -> {rt}" if rt else ""
+        return f"func {name}{args}{ret} {{"
+
+    # ---- Go ----
+    if lang == "go":
+        if kind == "Class":
+            return f"type {name} struct {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f" {rt}" if rt else ""
+        return f"func {name}{args}{ret} {{"
+
+    # ---- Rust ----
+    if lang == "rust":
+        if kind == "Class":
+            return f"struct {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f" -> {rt}" if rt else ""
+        return f"fn {name}{args}{ret} {{"
+
+    # ---- C / C++ ----
+    if lang in ("c", "cpp"):
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f"{rt} " if rt else "void "
+        return f"{ret}{name}{args} {{"
+
+    # ---- C# ----
+    if lang in ("c_sharp", "csharp"):
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f"{rt} " if rt else "void "
+        return f"{ret}{name}{args} {{"
+
+    # ---- PHP ----
+    if lang == "php":
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        return f"function {name}{args} {{"
+
+    # ---- Ruby ----
+    if lang == "ruby":
+        if kind == "Class":
+            return f"class {name}"
+        return f"def {name}{p}"
+
+    # ---- Dart ----
+    if lang == "dart":
+        if kind == "Class":
+            return f"class {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f"{rt} " if rt else ""
+        return f"{ret}{name}{args} {{"
+
+    # ---- Solidity ----
+    if lang == "solidity":
+        if kind == "Class":
+            return f"contract {name} {{"
+        args = p if p.startswith("(") else f"({p})"
+        ret = f" returns ({rt})" if rt else ""
+        return f"function {name}{args}{ret} {{"
+
+    # ---- Lua ----
+    if lang == "lua":
+        if kind == "Class":
+            return f"-- {name} (table/class)"
+        args = p if p.startswith("(") else f"({p})"
+        return f"function {name}{args}"
+
+    # ---- R ----
+    if lang == "r":
+        args = p if p.startswith("(") else f"({p})"
+        return f"{name} <- function{args} {{"
+
+    # ---- Perl ----
+    if lang == "perl":
+        return f"sub {name} {{"
+
+    # ---- Fallback: generic ----
+    kw = "class" if kind == "Class" else "function"
+    args = p if p.startswith("(") else f"({p})"
+    return f"{kw} {name}{args}"
+
+
+def _extract_doc_comment(
+    file_path: str,
+    line_start: int,
+    line_end: int,
+    lang: str,
+) -> str | None:
+    """Extract the leading doc-comment/docstring from a node's source.
+
+    Supports all 19 languages:
+    - Python:                  \"\"\"...\"\"\", '''...'''
+    - JS/TS/Java/Go/Rust/C/C++/C#/PHP/Dart/Kotlin/Scala/Swift/Solidity: /** ... */ or // lines
+    - Ruby:                    # lines
+    - R:                       # lines
+    - Perl:                    # lines or =pod
+    - Lua:                     --[[ ... ]] or -- lines
+
+    Returns the extracted text (stripped), or None.
+    """
+    try:
+        import textwrap
+
+        path = Path(file_path)
+        if not path.is_file():
+            return None
+        all_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        # Body: from line_start to line_end (1-indexed, inclusive)
+        body_lines = all_lines[line_start - 1 : line_end]
+        if not body_lines:
+            return None
+
+        # ------------------------------------------------------------------ #
+        # Python — use ast.get_docstring for accuracy                         #
+        # ------------------------------------------------------------------ #
+        if lang == "python":
+            try:
+                import ast
+
+                text = textwrap.dedent("\n".join(body_lines))
+                tree = ast.parse(text)
+                if tree.body:
+                    doc = ast.get_docstring(tree.body[0])
+                    return doc or None
+            except Exception:
+                return None
+
+        # ------------------------------------------------------------------ #
+        # Lua — --[[ block ]] or leading -- lines                             #
+        # ------------------------------------------------------------------ #
+        if lang == "lua":
+            return _extract_block_or_line_comment(
+                body_lines,
+                block_start="--[[",
+                block_end="]]",
+                line_prefix="--",
+            )
+
+        # ------------------------------------------------------------------ #
+        # Ruby / R / Perl — leading # lines                                   #
+        # (Perl also supports =pod but # is more common in practice)          #
+        # ------------------------------------------------------------------ #
+        if lang in ("ruby", "r", "perl"):
+            return _extract_line_comment(body_lines, prefix="#")
+
+        # ------------------------------------------------------------------ #
+        # JS / TS / Java / C / C++ / C# / Go / Rust / PHP / Dart /           #
+        # Kotlin / Scala / Swift / Solidity                                   #
+        # — /** JSDoc/Javadoc block */ or leading // lines                    #
+        # ------------------------------------------------------------------ #
+        return _extract_block_or_line_comment(
+            body_lines,
+            block_start="/**",
+            block_end="*/",
+            line_prefix="//",
+        )
+
+    except Exception:
+        return None
+
+
+def _extract_line_comment(lines: list[str], prefix: str) -> str | None:
+    """Collect consecutive leading comment lines that start with `prefix`."""
+    collected: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith(prefix):
+            collected.append(stripped[len(prefix) :].strip())
+        elif not stripped:
+            # Allow one blank line inside the comment block
+            if collected:
+                collected.append("")
+        else:
+            break
+    # Trim trailing blanks
+    while collected and not collected[-1]:
+        collected.pop()
+    return "\n".join(collected) if collected else None
+
+
+def _extract_block_or_line_comment(
+    lines: list[str],
+    block_start: str,
+    block_end: str,
+    line_prefix: str,
+) -> str | None:
+    """Try to extract a block comment (block_start…block_end) or leading
+    line_prefix comment lines from the node body.
+
+    The search skips the first line (which is typically the declaration
+    itself, e.g. ``function foo() {``) and looks for a doc-comment inside
+    the opening lines of the body — the common pattern in JS/TS/Java/etc.
+    Also tries leading line-prefix comments that precede the declaration.
+    """
+    collected: list[str] = []
+    in_block = False
+
+    # We search ALL body lines (not just from the top) because many languages
+    # place the doc-comment as the first statement inside the opening brace,
+    # not before the declaration line.
+    for raw in lines:
+        stripped = raw.strip()
+        if not in_block:
+            if stripped.startswith(block_start):
+                in_block = True
+                rest = stripped[len(block_start) :]
+                if block_end in rest:
+                    # Single-line block: /** text */
+                    inner = rest[: rest.index(block_end)].strip()
+                    return inner or None
+                if rest.strip():
+                    collected.append(rest.strip().lstrip("*").strip())
+                continue
+            # Skip non-comment lines while not yet in a block
+            # (e.g. the declaration line itself)
+            if collected:
+                # We were collecting line-prefix comments but hit something else
+                break
+            # Don't break — keep scanning for a block comment further down
+            continue
+        else:
+            if block_end in stripped:
+                before = stripped[: stripped.index(block_end)].strip().lstrip("*").strip()
+                if before:
+                    collected.append(before)
+                break
+            inner = stripped.lstrip("*").strip()
+            collected.append(inner)
+
+    if collected:
+        while collected and not collected[0]:
+            collected.pop(0)
+        while collected and not collected[-1]:
+            collected.pop()
+        return "\n".join(collected) if collected else None
+
+    # Fallback: consecutive line-prefix comments from the start of the body
+    return _extract_line_comment(lines, prefix=line_prefix)
+
+
 def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> str:
     """Build markdown content for a single community.
 
@@ -96,7 +431,7 @@ def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> st
     lines.append("## Component Details")
     lines.append("")
     if member_qns:
-        # Add detailed signature and docstring for classes/functions
+        # Add detailed signature and doc-comment for classes/functions
         for qn in member_qns[:50]:
             node = store.get_node(qn)
             if not node or node.kind == "File":
@@ -107,42 +442,29 @@ def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> st
             lines.append(f"**File:** `{node.file_path}` (Lines {node.line_start}-{node.line_end})")
             lines.append("")
 
-            # Add signature
-            signature = f"def {node_name}"
-            if node.kind == "Class":
-                signature = f"class {node_name}"
-
-            if getattr(node, "params", None):
-                signature += str(node.params)
-            if getattr(node, "return_type", None) and node.return_type != "None":
-                signature += f" -> {node.return_type}"
-            elif node.kind in ("Function", "Method"):
-                signature += " -> None"
-
             if node.kind in ("Function", "Method", "Class"):
-                lines.append(f"```python")
-                lines.append(f"{signature}:")
-                lines.append(f"```")
+                # --- Build signature string (language-aware) ---
+                lang = (node.language or "").lower()
+                signature = _build_signature(
+                    node_name,
+                    node.kind,
+                    lang,
+                    getattr(node, "params", None),
+                    getattr(node, "return_type", None),
+                )
+                fence_lang = _fence_language(lang)
+                lines.append(f"```{fence_lang}")
+                lines.append(signature)
+                lines.append("```")
                 lines.append("")
 
-                # Extract docstring
-                try:
-                    import ast
-                    import textwrap
-                    with open(node.file_path, encoding='utf-8') as f:
-                        source_lines = f.read().splitlines()[node.line_start - 1:node.line_end]
-                    text = "\n".join(source_lines)
-                    text = textwrap.dedent(text)
-                    tree = ast.parse(text)
-                    if tree.body:
-                        doc = ast.get_docstring(tree.body[0])
-                        if doc:
-                            lines.append("**Docstring:**")
-                            for d_line in doc.splitlines():
-                                lines.append(f"> {d_line}")
-                            lines.append("")
-                except Exception:
-                    pass
+                # --- Extract leading doc-comment (language-aware) ---
+                doc = _extract_doc_comment(node.file_path, node.line_start, node.line_end, lang)
+                if doc:
+                    lines.append("**Description:**")
+                    for d_line in doc.splitlines():
+                        lines.append(f"> {d_line}")
+                    lines.append("")
 
             # Dependencies / Outgoing edges for this specific node
             try:
@@ -158,7 +480,7 @@ def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> st
                     lines.append("")
             except Exception:
                 pass
-            
+
             lines.append("---")
             lines.append("")
 
@@ -180,9 +502,7 @@ def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> st
                 flow_name = _sanitize_name(flow.get("name", "unnamed"))
                 criticality = flow.get("criticality", 0.0)
                 depth = flow.get("depth", 0)
-                lines.append(
-                    f"- **{flow_name}** (criticality: {criticality:.2f}, depth: {depth})"
-                )
+                lines.append(f"- **{flow_name}** (criticality: {criticality:.2f}, depth: {depth})")
             if len(community_flows) > 10:
                 lines.append(f"- *... and {len(community_flows) - 10} more flows.*")
         else:
