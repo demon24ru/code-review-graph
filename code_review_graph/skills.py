@@ -186,6 +186,71 @@ def install_platform_configs(
 # --- Skill file contents ---
 
 _SKILLS: dict[str, dict[str, str]] = {
+    "brainstorm-task.md": {
+        "name": "Brainstorm Task",
+        "description": (
+            "Plan and track implementation work using the Task DAG system. "
+            "Create structured task trees linked to real code, enforce single-pipeline discipline, "
+            "and generate handoff context for coders."
+        ),
+        "body": (
+            "## Brainstorm Task\n\n"
+            "Use `task_get_active_root` to check pipeline state, then `task_create` for root + subtasks.\n"
+            "Link code via `task_link_code(qualified_name=...)` using results from `semantic_search_nodes_tool`.\n"
+            "Add notes, contracts, and DAG edges, then run `task_validate` before handing off.\n\n"
+            "See the full workflow in `skills/brainstorm-task/SKILL.md`."
+        ),
+    },
+    "analyze-codebase.md": {
+        "name": "Analyze Codebase",
+        "description": (
+            "Deep structural analysis using communities, flows, wiki, and embedding search. "
+            "Understand architecture and module boundaries without reading files."
+        ),
+        "body": (
+            "## Analyze Codebase\n\n"
+            "1. `list_graph_stats_tool` + `get_architecture_overview_tool` for orientation.\n"
+            "2. `list_communities_tool` / `get_community_tool` for module boundaries.\n"
+            "3. `semantic_search_nodes_tool` to find functions/classes.\n"
+            "4. `query_graph_tool` (callers_of, callees_of, tests_for, children_of) for relationships.\n"
+            "5. `list_flows_tool` + `get_flow_tool` for execution paths.\n"
+            "6. `generate_wiki_tool` + `get_wiki_page_tool` for human-readable docs.\n\n"
+            "See the full workflow in `skills/analyze-codebase/SKILL.md`."
+        ),
+    },
+    "refactor-code.md": {
+        "name": "Refactor Code",
+        "description": (
+            "Safe graph-powered refactoring with dead code detection, rename preview, "
+            "workspace audit, and SCIP export. Always preview before applying."
+        ),
+        "body": (
+            "## Refactor Code\n\n"
+            "1. `audit_workspace_tool` — health check (dead code, large functions, cycles).\n"
+            "2. `refactor_tool(mode='dead_code')` — find unreferenced code.\n"
+            "3. `refactor_tool(mode='suggest')` — community-driven suggestions.\n"
+            "4. `refactor_tool(mode='rename', old_name=..., new_name=...)` — preview renames.\n"
+            "5. `apply_refactor_tool(refactor_id)` — apply after review.\n"
+            "6. `export_scip_tool` / `import_scip_tool` — cross-tool interop.\n\n"
+            "See the full workflow in `skills/refactor-code/SKILL.md`."
+        ),
+    },
+    "trace-impact.md": {
+        "name": "Trace Impact",
+        "description": (
+            "Line-level edit region analysis, dataflow tracing, and cross-repository search. "
+            "Use before editing to understand blast radius with line-level precision."
+        ),
+        "body": (
+            "## Trace Impact\n\n"
+            "1. `analyze_edit_region_tool(file, line_start, line_end)` — line-level blast radius.\n"
+            "2. `trace_dataflow_tool(source, sink)` — can data flow from A to B?\n"
+            "3. `get_affected_flows_tool(changed_files)` — impacted execution paths.\n"
+            "4. `cross_repo_search_tool(query)` — search across registered repos.\n"
+            "5. `task_find_for_impact(file_paths)` — open tasks in blast radius.\n\n"
+            "See the full workflow in `skills/trace-impact/SKILL.md`."
+        ),
+    },
     "explore-codebase.md": {
         "name": "Explore Codebase",
         "description": "Navigate and understand codebase structure using the knowledge graph",
@@ -274,22 +339,25 @@ _SKILLS: dict[str, dict[str, str]] = {
 def generate_skills(repo_root: Path, skills_dir: Path | None = None) -> Path:
     """Generate Claude Code skill files.
 
-    Creates `.claude/skills/` directory with 4 skill markdown files,
-    each containing frontmatter and instructions.
+    Creates `skills/<name>/SKILL.md` files for the OpenCode/Claude Code
+    plugin format AND `.claude/skills/<name>.md` files for the legacy
+    Claude Code skills format.  Both outputs are generated so every
+    AI coding assistant can discover them.
 
     Args:
         repo_root: Repository root directory.
         skills_dir: Custom skills directory. Defaults to repo_root/.claude/skills.
 
     Returns:
-        Path to the skills directory.
+        Path to the legacy skills directory (repo_root/.claude/skills).
     """
     if skills_dir is None:
         skills_dir = repo_root / ".claude" / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
 
     for filename, skill in _SKILLS.items():
-        path = skills_dir / filename
+        # --- Legacy format: .claude/skills/<name>.md ---
+        legacy_path = skills_dir / filename
         content = (
             "---\n"
             f"name: {skill['name']}\n"
@@ -297,8 +365,22 @@ def generate_skills(repo_root: Path, skills_dir: Path | None = None) -> Path:
             "---\n\n"
             f"{skill['body']}\n"
         )
-        path.write_text(content)
-        logger.info("Wrote skill: %s", path)
+        legacy_path.write_text(content)
+        logger.info("Wrote legacy skill: %s", legacy_path)
+
+        # --- OpenCode/plugin format: skills/<slug>/SKILL.md ---
+        slug = filename.replace(".md", "")
+        plugin_skill_dir = repo_root / "skills" / slug
+        plugin_skill_dir.mkdir(parents=True, exist_ok=True)
+        plugin_path = plugin_skill_dir / "SKILL.md"
+        # Only write if the SKILL.md doesn't already exist (preserve
+        # hand-crafted detailed versions which are richer than the
+        # auto-generated summary in `body`).
+        if not plugin_path.exists():
+            plugin_path.write_text(content)
+            logger.info("Wrote plugin skill: %s", plugin_path)
+        else:
+            logger.info("Skipped existing plugin skill: %s", plugin_path)
 
     return skills_dir
 

@@ -193,7 +193,7 @@ class TestHybridSearch:
         assert len(results) > 0
 
         expected_fields = {
-            "name", "qualified_name", "kind", "file_path",
+            "id", "name", "qualified_name", "kind", "file_path",
             "line_start", "line_end", "language", "params",
             "return_type", "signature", "score",
         }

@@ -1,0 +1,1740 @@
+"""Algorithmic analysis layer for the Task DAG.
+
+Pure algorithms operating over task and code graph data. No LLM logic.
+All public functions accept a ``sqlite3.Connection`` and return plain dicts.
+
+Single-pipeline discipline
+--------------------------
+The system enforces a strict one-root-at-a-time workflow:
+
+1. Brainstorm phase: create ONE root task, decompose into subtasks, add
+   contracts, notes, code_refs.  Do NOT start implementation until
+   ``task_validate`` passes with no errors.
+2. Implementation phase: work leaf-by-leaf until all subtasks are ``done``.
+3. Close the root (``done`` / ``archived``) before creating a new one.
+
+Many analysis functions accept ``task_id=None`` and will auto-detect the
+active root via :func:`get_active_root` so callers rarely need to pass IDs.
+
+Functions:
+- get_active_root     — return the single open root task (or None)
+- find_conflicts      — tasks that modify the same code nodes
+- check_isolation     — isolation score based on external callers/callees
+- blast_radius        — code graph impact of a task's code refs
+- execution_order     — parallelism-aware execution levels
+- validate_dag        — gate-check before handoff to coder
+- export_task         — flat data structure for handoff to other workflows
+- roadmap             — aggregated progress snapshot
+- roadmap_diff        — what changed since a given timestamp
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Optional
+
+from .tasks import (
+    _collect_ancestor_ids,
+    _collect_subtree_ids,
+    _row_to_dict,
+    get_active_root,
+    get_task,
+    get_task_code_refs,
+    get_task_edges,
+    list_notes,
+    list_contracts,
+    topological_sort_tasks,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_root(
+    conn: sqlite3.Connection,
+    task_id: Optional[str],
+    fn_name: str,
+) -> str:
+    """Resolve *task_id* to a concrete ID.
+
+    If *task_id* is None, returns the ID of the single open root task.
+    Raises ``KeyError`` if no open root exists.
+    """
+    if task_id is not None:
+        return task_id
+    root = get_active_root(conn)
+    if root is None:
+        raise KeyError(
+            f"{fn_name}: no open root task found. "
+            "Create a root task first or pass an explicit task_id."
+        )
+    return root["id"]
+
+
+# ---------------------------------------------------------------------------
+# Internal BFS helpers over the code graph (edges table)
+# ---------------------------------------------------------------------------
+
+
+def _bfs_code_graph(
+    conn: sqlite3.Connection,
+    start_node_ids: set[int],
+    direction: str,  # "outgoing" | "incoming" | "both"
+    depth: int,
+) -> set[int]:
+    """BFS over ``nodes``/``edges`` code graph tables.
+
+    *direction* controls edge traversal:
+    - ``"outgoing"`` follows  source → target  (callee direction)
+    - ``"incoming"`` follows  target → source  (caller direction)
+    - ``"both"``     follows both directions
+
+    Returns all reachable node IDs (excluding the start nodes).
+    """
+    visited: set[int] = set(start_node_ids)
+    frontier: set[int] = set(start_node_ids)
+
+    for _ in range(depth):
+        if not frontier:
+            break
+        next_frontier: set[int] = set()
+
+        frontier_list = list(frontier)
+        batch_size = 450
+
+        # Collect qualified names for frontier nodes
+        qn_map: dict[int, str] = {}
+        for i in range(0, len(frontier_list), batch_size):
+            batch = frontier_list[i : i + batch_size]
+            ph = ", ".join("?" * len(batch))
+            rows = conn.execute(  # noqa: S608
+                f"SELECT id, qualified_name FROM nodes WHERE id IN ({ph})", batch
+            ).fetchall()
+            for r in rows:
+                qn_map[r["id"]] = r["qualified_name"]
+
+        frontier_qns = list(qn_map.values())
+        if not frontier_qns:
+            break
+
+        # Collect neighbor qualified names
+        neighbor_qns: set[str] = set()
+        for i in range(0, len(frontier_qns), batch_size):
+            batch_qns = frontier_qns[i : i + batch_size]
+            ph = ", ".join("?" * len(batch_qns))
+            if direction in ("outgoing", "both"):
+                rows = conn.execute(  # noqa: S608
+                    f"SELECT target_qualified FROM edges WHERE source_qualified IN ({ph})",
+                    batch_qns,
+                ).fetchall()
+                neighbor_qns.update(r[0] for r in rows)
+            if direction in ("incoming", "both"):
+                rows = conn.execute(  # noqa: S608
+                    f"SELECT source_qualified FROM edges WHERE target_qualified IN ({ph})",
+                    batch_qns,
+                ).fetchall()
+                neighbor_qns.update(r[0] for r in rows)
+
+        if not neighbor_qns:
+            break
+
+        # Resolve qualified names back to node IDs
+        neighbor_qns_list = list(neighbor_qns)
+        for i in range(0, len(neighbor_qns_list), batch_size):
+            batch_qns = neighbor_qns_list[i : i + batch_size]
+            ph = ", ".join("?" * len(batch_qns))
+            rows = conn.execute(  # noqa: S608
+                f"SELECT id FROM nodes WHERE qualified_name IN ({ph})", batch_qns
+            ).fetchall()
+            for r in rows:
+                nid = r[0]
+                if nid not in visited:
+                    visited.add(nid)
+                    next_frontier.add(nid)
+
+        frontier = next_frontier
+
+    return visited - start_node_ids
+
+
+def _get_code_node_ids_for_task(conn: sqlite3.Connection, task_id: str) -> set[int]:
+    """Return the set of code_node_ids linked to *task_id*."""
+    rows = conn.execute(
+        "SELECT code_node_id FROM task_code_refs WHERE task_id = ?", (task_id,)
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _get_all_covered_node_ids(
+    conn: sqlite3.Connection, task_ids: list[str]
+) -> dict[str, set[int]]:
+    """Return mapping task_id → set of code_node_ids for a list of tasks."""
+    result: dict[str, set[int]] = {tid: set() for tid in task_ids}
+    if not task_ids:
+        return result
+    ph = ", ".join("?" * len(task_ids))
+    rows = conn.execute(  # noqa: S608
+        f"SELECT task_id, code_node_id FROM task_code_refs WHERE task_id IN ({ph})",
+        task_ids,
+    ).fetchall()
+    for r in rows:
+        result[r[0]].add(r[1])
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 1. find_conflicts
+# ---------------------------------------------------------------------------
+
+
+def find_conflicts(
+    conn: sqlite3.Connection,
+    root_task_id: str,
+) -> list[dict[str, Any]]:
+    """Find pairs of leaf tasks whose code_refs intersect.
+
+    Intersection of code_node_ids indicates potential conflicts:
+    - ``both_modify``  — both tasks have a *modifies/creates/deletes* ref
+    - ``read_write``   — one reads while the other writes
+
+    Returns a list of conflict records.
+    """
+    get_task(conn, root_task_id)
+    subtree_ids = _collect_subtree_ids(conn, root_task_id)
+
+    # Leaf tasks: not a parent of anything in the subtree
+    ph_st = ", ".join("?" * len(subtree_ids))
+    parent_ids = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT parent_id FROM tasks WHERE parent_id IN ({ph_st})",
+            subtree_ids,
+        ).fetchall()
+    )
+    leaf_ids = [tid for tid in subtree_ids if tid not in parent_ids]
+
+    if len(leaf_ids) < 2:
+        return []
+
+    # Fetch code refs per leaf task, including ref_type
+    ref_map: dict[str, dict[int, list[str]]] = {lid: defaultdict(list) for lid in leaf_ids}
+    ph = ", ".join("?" * len(leaf_ids))
+    rows = conn.execute(  # noqa: S608
+        f"SELECT task_id, code_node_id, ref_type FROM task_code_refs WHERE task_id IN ({ph})",
+        leaf_ids,
+    ).fetchall()
+    for r in rows:
+        ref_map[r[0]][r[1]].append(r[2])
+
+    _write_types = frozenset({"modifies", "creates", "deletes"})
+
+    conflicts: list[dict[str, Any]] = []
+    leaf_list = list(leaf_ids)
+    for i, ta in enumerate(leaf_list):
+        for tb in leaf_list[i + 1 :]:
+            shared = set(ref_map[ta].keys()) & set(ref_map[tb].keys())
+            if not shared:
+                continue
+
+            # Determine conflict type per shared node
+            shared_nodes: list[dict[str, Any]] = []
+            for nid in shared:
+                types_a = set(ref_map[ta][nid])
+                types_b = set(ref_map[tb][nid])
+                if types_a & _write_types and types_b & _write_types:
+                    conflict_type = "both_modify"
+                elif (types_a & _write_types and "reads" in types_b) or (
+                    "reads" in types_a and types_b & _write_types
+                ):
+                    conflict_type = "read_write"
+                else:
+                    conflict_type = "shared_ref"
+
+                shared_nodes.append({
+                    "code_node_id": nid,
+                    "task_a_ref_types": sorted(types_a),
+                    "task_b_ref_types": sorted(types_b),
+                    "conflict_type": conflict_type,
+                })
+
+            overall_type = (
+                "both_modify"
+                if any(n["conflict_type"] == "both_modify" for n in shared_nodes)
+                else (
+                    "read_write"
+                    if any(n["conflict_type"] == "read_write" for n in shared_nodes)
+                    else "shared_ref"
+                )
+            )
+            conflicts.append({
+                "task_a": ta,
+                "task_b": tb,
+                "shared_nodes": shared_nodes,
+                "conflict_type": overall_type,
+            })
+
+    return conflicts
+
+
+# ---------------------------------------------------------------------------
+# 2. check_isolation
+# ---------------------------------------------------------------------------
+
+
+def check_isolation(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> dict[str, Any]:
+    """Score how isolated a task is by measuring external code graph dependencies.
+
+    Algorithm:
+    1. Collect code_node_ids from task's code refs (internal nodes).
+    2. BFS both directions on the code graph to find callers + callees.
+    3. External nodes = reachable nodes NOT in the internal set.
+    4. isolation_score = internal / (internal + external), capped at [0, 1].
+
+    Returns::
+
+        {
+            internal_nodes: int,
+            external_dependencies: int,   # callees outside the task
+            external_dependents: int,     # callers outside the task
+            isolation_score: float,
+            external_nodes: [{ id, name, qualified_name, file_path, ... }]
+        }
+    """
+    internal_ids = _get_code_node_ids_for_task(conn, task_id)
+
+    if not internal_ids:
+        return {
+            "internal_nodes": 0,
+            "external_dependencies": 0,
+            "external_dependents": 0,
+            "isolation_score": 1.0,
+            "external_nodes": [],
+        }
+
+    callees = _bfs_code_graph(conn, internal_ids, "outgoing", depth=1)
+    callers = _bfs_code_graph(conn, internal_ids, "incoming", depth=1)
+
+    external_ids = (callees | callers) - internal_ids
+
+    internal_count = len(internal_ids)
+    external_count = len(external_ids)
+    score = (
+        internal_count / (internal_count + external_count)
+        if (internal_count + external_count) > 0
+        else 1.0
+    )
+
+    # Fetch metadata for external nodes
+    external_nodes: list[dict[str, Any]] = []
+    if external_ids:
+        ext_list = list(external_ids)
+        ph = ", ".join("?" * len(ext_list))
+        rows = conn.execute(  # noqa: S608
+            f"SELECT id, kind, name, qualified_name, file_path, line_start, line_end FROM nodes WHERE id IN ({ph})",
+            ext_list,
+        ).fetchall()
+        external_nodes = [_row_to_dict(r) for r in rows]
+
+    callee_external = len(callees - internal_ids)
+    caller_external = len(callers - internal_ids)
+
+    return {
+        "internal_nodes": internal_count,
+        "external_dependencies": callee_external,
+        "external_dependents": caller_external,
+        "isolation_score": round(score, 4),
+        "external_nodes": external_nodes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. blast_radius
+# ---------------------------------------------------------------------------
+
+
+def blast_radius(
+    conn: sqlite3.Connection,
+    task_id: str,
+    depth: int = 2,
+) -> dict[str, Any]:
+    """Compute the blast radius of a task through the code graph.
+
+    Starting from the task's code_refs, performs a BFS of depth *depth*
+    in both directions. Then cross-references which affected nodes are already
+    covered by other tasks (via task_code_refs).
+
+    Returns::
+
+        {
+            direct_nodes: [...],     # task's own code refs
+            affected_nodes: [...],   # reachable within depth
+            uncovered_nodes: [...],  # affected but not in any task's refs
+            coverage_ratio: float
+        }
+    """
+    internal_ids = _get_code_node_ids_for_task(conn, task_id)
+
+    if not internal_ids:
+        return {
+            "direct_nodes": [],
+            "affected_nodes": [],
+            "uncovered_nodes": [],
+            "coverage_ratio": 1.0,
+        }
+
+    affected_ids = _bfs_code_graph(conn, internal_ids, "both", depth=depth)
+    all_ids = internal_ids | affected_ids
+
+    # Find all code_node_ids covered by any task
+    covered_rows = conn.execute(
+        "SELECT DISTINCT code_node_id FROM task_code_refs"
+    ).fetchall()
+    covered_globally: set[int] = {r[0] for r in covered_rows}
+
+    uncovered_ids = all_ids - covered_globally
+
+    def _fetch_nodes(ids: set[int]) -> list[dict[str, Any]]:
+        if not ids:
+            return []
+        id_list = list(ids)
+        ph = ", ".join("?" * len(id_list))
+        rows = conn.execute(  # noqa: S608
+            f"SELECT id, kind, name, qualified_name, file_path, line_start, line_end FROM nodes WHERE id IN ({ph})",
+            id_list,
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    all_count = len(all_ids)
+    coverage_ratio = (
+        round((all_count - len(uncovered_ids)) / all_count, 4) if all_count > 0 else 1.0
+    )
+
+    return {
+        "direct_nodes": _fetch_nodes(internal_ids),
+        "affected_nodes": _fetch_nodes(affected_ids),
+        "uncovered_nodes": _fetch_nodes(uncovered_ids),
+        "coverage_ratio": coverage_ratio,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. execution_order
+# ---------------------------------------------------------------------------
+
+
+def execution_order(
+    conn: sqlite3.Connection,
+    root_task_id: str,
+) -> list[dict[str, Any]]:
+    """Group leaf tasks into parallelism levels based on *depends_on* edges.
+
+    Level 0 = no dependencies; level N = depends only on level < N tasks.
+
+    Returns::
+
+        [
+            { "level": 0, "tasks": [task_dict, ...] },
+            { "level": 1, "tasks": [...] },
+            ...
+        ]
+    """
+    get_task(conn, root_task_id)
+    subtree_ids = set(_collect_subtree_ids(conn, root_task_id))
+
+    # Leaf tasks only
+    subtree_list = list(subtree_ids)
+    ph_st = ", ".join("?" * len(subtree_list))
+    parent_ids = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT parent_id FROM tasks WHERE parent_id IN ({ph_st})",
+            subtree_list,
+        ).fetchall()
+    )
+    leaf_ids = [tid for tid in subtree_ids if tid not in parent_ids]
+
+    if not leaf_ids:
+        return []
+
+    leaf_set = set(leaf_ids)
+
+    # Build in-degree and adjacency for depends_on within leaf set
+    in_degree: dict[str, int] = {lid: 0 for lid in leaf_ids}
+    successors: dict[str, list[str]] = {lid: [] for lid in leaf_ids}
+
+    dep_rows = conn.execute(
+        "SELECT source_task_id, target_task_id FROM task_edges WHERE type = 'depends_on'"
+    ).fetchall()
+
+    for r in dep_rows:
+        src, tgt = r[0], r[1]
+        # src depends_on tgt → tgt must be done before src
+        if src in leaf_set and tgt in leaf_set:
+            in_degree[src] += 1
+            successors[tgt].append(src)
+
+    # BFS level assignment
+    levels: list[list[str]] = []
+    current_level = [lid for lid in leaf_ids if in_degree[lid] == 0]
+
+    while current_level:
+        levels.append(current_level)
+        next_level: list[str] = []
+        for node in current_level:
+            for succ in successors.get(node, []):
+                in_degree[succ] -= 1
+                if in_degree[succ] == 0:
+                    next_level.append(succ)
+        current_level = next_level
+
+    # Fetch full task rows
+    all_leaf_ids = [tid for level in levels for tid in level]
+    ph = ", ".join("?" * len(all_leaf_ids))
+    rows = conn.execute(  # noqa: S608
+        f"SELECT * FROM tasks WHERE id IN ({ph})", all_leaf_ids
+    ).fetchall()
+    id_to_row: dict[str, dict[str, Any]] = {r["id"]: _row_to_dict(r) for r in rows}
+
+    return [
+        {
+            "level": i,
+            "tasks": [id_to_row[tid] for tid in level if tid in id_to_row],
+        }
+        for i, level in enumerate(levels)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 5. validate_dag
+# ---------------------------------------------------------------------------
+
+
+def validate_dag(
+    conn: sqlite3.Connection,
+    root_task_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Gate-check before handing off the DAG to a coder.
+
+    If *root_task_id* is None, the active root task is auto-detected.
+
+    Runs a set of algorithmic checks and returns::
+
+        {
+            errors:   [str, ...],   # blocking issues
+            warnings: [str, ...],   # non-blocking, worth addressing
+            ok:       [str, ...],   # passed checks
+        }
+    """
+    root_task_id = _resolve_root(conn, root_task_id, "validate_dag")
+    get_task(conn, root_task_id)
+    subtree_ids = _collect_subtree_ids(conn, root_task_id)
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    ok: list[str] = []
+
+    # --- Fetch all tasks in subtree ---
+    ph = ", ".join("?" * len(subtree_ids))
+    task_rows = conn.execute(  # noqa: S608
+        f"SELECT * FROM tasks WHERE id IN ({ph})", subtree_ids
+    ).fetchall()
+    tasks_by_id: dict[str, dict[str, Any]] = {r["id"]: _row_to_dict(r) for r in task_rows}
+
+    parent_ids_in_subtree = set(
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT parent_id FROM tasks WHERE parent_id IS NOT NULL"
+        ).fetchall()
+    ) & set(subtree_ids)
+
+    leaf_ids = [tid for tid in subtree_ids if tid not in parent_ids_in_subtree]
+    leaf_tasks = [tasks_by_id[lid] for lid in leaf_ids if lid in tasks_by_id]
+
+    # --- Check 1: Cyclic depends_on ---
+    try:
+        topological_sort_tasks(conn, root_task_id)
+        ok.append("No circular dependencies in depends_on edges")
+    except ValueError:
+        errors.append("Cycle detected in depends_on edges — topological sort impossible")
+
+    # --- Check 2: Ready tasks depend only on done tasks ---
+    dep_rows = conn.execute(  # noqa: S608
+        f"SELECT source_task_id, target_task_id FROM task_edges "
+        f"WHERE type = 'depends_on' AND source_task_id IN ({ph})",
+        subtree_ids,
+    ).fetchall()
+    dep_map: dict[str, list[str]] = defaultdict(list)
+    for r in dep_rows:
+        dep_map[r[0]].append(r[1])
+
+    blocked_ready: list[str] = []
+    for task in leaf_tasks:
+        if task["status"] == "ready":
+            for dep_id in dep_map.get(task["id"], []):
+                dep_task = tasks_by_id.get(dep_id)
+                if dep_task and dep_task["status"] != "done":
+                    blocked_ready.append(
+                        f"task '{task['title']}' is 'ready' but depends on "
+                        f"'{dep_task['title']}' which is '{dep_task['status']}'"
+                    )
+
+    if blocked_ready:
+        errors.extend(blocked_ready)
+    else:
+        ok.append("All ready tasks have their dependencies satisfied")
+
+    # --- Check 3: Leaf tasks with no code_refs ---
+    covered_tasks = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT task_id FROM task_code_refs WHERE task_id IN ({ph})",
+            subtree_ids,
+        ).fetchall()
+    )
+    no_refs = [
+        t for t in leaf_tasks if t["id"] not in covered_tasks and t["status"] != "archived"
+    ]
+    if no_refs:
+        for t in no_refs:
+            warnings.append(
+                f"Leaf task '{t['title']}' has no code refs — impact on codebase is unknown"
+            )
+    else:
+        ok.append("All leaf tasks have at least one code ref")
+
+    # --- Check 4: Open questions ---
+    open_questions = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'question' AND status = 'open'",
+        subtree_ids,
+    ).fetchone()[0]
+    if open_questions > 0:
+        warnings.append(f"{open_questions} unresolved question(s) remain — resolve before handing off")
+    else:
+        ok.append("No open questions")
+
+    # --- Check 5: Unverified assumptions ---
+    open_assumptions = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'assumption' AND status = 'open'",
+        subtree_ids,
+    ).fetchone()[0]
+    if open_assumptions > 0:
+        warnings.append(f"{open_assumptions} unverified assumption(s) — verify before coding")
+    else:
+        ok.append("No unverified assumptions")
+
+    # --- Check 6: Contracts in 'proposed' status where active tasks are participants ---
+    # Use contract_links for the new many-to-many schema; fall back gracefully
+    # if contract_links doesn't exist yet (pre-v7 DB).
+    try:
+        proposed_contract_ids = set(
+            r[0]
+            for r in conn.execute(  # noqa: S608
+                f"SELECT DISTINCT cl.contract_id "
+                f"FROM contract_links cl "
+                f"JOIN contracts c ON c.id = cl.contract_id "
+                f"WHERE cl.task_id IN ({ph}) AND c.status = 'proposed'",
+                subtree_ids,
+            ).fetchall()
+        )
+    except Exception:
+        # contract_links not yet migrated — use old columns
+        proposed_contract_ids = set(
+            r[0]
+            for r in conn.execute(  # noqa: S608
+                f"SELECT id FROM contracts "
+                f"WHERE (provider_task_id IN ({ph}) OR consumer_task_id IN ({ph})) "
+                f"AND status = 'proposed'",
+                (*subtree_ids, *subtree_ids),
+            ).fetchall()
+        )
+
+    active_proposed: list[str] = []
+    for cid in proposed_contract_ids:
+        # Find any active (ready/in_progress) participant
+        try:
+            participant_tasks = conn.execute(
+                "SELECT task_id FROM contract_links WHERE contract_id = ?", (cid,)
+            ).fetchall()
+        except Exception:
+            continue
+        cname_row = conn.execute("SELECT name, contract_type FROM contracts WHERE id=?", (cid,)).fetchone()
+        cname = cname_row[0] if cname_row else cid
+        for (ptask_id,) in participant_tasks:
+            t = tasks_by_id.get(ptask_id)
+            if t and t.get("status") in ("ready", "in_progress"):
+                active_proposed.append(
+                    f"Contract '{cname}' is still 'proposed' but task "
+                    f"'{t['title']}' is '{t['status']}'"
+                )
+                break
+
+    if active_proposed:
+        errors.extend(active_proposed)
+    else:
+        ok.append("All active contracts are agreed or better")
+
+    # --- Check 7: Leaf tasks missing acceptance_criteria ---
+    missing_ac = [
+        t for t in leaf_tasks
+        if not t.get("acceptance_criteria") and t["status"] not in ("archived", "done")
+    ]
+    if missing_ac:
+        for t in missing_ac:
+            warnings.append(f"Leaf task '{t['title']}' has no acceptance_criteria")
+    else:
+        ok.append("All active leaf tasks have acceptance_criteria")
+
+    # --- Check 8: Leaf tasks missing description ---
+    missing_desc = [
+        t for t in leaf_tasks
+        if not t.get("description") and t["status"] not in ("archived", "done")
+    ]
+    if missing_desc:
+        for t in missing_desc:
+            errors.append(f"Leaf task '{t['title']}' has no description — coder cannot proceed")
+    else:
+        ok.append("All active leaf tasks have descriptions")
+
+    # --- Check 9: Non-leaf tasks with direct code_refs or contract_links ---
+    # When a parent task has been further decomposed, its code_refs and
+    # contract_links should live on the leaves, not the parent.
+    mixed_tasks: list[str] = []
+    for tid in subtree_ids:
+        if tid in parent_ids_in_subtree:  # this task has children
+            has_refs = conn.execute(
+                "SELECT 1 FROM task_code_refs WHERE task_id = ? LIMIT 1", (tid,)
+            ).fetchone()
+            has_links: Any = None
+            try:
+                has_links = conn.execute(
+                    "SELECT 1 FROM contract_links WHERE task_id = ? LIMIT 1", (tid,)
+                ).fetchone()
+            except Exception:
+                pass
+            if has_refs or has_links:
+                t = tasks_by_id.get(tid)
+                name = t["title"] if t else tid
+                mixed_tasks.append(name)
+    if mixed_tasks:
+        for name in mixed_tasks:
+            warnings.append(
+                f"Parent task '{name}' has direct code_refs or contract links "
+                "but also has subtasks — consider moving refs to leaf tasks"
+            )
+    else:
+        ok.append("No parent tasks with misplaced direct code_refs or contract links")
+
+    return {"errors": errors, "warnings": warnings, "ok": ok}
+
+
+# ---------------------------------------------------------------------------
+# 6. build_context
+# ---------------------------------------------------------------------------
+
+
+
+
+def _find_sibling_conflicts(
+    conn: sqlite3.Connection,
+    task_id: str,
+    parent_id: Optional[str],
+) -> list[dict[str, Any]]:
+    """Find conflicts between *task_id* and its siblings under the same parent."""
+    if parent_id is None:
+        return []
+
+    sibling_rows = conn.execute(
+        "SELECT id FROM tasks WHERE parent_id = ? AND id != ?", (parent_id, task_id)
+    ).fetchall()
+    sibling_ids = [r[0] for r in sibling_rows]
+
+    if not sibling_ids:
+        return []
+
+    task_refs = _get_code_node_ids_for_task(conn, task_id)
+    if not task_refs:
+        return []
+
+    conflicts: list[dict[str, Any]] = []
+    for sib_id in sibling_ids:
+        sib_refs = _get_code_node_ids_for_task(conn, sib_id)
+        shared = task_refs & sib_refs
+        if shared:
+            sib_task = get_task(conn, sib_id)
+            conflicts.append({
+                "sibling_task_id": sib_id,
+                "sibling_title": sib_task.get("title"),
+                "shared_node_count": len(shared),
+                "shared_node_ids": list(shared),
+            })
+
+    return conflicts
+
+
+# ---------------------------------------------------------------------------
+# 7. export_task
+# ---------------------------------------------------------------------------
+
+
+def export_task(
+    conn: sqlite3.Connection,
+    task_id: Optional[str] = None,
+    *,
+    include_analysis: bool = False,
+    include_source: bool = False,
+    repo_root: Optional[str] = None,
+) -> dict[str, Any]:
+    """Flat data export of a task for handoff to other workflows.
+
+    The single entry point for task context — replaces the old
+    ``build_context`` function.  By default returns a lightweight snapshot;
+    use flags to add expensive computed fields.
+
+    If *task_id* is None, the active root task is auto-detected via
+    :func:`get_active_root`.
+
+    Args:
+        task_id: Task to export. Defaults to the active root task.
+        include_analysis: If True, append ``isolation``, ``conflicts``, and
+            ``pipeline_state``.  Equivalent to the old ``build_context`` output.
+        include_source: If True, attach ``source_snippet`` (line range) to
+            each code ref so the LLM knows where to look without reading files.
+        repo_root: Base path for resolving relative file paths.
+
+    Returns a dict with:
+    - ``task``, ``parent_chain``, ``subtasks`` (with edges)
+    - ``edges``: ``{incoming, outgoing}``
+    - ``related_tasks``: task edges as flat list with direction
+    - ``code_refs``: linked code nodes (+ line range if include_source)
+    - ``notes``: all notes from task + ancestors
+    - ``contracts``: ``{as_provider, as_consumer}`` with participant lists
+    - ``isolation``: score + external_deps  (only if include_analysis)
+    - ``conflicts``: sibling code conflicts  (only if include_analysis)
+    - ``pipeline_state``: open items summary (only if include_analysis)
+    - ``open_items``: always present — counts of open questions/assumptions/contracts
+    """
+    task_id = _resolve_root(conn, task_id, "export_task")
+    task = get_task(conn, task_id)
+
+    # Parent chain
+    ancestor_ids = _collect_ancestor_ids(conn, task_id)
+    parent_chain = []
+    for aid in ancestor_ids[1:]:
+        try:
+            p = get_task(conn, aid)
+            parent_chain.append({"id": p["id"], "title": p["title"],
+                                  "description": p.get("description")})
+        except KeyError:
+            pass
+
+    # Subtasks with their edges
+    subtask_rows = conn.execute(
+        "SELECT * FROM tasks WHERE parent_id = ? ORDER BY created_at", (task_id,)
+    ).fetchall()
+    subtasks = []
+    for r in subtask_rows:
+        sub = _row_to_dict(r)
+        sub["edges"] = get_task_edges(conn, sub["id"], "both")
+        subtasks.append(sub)
+
+    # Edges: both incoming and outgoing
+    edges_raw = get_task_edges(conn, task_id, "both")
+    edges = {
+        "incoming": [e for e in edges_raw if e.get("target_task_id") == task_id],
+        "outgoing": [e for e in edges_raw if e.get("source_task_id") == task_id],
+    }
+
+    # related_tasks: flat list for easy scanning
+    related: list[dict[str, Any]] = []
+    for e in edges_raw:
+        direction = "outgoing" if e.get("source_task_id") == task_id else "incoming"
+        other_id = e.get("target_task_id") if direction == "outgoing" else e.get("source_task_id")
+        try:
+            other = get_task(conn, other_id)
+            related.append({
+                "id": other_id,
+                "title": other.get("title"),
+                "edge_type": e.get("type"),
+                "direction": direction,
+            })
+        except (KeyError, TypeError):
+            related.append({"id": other_id, "edge_type": e.get("type"), "direction": direction})
+
+    # Code refs
+    code_refs = get_task_code_refs(conn, task_id,
+                                   include_source=include_source, repo_root=repo_root)
+
+    # Notes from task + ancestor chain
+    all_notes = list_notes(conn, task_id, include_parent=True)
+
+    # Contracts — use new list_contracts(task_id=...) for participant-based lookup
+    try:
+        contracts_raw = list_contracts(conn, task_id=task_id)
+    except Exception:
+        contracts_raw = []
+    contracts_as_provider = [
+        c for c in contracts_raw if task_id in c.get("provider_task_ids", [])
+    ]
+    contracts_as_consumer = [
+        c for c in contracts_raw if task_id in c.get("consumer_task_ids", [])
+    ]
+
+    # Open items summary (always included)
+    open_questions = sum(
+        1 for n in all_notes if n.get("note_type") == "question" and n.get("status") == "open"
+    )
+    unresolved_constraints = sum(
+        1 for n in all_notes if n.get("note_type") == "constraint" and n.get("status") == "open"
+    )
+    unverified_assumptions = sum(
+        1 for n in all_notes if n.get("note_type") == "assumption" and n.get("status") == "open"
+    )
+    pending_contracts = sum(1 for c in contracts_raw if c.get("status") == "proposed")
+
+    result: dict[str, Any] = {
+        "task": task,
+        "parent_chain": parent_chain,
+        "subtasks": subtasks,
+        "edges": edges,
+        "related_tasks": related,
+        "code_refs": code_refs,
+        "notes": all_notes,
+        "contracts": {
+            "as_provider": contracts_as_provider,
+            "as_consumer": contracts_as_consumer,
+        },
+        "open_items": {
+            "unresolved_questions": open_questions,
+            "unresolved_constraints": unresolved_constraints,
+            "unverified_assumptions": unverified_assumptions,
+            "pending_contracts": pending_contracts,
+        },
+    }
+
+    if include_analysis:
+        # Isolation score
+        isolation_raw = check_isolation(conn, task_id)
+        result["isolation"] = {
+            "score": isolation_raw.get("isolation_score"),
+            "external_deps": isolation_raw.get("external_dependencies"),
+        }
+        # Conflicts with sibling tasks
+        result["conflicts"] = _find_sibling_conflicts(conn, task_id, task.get("parent_id"))
+        # Pipeline state
+        result["pipeline_state"] = {
+            "open_questions": open_questions,
+            "open_assumptions": unverified_assumptions,
+            "pending_contracts": pending_contracts,
+            "ready_for_coder": (
+                open_questions == 0 and unverified_assumptions == 0 and pending_contracts == 0
+            ),
+        }
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 8. roadmap
+# ---------------------------------------------------------------------------
+
+
+def roadmap(
+    conn: sqlite3.Connection,
+    root_task_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Aggregated progress snapshot for the root task and its entire subtree.
+
+    If *root_task_id* is None, the active root task is auto-detected.
+
+    Returns a structured roadmap useful for LLM orientation::
+
+        {
+            root: { id, title, status },
+            progress: { total, done, in_progress, ready, blocked, draft, archived, percent },
+            phases: [ { level, tasks: [{ id, title, status, blocked_by }] } ],
+            contracts: { total, agreed, pending, pending_list },
+            notes_count: int,
+            attention: {
+                ready_to_start: [task_id],
+                unresolved_questions: [note],
+                unverified_assumptions: [note],
+                low_isolation: [{ id, title, isolation_score }],
+                pending_contracts: [contract]
+            }
+        }
+    """
+    root_task_id = _resolve_root(conn, root_task_id, "roadmap")
+    root = get_task(conn, root_task_id)
+    subtree_ids = _collect_subtree_ids(conn, root_task_id)
+
+    ph = ", ".join("?" * len(subtree_ids))
+    task_rows = conn.execute(  # noqa: S608
+        f"SELECT * FROM tasks WHERE id IN ({ph})", subtree_ids
+    ).fetchall()
+    all_tasks = [_row_to_dict(r) for r in task_rows]
+
+    # Progress counts
+    status_counts: dict[str, int] = defaultdict(int)
+    for t in all_tasks:
+        status_counts[t["status"]] += 1
+
+    total = len(all_tasks)
+    done = status_counts.get("done", 0)
+    percent = round(done / total * 100) if total > 0 else 0
+
+    # Determine blocked tasks: tasks that depend on non-done tasks
+    dep_rows = conn.execute(  # noqa: S608
+        f"SELECT source_task_id, target_task_id FROM task_edges "
+        f"WHERE type = 'depends_on' AND source_task_id IN ({ph})",
+        subtree_ids,
+    ).fetchall()
+    task_deps: dict[str, list[str]] = defaultdict(list)
+    for r in dep_rows:
+        task_deps[r[0]].append(r[1])
+
+    tasks_by_id = {t["id"]: t for t in all_tasks}
+    blocked_by: dict[str, list[str]] = {}
+    for t in all_tasks:
+        if t["status"] in ("draft", "refined", "ready"):
+            unmet_deps = [
+                dep_id
+                for dep_id in task_deps.get(t["id"], [])
+                if tasks_by_id.get(dep_id, {}).get("status") != "done"
+            ]
+            if unmet_deps:
+                blocked_by[t["id"]] = unmet_deps
+
+    blocked_count = len(blocked_by)
+
+    # Build phases via execution_order
+    try:
+        phases_raw = execution_order(conn, root_task_id)
+        phases = []
+        for phase in phases_raw:
+            phase_tasks = []
+            for t in phase["tasks"]:
+                entry = {
+                    "id": t["id"],
+                    "title": t["title"],
+                    "status": t["status"],
+                }
+                if t["id"] in blocked_by:
+                    entry["blocked_by"] = blocked_by[t["id"]]
+                phase_tasks.append(entry)
+            phases.append({"level": phase["level"], "tasks": phase_tasks})
+    except ValueError:
+        phases = []
+
+    # Contracts summary — use scope_task_id (v7) with fallback to old columns (v6)
+    try:
+        contract_rows = conn.execute(  # noqa: S608
+            f"SELECT DISTINCT c.* FROM contracts c "
+            f"WHERE c.scope_task_id IN ({ph})",
+            subtree_ids,
+        ).fetchall()
+        if not contract_rows:
+            # Fallback: may be pre-v7 DB or contracts added without scope
+            contract_rows = conn.execute(  # noqa: S608
+                f"SELECT DISTINCT c.* FROM contracts c "
+                f"JOIN contract_links cl ON cl.contract_id = c.id "
+                f"WHERE cl.task_id IN ({ph})",
+                subtree_ids,
+            ).fetchall()
+    except Exception:
+        # Pre-v7 fallback
+        contract_rows = conn.execute(  # noqa: S608
+            f"SELECT * FROM contracts "
+            f"WHERE provider_task_id IN ({ph}) OR consumer_task_id IN ({ph})",
+            (*subtree_ids, *subtree_ids),
+        ).fetchall()
+    contracts_list = [_row_to_dict(r) for r in contract_rows]
+    pending_contracts = [c for c in contracts_list if c["status"] == "proposed"]
+
+    # Notes count
+    notes_count = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph})", subtree_ids
+    ).fetchone()[0]
+
+    # Attention block
+    ready_to_start = [
+        t["id"]
+        for t in all_tasks
+        if t["status"] == "ready" and t["id"] not in blocked_by
+    ]
+
+    unresolved_q = conn.execute(  # noqa: S608
+        f"SELECT * FROM notes WHERE task_id IN ({ph}) AND note_type = 'question' AND status = 'open'",
+        subtree_ids,
+    ).fetchall()
+
+    unresolved_a = conn.execute(  # noqa: S608
+        f"SELECT * FROM notes WHERE task_id IN ({ph}) AND note_type = 'assumption' AND status = 'open'",
+        subtree_ids,
+    ).fetchall()
+
+    # Low isolation: check leaf tasks with code refs
+    parent_ids_set = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT parent_id FROM tasks WHERE parent_id IN ({ph})",
+            subtree_ids,
+        ).fetchall()
+    )
+    leaf_ids_with_refs = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT task_id FROM task_code_refs WHERE task_id IN ({ph})",
+            subtree_ids,
+        ).fetchall()
+        if r[0] not in parent_ids_set
+    )
+
+    low_isolation: list[dict[str, Any]] = []
+    for lid in list(leaf_ids_with_refs)[:10]:  # cap at 10 to avoid heavy computation
+        iso = check_isolation(conn, lid)
+        if iso["isolation_score"] < 0.5:
+            t = tasks_by_id.get(lid, {})
+            low_isolation.append({
+                "id": lid,
+                "title": t.get("title"),
+                "isolation_score": iso["isolation_score"],
+            })
+
+    return {
+        "root": {"id": root["id"], "title": root["title"], "status": root["status"]},
+        "progress": {
+            "total": total,
+            "done": done,
+            "in_progress": status_counts.get("in_progress", 0),
+            "ready": status_counts.get("ready", 0),
+            "blocked": blocked_count,
+            "draft": status_counts.get("draft", 0),
+            "archived": status_counts.get("archived", 0),
+            "percent": percent,
+        },
+        "phases": phases,
+        "contracts": {
+            "total": len(contracts_list),
+            "agreed": sum(1 for c in contracts_list if c["status"] in ("agreed", "implemented", "verified")),
+            "pending": len(pending_contracts),
+            "pending_list": pending_contracts,
+        },
+        "notes_count": notes_count,
+        "attention": {
+            "ready_to_start": ready_to_start,
+            "unresolved_questions": [_row_to_dict(r) for r in unresolved_q],
+            "unverified_assumptions": [_row_to_dict(r) for r in unresolved_a],
+            "low_isolation": low_isolation,
+            "pending_contracts": pending_contracts,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9. check_parent_rollup
+# ---------------------------------------------------------------------------
+
+#: Statuses considered "terminal" for rollup purposes.
+_TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "archived"})
+#: Statuses considered "successfully closed" (not just abandoned).
+_DONE_STATUSES: frozenset[str] = frozenset({"done"})
+#: Statuses considered "abandoned".
+_ARCHIVED_STATUSES: frozenset[str] = frozenset({"archived"})
+
+
+def check_parent_rollup(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> dict[str, Any]:
+    """Check whether a task's parent (and ancestors) can change status.
+
+    Walks up the parent chain from *task_id* and for each ancestor reports:
+    - whether all direct children are in terminal status (done / archived)
+    - a suggested action with the reasoning
+
+    Does **not** modify any data — purely analytical.
+
+    Returns::
+
+        {
+            "task_id": "...",
+            "parent_chain": [
+                {
+                    "id": "...",
+                    "title": "...",
+                    "current_status": "in_progress",
+                    "children_total": 3,
+                    "children_done": 2,
+                    "children_archived": 1,
+                    "blocking_children": [
+                        { "id": "...", "title": "...", "status": "ready" }
+                    ],
+                    "can_close": false,   # all children done (none archived)
+                    "can_archive": false, # all children archived
+                    "can_complete": false,# all children terminal (done|archived)
+                    "suggestion": "2/3 children done, 1 blocking. Cannot close yet."
+                },
+                ...   # up to root
+            ],
+            "immediate_parent": { ... }   # first entry, None if task is root
+        }
+    """
+    task = get_task(conn, task_id)
+    parent_id = task.get("parent_id")
+
+    chain: list[dict[str, Any]] = []
+    current_id = parent_id
+
+    while current_id:
+        try:
+            parent = get_task(conn, current_id)
+        except KeyError:
+            break
+
+        # Direct children of this parent
+        child_rows = conn.execute(
+            "SELECT id, title, status FROM tasks WHERE parent_id = ?",
+            (current_id,),
+        ).fetchall()
+        children = [{"id": r[0], "title": r[1], "status": r[2]} for r in child_rows]
+
+        if not children:
+            break
+
+        total = len(children)
+        done_count = sum(1 for c in children if c["status"] == "done")
+        archived_count = sum(1 for c in children if c["status"] == "archived")
+        terminal_count = done_count + archived_count
+        blocking = [c for c in children if c["status"] not in _TERMINAL_STATUSES]
+
+        can_close = done_count == total          # all children done (clean success)
+        can_archive = archived_count == total     # all children abandoned
+        can_complete = terminal_count == total    # all terminal (mixed done+archived)
+
+        # Build suggestion text
+        current_status = parent.get("status", "draft")
+        if can_close and current_status != "done":
+            suggestion = (
+                f"All {total} subtask(s) are done. "
+                f"Consider closing parent '{parent['title']}' → status='done'."
+            )
+        elif can_archive and current_status != "archived":
+            suggestion = (
+                f"All {total} subtask(s) are archived. "
+                f"Consider archiving parent '{parent['title']}' → status='archived'."
+            )
+        elif can_complete and current_status not in _TERMINAL_STATUSES:
+            suggestion = (
+                f"{done_count} done, {archived_count} archived out of {total}. "
+                f"All subtasks are resolved. Consider closing or archiving "
+                f"'{parent['title']}' depending on outcome."
+            )
+        elif blocking:
+            blocking_summary = ", ".join(
+                f"'{c['title']}' ({c['status']})" for c in blocking[:3]
+            )
+            if len(blocking) > 3:
+                blocking_summary += f" (+{len(blocking) - 3} more)"
+            suggestion = (
+                f"{terminal_count}/{total} subtasks resolved. "
+                f"Blocking: {blocking_summary}."
+            )
+        else:
+            suggestion = f"Parent '{parent['title']}' status '{current_status}' — no action needed."
+
+        entry: dict[str, Any] = {
+            "id": current_id,
+            "title": parent.get("title"),
+            "current_status": current_status,
+            "children_total": total,
+            "children_done": done_count,
+            "children_archived": archived_count,
+            "blocking_children": blocking,
+            "can_close": can_close,
+            "can_archive": can_archive,
+            "can_complete": can_complete,
+            "suggestion": suggestion,
+        }
+        chain.append(entry)
+
+        # Stop climbing if this parent is already terminal
+        if current_status in _TERMINAL_STATUSES:
+            break
+
+        current_id = parent.get("parent_id")
+
+    return {
+        "task_id": task_id,
+        "parent_chain": chain,
+        "immediate_parent": chain[0] if chain else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 10. roadmap_diff
+# ---------------------------------------------------------------------------
+
+
+def roadmap_diff(
+    conn: sqlite3.Connection,
+    root_task_id: str,
+    since_timestamp: float,
+) -> dict[str, Any]:
+    """Return what changed in the subtree since *since_timestamp* (Unix time).
+
+    Useful for restoring context after a pause or switching agents.
+
+    Returns::
+
+        {
+            tasks_created: [...],
+            tasks_status_changed: [{ id, title, old_status, new_status }],
+            notes_added: [...],
+            contracts_changed: [...],
+            new_conflicts: [...]
+        }
+    """
+    get_task(conn, root_task_id)
+    subtree_ids = _collect_subtree_ids(conn, root_task_id)
+    ph = ", ".join("?" * len(subtree_ids))
+
+    # Tasks created after since_timestamp
+    new_tasks = conn.execute(  # noqa: S608
+        f"SELECT * FROM tasks WHERE id IN ({ph}) AND created_at > ?",
+        (*subtree_ids, since_timestamp),
+    ).fetchall()
+
+    # Tasks whose status changed after since_timestamp (updated_at > since but created_at <= since)
+    status_changed_rows = conn.execute(  # noqa: S608
+        f"""
+        SELECT * FROM tasks
+        WHERE id IN ({ph})
+          AND updated_at > ?
+          AND created_at <= ?
+        """,
+        (*subtree_ids, since_timestamp, since_timestamp),
+    ).fetchall()
+    # Note: we can't recover old_status without a history table, so we report current status
+    tasks_status_changed = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "current_status": r["status"],
+            "updated_at": r["updated_at"],
+        }
+        for r in status_changed_rows
+    ]
+
+    # Notes added after since_timestamp
+    new_notes = conn.execute(  # noqa: S608
+        f"SELECT * FROM notes WHERE task_id IN ({ph}) AND created_at > ?",
+        (*subtree_ids, since_timestamp),
+    ).fetchall()
+
+    # Contracts updated after since_timestamp
+    changed_contracts = conn.execute(  # noqa: S608
+        f"""
+        SELECT * FROM contracts
+        WHERE (provider_task_id IN ({ph}) OR consumer_task_id IN ({ph}))
+          AND updated_at > ?
+        """,
+        (*subtree_ids, *subtree_ids, since_timestamp),
+    ).fetchall()
+
+    # New conflicts (tasks created after since with overlapping code refs)
+    new_task_ids = {r["id"] for r in new_tasks}
+    new_conflicts: list[dict[str, Any]] = []
+    if new_task_ids:
+        for new_id in new_task_ids:
+            new_refs = _get_code_node_ids_for_task(conn, new_id)
+            if not new_refs:
+                continue
+            # Check against all other subtree tasks
+            for existing_id in subtree_ids:
+                if existing_id == new_id or existing_id in new_task_ids:
+                    continue
+                existing_refs = _get_code_node_ids_for_task(conn, existing_id)
+                shared = new_refs & existing_refs
+                if shared:
+                    try:
+                        existing_task = get_task(conn, existing_id)
+                        new_task_data = get_task(conn, new_id)
+                        new_conflicts.append({
+                            "new_task": new_task_data["title"],
+                            "existing_task": existing_task["title"],
+                            "shared_node_count": len(shared),
+                        })
+                    except KeyError:
+                        pass
+
+    return {
+        "tasks_created": [_row_to_dict(r) for r in new_tasks],
+        "tasks_status_changed": tasks_status_changed,
+        "notes_added": [_row_to_dict(r) for r in new_notes],
+        "contracts_changed": [_row_to_dict(r) for r in changed_contracts],
+        "new_conflicts": new_conflicts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cross-query #2: blast-radius of changed files → open tasks
+# ---------------------------------------------------------------------------
+
+
+def find_tasks_for_impact(
+    conn: sqlite3.Connection,
+    file_paths: list[str],
+    root_task_id: Optional[str] = None,
+    *,
+    max_depth: int = 2,
+    open_only: bool = True,
+) -> dict[str, Any]:
+    """Find tasks whose code refs fall within the blast radius of changed files.
+
+    This answers: *"Are there open tasks for nodes in the impact radius of
+    these changed files?"* — useful before merging a branch.
+
+    Algorithm:
+    1. Resolve each *file_path* to node IDs in the code graph.
+    2. BFS outgoing + incoming up to *max_depth* to collect the impact set.
+    3. Join with ``task_code_refs`` to find tasks that reference those nodes.
+    4. Optionally filter to *open_only* statuses (draft|refined|ready|in_progress).
+    5. Optionally restrict to the subtree of *root_task_id*.
+
+    Args:
+        conn: SQLite connection.
+        file_paths: File paths — relative (``code_review_graph/tasks.py``),
+            absolute (``/project/code_review_graph/tasks.py`` or
+            ``C:\\project\\code_review_graph\\tasks.py``), or filename-only
+            (``tasks.py``).  All forms are normalised and matched against the
+            code graph using the same strategy as ``get_impact_radius_tool``.
+        root_task_id: If given, restrict results to tasks in this subtree.
+        max_depth: BFS hops into the code graph. Default 2.
+        open_only: If True (default) only return non-done/archived tasks.
+
+    Returns:
+        Dict with keys:
+          ``impacted_nodes`` — list of {id, name, file_path, kind} dicts
+          ``tasks``          — list of matching task dicts enriched with
+                               ``matched_nodes`` (which nodes triggered the match)
+          ``uncovered_nodes``— node IDs from the impact set with no task refs
+          ``coverage_ratio`` — float 0..1 (impacted nodes covered by tasks)
+    """
+    if not file_paths:
+        return {
+            "impacted_nodes": [],
+            "tasks": [],
+            "uncovered_nodes": [],
+            "coverage_ratio": 1.0,
+        }
+
+    # Step 1: resolve file paths to node IDs.
+    #
+    # Since v8 migration, file_path in nodes is stored as a POSIX-relative
+    # path (e.g. "code_review_graph/tasks.py").  We support three input forms:
+    #
+    #   a) Relative POSIX  "code_review_graph/tasks.py"  → direct match (v8 DB)
+    #   b) Absolute POSIX  "/project/code_review_graph/tasks.py" → suffix match
+    #   c) Absolute Windows "C:\project\...\tasks.py"  → normalise + suffix
+    #   d) Filename only   "tasks.py"  → suffix match "%/tasks.py"
+    #
+    # All forms are normalised to forward slashes.  The suffix strip removes
+    # the leading "/" from absolute POSIX paths before the LIKE pattern so
+    # "/project/pkg/mod.py" searches for "%/project/pkg/mod.py" (not
+    # "%//project/pkg/mod.py").
+    seed_ids: set[int] = set()
+    for fp in file_paths:
+        fp_norm = fp.replace("\\\\", "/").replace("\\", "/")
+        fp_suffix = fp_norm.lstrip("/")  # strip leading slash for suffix LIKE
+        rows = conn.execute(
+            """
+            SELECT id FROM nodes WHERE
+                file_path = ?
+                OR replace(replace(file_path, '\\\\', '/'), '\\', '/') = ?
+                OR replace(replace(file_path, '\\\\', '/'), '\\', '/') LIKE ?
+            """,
+            (fp, fp_norm, f"%/{fp_suffix}"),
+        ).fetchall()
+        seed_ids.update(r[0] if isinstance(r, tuple) else r["id"] for r in rows)
+
+    if not seed_ids:
+        return {
+            "impacted_nodes": [],
+            "tasks": [],
+            "uncovered_nodes": [],
+            "coverage_ratio": 1.0,
+            "note": "No code nodes found for the provided file paths.",
+        }
+
+    # Step 2: BFS over code graph
+    all_impacted = seed_ids | _bfs_code_graph(conn, seed_ids, "both", max_depth)
+
+    # Fetch node metadata for the impacted set
+    ph = ", ".join("?" * len(all_impacted))
+    node_rows = conn.execute(  # noqa: S608
+        f"SELECT id, name, qualified_name, file_path, kind FROM nodes WHERE id IN ({ph})",
+        list(all_impacted),
+    ).fetchall()
+    node_meta: dict[int, dict[str, Any]] = {}
+    for r in node_rows:
+        nid = r[0] if isinstance(r, tuple) else r["id"]
+        node_meta[nid] = {
+            "id": nid,
+            "name": r[1] if isinstance(r, tuple) else r["name"],
+            "qualified_name": r[2] if isinstance(r, tuple) else r["qualified_name"],
+            "file_path": r[3] if isinstance(r, tuple) else r["file_path"],
+            "kind": r[4] if isinstance(r, tuple) else r["kind"],
+        }
+
+    # Step 3: Join with task_code_refs
+    ref_rows = conn.execute(  # noqa: S608
+        f"SELECT task_id, code_node_id, ref_type FROM task_code_refs "
+        f"WHERE code_node_id IN ({ph})",
+        list(all_impacted),
+    ).fetchall()
+
+    # Group matched nodes per task
+    task_matched: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in ref_rows:
+        tid = r[0] if isinstance(r, tuple) else r["task_id"]
+        nid = r[1] if isinstance(r, tuple) else r["code_node_id"]
+        rtype = r[2] if isinstance(r, tuple) else r["ref_type"]
+        task_matched[tid].append({
+            "node_id": nid,
+            "ref_type": rtype,
+            **{k: v for k, v in node_meta.get(nid, {}).items() if k != "id"},
+        })
+
+    # Nodes covered by at least one task
+    covered_node_ids: set[int] = set()
+    for nid_meta_list in task_matched.values():
+        for nm in nid_meta_list:
+            covered_node_ids.add(nm["node_id"])
+
+    # Step 4: Fetch task rows and filter
+    _open_statuses = frozenset({"draft", "refined", "ready", "in_progress"})
+    matching_task_ids = list(task_matched.keys())
+    tasks_out: list[dict[str, Any]] = []
+
+    if matching_task_ids:
+        tp = ", ".join("?" * len(matching_task_ids))
+        task_rows = conn.execute(  # noqa: S608
+            f"SELECT * FROM tasks WHERE id IN ({tp})",
+            matching_task_ids,
+        ).fetchall()
+
+        subtree_ids: Optional[set[str]] = None
+        if root_task_id:
+            from .tasks import _collect_subtree_ids as _csi
+            subtree_ids = set(_csi(conn, root_task_id))
+
+        for r in task_rows:
+            d = _row_to_dict(r)
+            if subtree_ids is not None and d["id"] not in subtree_ids:
+                continue
+            if open_only and d.get("status") not in _open_statuses:
+                continue
+            d["matched_nodes"] = task_matched[d["id"]]
+            tasks_out.append(d)
+
+    uncovered = [
+        node_meta[nid] for nid in sorted(all_impacted - covered_node_ids)
+        if nid in node_meta
+    ]
+    coverage = (
+        len(covered_node_ids) / len(all_impacted) if all_impacted else 1.0
+    )
+
+    return {
+        "impacted_nodes": list(node_meta.values()),
+        "tasks": tasks_out,
+        "uncovered_nodes": uncovered,
+        "coverage_ratio": round(coverage, 3),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cross-query #4: suggest contracts between tasks with implicit code deps
+# ---------------------------------------------------------------------------
+
+
+def suggest_contracts(
+    conn: sqlite3.Connection,
+    root_task_id: str,
+) -> list[dict[str, Any]]:
+    """Suggest contracts between leaf tasks that have implicit code dependencies.
+
+    A contract is suggested when:
+    1. Code nodes of task A call/import code nodes of task B (via ``edges``).
+    2. No ``task_edge`` and no ``contract`` already exists between A and B.
+
+    This answers: *"Between which tasks should we define interface contracts?"*
+
+    Algorithm:
+        - Collect leaf tasks in the subtree.
+        - Build a mapping: code_node_id → task_id for each leaf.
+        - Scan ``edges`` that cross task boundaries (source in A, target in B).
+        - Exclude pairs that already have a task_edge or contract.
+        - Return suggestions sorted by number of crossing edges (strongest first).
+
+    Returns:
+        List of suggestion dicts with keys:
+          ``task_a_id``, ``task_a_title``,
+          ``task_b_id``, ``task_b_title``,
+          ``crossing_edges`` (count of code edges A→B + B→A),
+          ``edge_details`` (list of {source_node, target_node, edge_type}).
+    """
+    get_task(conn, root_task_id)
+    subtree_ids = _collect_subtree_ids(conn, root_task_id)
+
+    # Leaf tasks only
+    ph_st = ", ".join("?" * len(subtree_ids))
+    parent_ids = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT parent_id FROM tasks WHERE parent_id IN ({ph_st})",
+            subtree_ids,
+        ).fetchall()
+    )
+    leaf_ids = [tid for tid in subtree_ids if tid not in parent_ids]
+
+    if len(leaf_ids) < 2:
+        return []
+
+    # Map: code_node_id → task_id (for leaf tasks)
+    node_to_task: dict[int, str] = {}
+    ph = ", ".join("?" * len(leaf_ids))
+    ref_rows = conn.execute(  # noqa: S608
+        f"SELECT task_id, code_node_id FROM task_code_refs WHERE task_id IN ({ph})",
+        leaf_ids,
+    ).fetchall()
+    for r in ref_rows:
+        node_to_task[r[1]] = r[0]
+
+    all_node_ids = list(node_to_task.keys())
+    if not all_node_ids:
+        return []
+
+    # Resolve node ids → qualified names for edge matching
+    np = ", ".join("?" * len(all_node_ids))
+    qn_rows = conn.execute(  # noqa: S608
+        f"SELECT id, qualified_name, name FROM nodes WHERE id IN ({np})",
+        all_node_ids,
+    ).fetchall()
+    id_to_info: dict[int, dict[str, Any]] = {}
+    qn_to_id: dict[str, int] = {}
+    for r in qn_rows:
+        nid = r[0] if isinstance(r, tuple) else r["id"]
+        qn = r[1] if isinstance(r, tuple) else r["qualified_name"]
+        name = r[2] if isinstance(r, tuple) else r["name"]
+        id_to_info[nid] = {"qualified_name": qn, "name": name}
+        qn_to_id[qn] = nid
+
+    # Find code edges that cross task boundaries
+    crossing: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+
+    batch_size = 450
+    for i in range(0, len(all_node_ids), batch_size):
+        batch = all_node_ids[i : i + batch_size]
+        bp = ", ".join("?" * len(batch))
+
+        # Outgoing edges from our nodes
+        edge_rows = conn.execute(  # noqa: S608
+            f"SELECT source_qualified, target_qualified, kind "
+            f"FROM edges WHERE source_qualified IN ("
+            f"  SELECT qualified_name FROM nodes WHERE id IN ({bp})"
+            f")",
+            batch,
+        ).fetchall()
+
+        for er in edge_rows:
+            src_qn = er[0] if isinstance(er, tuple) else er["source_qualified"]
+            tgt_qn = er[1] if isinstance(er, tuple) else er["target_qualified"]
+            etype = er[2] if isinstance(er, tuple) else er["kind"]
+
+            src_id = qn_to_id.get(src_qn)
+            tgt_id = qn_to_id.get(tgt_qn)
+            if src_id is None or tgt_id is None:
+                continue
+
+            task_a = node_to_task.get(src_id)
+            task_b = node_to_task.get(tgt_id)
+            if task_a is None or task_b is None or task_a == task_b:
+                continue
+
+            pair = (min(task_a, task_b), max(task_a, task_b))
+            crossing[pair].append({
+                "source_node": id_to_info.get(src_id, {}).get("name", src_qn),
+                "target_node": id_to_info.get(tgt_id, {}).get("name", tgt_qn),
+                "edge_type": etype,
+            })
+
+    if not crossing:
+        return []
+
+    # Exclude pairs that already have a task_edge or contract
+    existing_pairs: set[tuple[str, str]] = set()
+
+    edge_rows = conn.execute(  # noqa: S608
+        f"SELECT source_task_id, target_task_id FROM task_edges "
+        f"WHERE source_task_id IN ({ph}) AND target_task_id IN ({ph})",
+        leaf_ids + leaf_ids,
+    ).fetchall()
+    for r in edge_rows:
+        a, b = r[0], r[1]
+        existing_pairs.add((min(a, b), max(a, b)))
+
+    # Contracts — use contract_links (v7) with fallback to old columns (v6)
+    try:
+        cl_rows = conn.execute(  # noqa: S608
+            f"SELECT cl1.task_id, cl2.task_id "
+            f"FROM contract_links cl1 "
+            f"JOIN contract_links cl2 ON cl1.contract_id = cl2.contract_id AND cl1.task_id != cl2.task_id "
+            f"WHERE cl1.task_id IN ({ph})",
+            leaf_ids,
+        ).fetchall()
+        for r in cl_rows:
+            a, b = r[0], r[1]
+            existing_pairs.add((min(a, b), max(a, b)))
+    except Exception:
+        contract_rows = conn.execute(  # noqa: S608
+            f"SELECT provider_task_id, consumer_task_id FROM contracts "
+            f"WHERE provider_task_id IN ({ph}) OR consumer_task_id IN ({ph})",
+            leaf_ids + leaf_ids,
+        ).fetchall()
+        for r in contract_rows:
+            a, b = r[0], r[1]
+            existing_pairs.add((min(a, b), max(a, b)))
+
+    # Fetch task titles
+    task_rows = conn.execute(  # noqa: S608
+        f"SELECT id, title FROM tasks WHERE id IN ({ph})",
+        leaf_ids,
+    ).fetchall()
+    titles: dict[str, str] = {}
+    for r in task_rows:
+        titles[r[0] if isinstance(r, tuple) else r["id"]] = (
+            r[1] if isinstance(r, tuple) else r["title"]
+        )
+
+    # Build suggestions
+    suggestions: list[dict[str, Any]] = []
+    for pair, edges in crossing.items():
+        if pair in existing_pairs:
+            continue
+        suggestions.append({
+            "task_a_id": pair[0],
+            "task_a_title": titles.get(pair[0], "?"),
+            "task_b_id": pair[1],
+            "task_b_title": titles.get(pair[1], "?"),
+            "crossing_edges": len(edges),
+            "edge_details": edges[:10],  # cap details for token efficiency
+        })
+
+    suggestions.sort(key=lambda s: s["crossing_edges"], reverse=True)
+    return suggestions

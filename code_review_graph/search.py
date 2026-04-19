@@ -377,6 +377,7 @@ def hybrid_search(
             continue
 
         results.append({
+            "id": row["id"],
             "name": _sanitize_name(row["name"]),
             "qualified_name": _sanitize_name(row["qualified_name"]),
             "kind": node_kind,

@@ -198,6 +198,7 @@ The blast-radius analysis never misses an actually impacted file (perfect recall
 | **Multi-repo registry** | Register multiple repos, search across all of them |
 | **MCP prompts** | 5 workflow templates: review, architecture, debug, onboard, pre-merge |
 | **Full-text search** | FTS5-powered hybrid search combining keyword and vector similarity |
+| **Task DAG** | Brainstorm-driven task planning with conflict detection, isolation scoring, and blast-radius analysis — stored in the same SQLite graph |
 
 ---
 
@@ -228,6 +229,7 @@ code-review-graph status           # Graph statistics
 code-review-graph watch            # Auto-update on file changes
 code-review-graph visualize        # Generate interactive HTML graph
 code-review-graph wiki             # Generate markdown wiki from communities
+code-review-graph task-report <task-id>  # Human+LLM markdown report of full task tree
 code-review-graph detect-changes   # Risk-scored change impact analysis
 code-review-graph register <path>  # Register repo in multi-repo registry
 code-review-graph unregister <id>  # Remove repo from registry
@@ -239,10 +241,12 @@ code-review-graph serve            # Start MCP server
 </details>
 
 <details>
-<summary><strong>28 MCP tools</strong></summary>
+<summary><strong>68 MCP tools (28 code-graph + 40 task DAG)</strong></summary>
 <br>
 
 Your AI assistant uses these automatically once the graph is built.
+
+**Code-graph tools (28):**
 
 | Tool | Description |
 |------|-------------|
@@ -254,7 +258,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `embed_graph_tool` | Compute vector embeddings for semantic search |
 | `list_graph_stats_tool` | Graph size and health |
 | `get_docs_section_tool` | Retrieve documentation sections |
-| `find_files_by_pattern_tool` | Find files by glob patterns and get their node summaries (classes/functions) |
+| `find_files_by_pattern_tool` | Find files by glob patterns and get their node summaries |
 | `find_large_functions_tool` | Find functions/classes exceeding a line-count threshold |
 | `list_flows_tool` | List execution flows sorted by criticality |
 | `get_flow_tool` | Get details of a single execution flow |
@@ -270,10 +274,62 @@ Your AI assistant uses these automatically once the graph is built.
 | `list_repos_tool` | List registered repositories |
 | `cross_repo_search_tool` | Search across all registered repositories |
 | `analyze_edit_region_tool` | Blast radius of a specific line range in a file |
-| `audit_workspace_tool` | Consolidated dead code + large functions + cycle audit with health score |
+| `audit_workspace_tool` | Consolidated dead code + large functions + cycle audit |
 | `trace_dataflow_tool` | Forward BFS data-flow tracing from source to sink |
 | `export_scip_tool` | Export graph to SCIP-compatible JSON |
 | `import_scip_tool` | Import SCIP JSON document into the graph |
+
+**Task DAG tools (40) — brainstorm-driven task planning:**
+
+> **Single-pipeline discipline**: at most one root task may be open at a time.
+> Workflow: brainstorm fully → validate → implement → close → next task.
+> `task_create` with no `parent_id` is blocked while an open root exists.
+> Most tools (`task_roadmap`, `task_export`, `task_validate`) auto-detect
+> the active root when called without an explicit ID.
+
+| Tool | Description |
+|------|-------------|
+| `task_get_active_root` | Return the single open root task (or null if idle) |
+| `task_create` | Create a task (root blocked if another open root exists) |
+| `task_update` | Update title, description, status, spec, acceptance_criteria |
+| `task_edit` | Surgically edit a text field: search/replace or line-range |
+| `task_delete` | Delete a task (cascade deletes subtree) |
+| `task_get` | Get a task by ID |
+| `task_list` | List tasks with filters: parent_id, status, root_only |
+| `task_move` | Move task to a new parent (cycle detection enforced) |
+| `task_search` | Keyword search within a task subtree |
+| `task_archive` | Archive a task with reason (preserves history) |
+| `task_add_edge` | Add depends_on \| blocks \| shares_context \| conflicts_with \| informs edge |
+| `task_remove_edge` | Remove an edge between tasks |
+| `task_get_edges` | Get incoming/outgoing/both edges for a task |
+| `task_get_dag` | Full DAG for a subtree (nodes + all edges) |
+| `task_topological_sort` | Topological order of leaf tasks by depends_on |
+| `task_link_code` | Link a task to a code node (modifies\|creates\|deletes\|reads\|tests) |
+| `task_unlink_code` | Remove code node association |
+| `task_get_code_refs` | Get code nodes linked to a task |
+| `task_find_by_code_node` | Find all tasks referencing a code node |
+| `task_suggest_code_links` | Keyword-based code node suggestions (no auto-linking) |
+| `task_find_conflicts` | Leaf tasks with overlapping code refs |
+| `task_check_isolation` | Isolation score: internal / (internal + external) |
+| `task_blast_radius` | BFS impact from task's code refs through code graph |
+| `task_execution_order` | Parallelism-aware execution levels from depends_on |
+| `task_validate` | Gate-check: 8 algorithmic checks before coder handoff |
+| `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts |
+| `task_export` | Flat handoff structure for design/coder workflows |
+| `note_add` | Add a brainstorm note (decision\|question\|assumption\|constraint\|risk) |
+| `note_update` | Resolve or update a note |
+| `note_list` | List notes (with optional ancestor chain) |
+| `note_delete` | Delete a note |
+| `contract_add` | Record interface contract between provider and consumer tasks |
+| `contract_update` | Advance contract status (proposed→agreed→implemented→verified) |
+| `contract_list` | All contracts where task is provider or consumer |
+| `task_roadmap` | Progress snapshot: counts, phases, contracts, attention block |
+| `task_roadmap_diff` | What changed since a Unix timestamp (for resuming sessions) |
+| `task_find_for_impact` | Cross-query: find open tasks in blast radius of changed files |
+| `task_suggest_contracts` | Detect implicit code-level deps between tasks needing contracts |
+| `task_check_rollup` | Check if parent/ancestors can be closed or archived after a subtask completes |
+| `contract_link` | Attach a task to an existing contract as provider or consumer |
+| `contract_unlink` | Remove all links between a task and a contract |
 
 **MCP Prompts** (5 workflow templates):
 `review_changes`, `architecture_map`, `debug_issue`, `onboard_developer`, `pre_merge_check`

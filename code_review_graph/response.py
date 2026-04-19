@@ -79,6 +79,7 @@ def prune_response(response: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _ERROR_NEXT_ACTION: dict[str, str] = {
+    # Code-graph errors
     "NOT_INDEXED": "build_or_update_graph_tool",
     "NOT_FOUND": "semantic_search_nodes_tool",
     "AMBIGUOUS": "query_graph_tool",
@@ -89,9 +90,15 @@ _ERROR_NEXT_ACTION: dict[str, str] = {
     "INVALID_PARAMS": "get_docs_section_tool",
     "SCIP_FAILED": "build_or_update_graph_tool",
     "PARSE_ERROR": "build_or_update_graph_tool",
+    # Task DAG errors — route to task-specific tools
+    "TASK_NOT_FOUND": "task_list",
+    "TASK_INVALID_PARAMS": "task_get",
+    "TASK_CYCLE": "task_get_dag",
+    "TASK_PARSE_ERROR": "task_validate",
 }
 
 _ERROR_RECOVERY: dict[str, str] = {
+    # Code-graph errors
     "NOT_INDEXED": "Run build_or_update_graph_tool first to index the project.",
     "NOT_FOUND": "Use semantic_search_nodes_tool or find_files_by_pattern_tool to discover the symbol.",
     "AMBIGUOUS": "Provide a fully qualified name (e.g. 'src/auth.py::save_user') to disambiguate.",
@@ -102,6 +109,15 @@ _ERROR_RECOVERY: dict[str, str] = {
     "INVALID_PARAMS": "Check parameter docs via get_docs_section_tool.",
     "SCIP_FAILED": "Run build_or_update_graph_tool first, then verify the SCIP file path.",
     "PARSE_ERROR": "Verify the SCIP file is valid JSON produced by export_scip_tool.",
+    # Task DAG errors
+    "TASK_NOT_FOUND": "Use task_list to browse existing tasks, or task_search to find by keyword.",
+    "TASK_INVALID_PARAMS": (
+        "Check valid values: status in (draft|refined|ready|in_progress|done|archived), "
+        "ref_type in (modifies|creates|deletes|reads|tests), "
+        "edge_type in (depends_on|blocks|informs|related_to)."
+    ),
+    "TASK_CYCLE": "Use task_get_dag to visualise the dependency graph and identify the cycle.",
+    "TASK_PARSE_ERROR": "Verify task_id exists via task_get, then retry the operation.",
 }
 
 

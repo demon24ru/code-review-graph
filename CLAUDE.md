@@ -9,12 +9,13 @@
 - **Core Package**: `code_review_graph/` (Python 3.10+)
   - `parser.py` — Tree-sitter multi-language AST parser (19 languages including Vue SFC, Solidity, Dart, R, Perl, Lua + Jupyter/Databricks notebooks)
   - `graph.py` — SQLite-backed graph store (nodes, edges, BFS impact analysis)
-  - `tools.py` — 22 MCP tool implementations
-  - `main.py` — FastMCP server entry point (stdio transport), registers 22 tools + 5 prompts
+  - `tools.py` — 28 MCP tool implementations (code-graph layer)
+  - `main.py` — FastMCP server entry point (stdio transport), registers 68 tools (28 code-graph + 40 task DAG) + 5 prompts
   - `incremental.py` — Git-based change detection, file watching
   - `embeddings.py` — Optional vector embeddings (Local sentence-transformers, Google Gemini, MiniMax)
   - `visualization.py` — D3.js interactive HTML graph generator
-  - `cli.py` — CLI entry point (install, build, update, watch, status, visualize, serve, wiki, detect-changes, register, unregister, repos, eval)
+  - `cli.py` — CLI entry point (install, build, update, watch, status, visualize, serve, wiki, detect-changes, task-report, register, unregister, repos, eval)
+  - `task_report.py` — Markdown task-tree report generator (human + LLM readable)
   - `flows.py` — Execution flow detection and criticality scoring
   - `communities.py` — Community detection (Leiden algorithm or file-based grouping) and architecture overview
   - `search.py` — FTS5 hybrid search (keyword + vector)
@@ -25,7 +26,10 @@
   - `wiki.py` — Markdown wiki generation from community structure
   - `skills.py` — Skill definitions for Claude Code plugin
   - `registry.py` — Multi-repo registry with connection pool
-  - `migrations.py` — Database schema migrations (v1-v5)
+  - `migrations.py` — Database schema migrations (v1-v6)
+  - `tasks.py` — Task DAG CRUD, edge management, code refs, notes, contracts
+  - `task_analysis.py` — Algorithmic analysis: conflicts, isolation, blast_radius, execution_order, validate, build_context, roadmap
+  - `tools/task_tools.py` — 35 MCP tool wrappers for Task DAG
   - `tsconfig_resolver.py` — TypeScript path alias resolution
 
 - **VS Code Extension**: `code-review-graph-vscode/` (TypeScript)
@@ -38,7 +42,7 @@
 
 ```bash
 # Development
-uv run pytest tests/ --tb=short -q          # Run tests (572 tests)
+uv run pytest tests/ --tb=short -q          # Run tests (658 tests)
 uv run ruff check code_review_graph/        # Lint
 uv run mypy code_review_graph/ --ignore-missing-imports --no-strict-optional
 
@@ -48,6 +52,7 @@ uv run code-review-graph update             # Incremental update
 uv run code-review-graph status             # Show stats
 uv run code-review-graph serve              # Start MCP server
 uv run code-review-graph wiki               # Generate markdown wiki
+uv run code-review-graph task-report <task-id>  # Generate task tree markdown report
 uv run code-review-graph detect-changes     # Risk-scored change analysis
 uv run code-review-graph register <path>    # Register repo in multi-repo registry
 uv run code-review-graph repos              # List registered repos
@@ -97,6 +102,9 @@ uv run code-review-graph eval               # Run evaluation benchmarks
 - `tests/test_eval.py` — Evaluation framework
 - `tests/test_tsconfig_resolver.py` — TypeScript path resolution
 - `tests/test_integration_v2.py` — v2 pipeline integration test
+- `tests/test_tasks.py` — Task DAG CRUD, edges, code refs, notes, contracts (71 tests)
+- `tests/test_task_analysis.py` — Conflicts, isolation, blast_radius, validate, roadmap (26 tests)
+- `tests/test_task_integration.py` — Full brainstorm workflow + cross-layer analysis (8 tests)
 - `tests/fixtures/` — Sample files for each supported language
 
 ## CI Pipeline

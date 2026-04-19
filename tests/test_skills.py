@@ -20,15 +20,19 @@ class TestGenerateSkills:
         assert result.is_dir()
         assert result == tmp_path / ".claude" / "skills"
 
-    def test_creates_four_skill_files(self, tmp_path):
+    def test_creates_skill_files(self, tmp_path):
         skills_dir = generate_skills(tmp_path)
         files = sorted(f.name for f in skills_dir.iterdir())
-        assert files == [
-            "debug-issue.md",
-            "explore-codebase.md",
-            "refactor-safely.md",
-            "review-changes.md",
-        ]
+        # 4 original + 4 new skills
+        assert "debug-issue.md" in files
+        assert "explore-codebase.md" in files
+        assert "refactor-safely.md" in files
+        assert "review-changes.md" in files
+        assert "brainstorm-task.md" in files
+        assert "analyze-codebase.md" in files
+        assert "refactor-code.md" in files
+        assert "trace-impact.md" in files
+        assert len(files) == 8
 
     def test_skill_files_have_frontmatter(self, tmp_path):
         skills_dir = generate_skills(tmp_path)
@@ -48,14 +52,14 @@ class TestGenerateSkills:
         result = generate_skills(tmp_path, skills_dir=custom)
         assert result == custom
         assert result.is_dir()
-        assert len(list(result.iterdir())) == 4
+        assert len(list(result.iterdir())) == 8
 
     def test_idempotent(self, tmp_path):
         """Running twice should not fail and files should still be valid."""
         generate_skills(tmp_path)
         generate_skills(tmp_path)
         skills_dir = tmp_path / ".claude" / "skills"
-        assert len(list(skills_dir.iterdir())) == 4
+        assert len(list(skills_dir.iterdir())) == 8
 
 
 class TestGenerateHooksConfig:

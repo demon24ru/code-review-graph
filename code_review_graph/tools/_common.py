@@ -206,4 +206,4 @@ def _get_store(repo_root: str | None = None) -> tuple[GraphStore, Path]:
     """Resolve repo root and open the graph store."""
     root = _validate_repo_root(Path(repo_root)) if repo_root else find_project_root()
     db_path = get_db_path(root)
-    return GraphStore(db_path), root
+    return GraphStore(db_path, repo_root=root), root

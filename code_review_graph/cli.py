@@ -83,6 +83,7 @@ def _print_banner() -> None:
     {g}visualize{r}   Generate interactive HTML graph
     {g}wiki{r}        Generate markdown wiki from communities
     {g}detect-changes{r} Analyze change impact {d}(risk-scored review){r}
+    {g}task-report{r}  Generate markdown report of the full task tree
     {g}register{r}    Register a repository in the multi-repo registry
     {g}unregister{r}  Remove a repository from the registry
     {g}repos{r}       List registered repositories
@@ -294,6 +295,29 @@ def main() -> None:
     )
     detect_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
 
+    # task-report
+    task_report_cmd = sub.add_parser(
+        "task-report",
+        help="Generate a human- and LLM-readable markdown report of the full task tree",
+    )
+    task_report_cmd.add_argument(
+        "root_task_id",
+        nargs="?",
+        default=None,
+        help="Root task ID (optional — auto-detected from the active root task if omitted)",
+    )
+    task_report_cmd.add_argument(
+        "--repo", default=None, help="Repository root (auto-detected)"
+    )
+    task_report_cmd.add_argument(
+        "--output-dir", default=None,
+        help="Output directory (default: <repo>/.code-review-graph/tasks/)",
+    )
+    task_report_cmd.add_argument(
+        "--force", action="store_true",
+        help="Regenerate even if content is unchanged",
+    )
+
     # serve
     serve_cmd = sub.add_parser("serve", help="Start MCP server (stdio transport)")
     serve_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
@@ -416,7 +440,7 @@ def main() -> None:
         repo_root = Path(args.repo) if args.repo else find_project_root()
 
     db_path = get_db_path(repo_root)
-    store = GraphStore(db_path)
+    store = GraphStore(db_path, repo_root=repo_root)
 
     try:
         if args.command == "build":
@@ -498,6 +522,36 @@ def main() -> None:
                 f"({total} total pages)"
             )
             print(f"Output: {wiki_dir}")
+
+        elif args.command == "task-report":
+            from .task_report import generate_task_report
+            from .tasks import get_active_root
+            output_dir = (
+                Path(args.output_dir)
+                if getattr(args, "output_dir", None)
+                else repo_root / ".code-review-graph" / "tasks"
+            )
+            root_task_id = getattr(args, "root_task_id", None)
+            if root_task_id is None:
+                active = get_active_root(store._conn)
+                if active is None:
+                    print("No open root task found. Create a root task first.")
+                    return 1
+                root_task_id = active["id"]
+                print(f"Auto-detected root task: '{active['title']}' ({root_task_id})")
+            result = generate_task_report(
+                store._conn,
+                root_task_id,
+                output_dir,
+                force=getattr(args, "force", False),
+            )
+            if result.get("skipped"):
+                print(f"Task report unchanged: {result['output_path']}")
+            else:
+                print(
+                    f"Task report: {result['tasks_rendered']} tasks → "
+                    f"{result['output_path']}"
+                )
 
         elif args.command == "detect-changes":
             from .changes import analyze_changes

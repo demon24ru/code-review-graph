@@ -47,6 +47,48 @@ from .tools import (
     semantic_search_nodes,
     trace_dataflow,
 )
+from .tools.task_tools import (
+    contract_add_func,
+    contract_link_func,
+    contract_unlink_func,
+    contract_list_func,
+    contract_update_func,
+    note_add_func,
+    note_delete_func,
+    note_list_func,
+    note_update_func,
+    task_add_edge_func,
+    task_archive_func,
+    task_blast_radius_func,
+    task_check_isolation_func,
+    task_create_func,
+    task_get_active_root_func,
+    task_delete_func,
+    task_edit_func,
+    task_execution_order_func,
+    task_export_func,
+    task_find_by_code_node_func,
+    task_find_conflicts_func,
+    task_get_dag_func,
+    task_get_edges_func,
+    task_get_func,
+    task_get_code_refs_func,
+    task_link_code_func,
+    task_list_func,
+    task_move_func,
+    task_remove_edge_func,
+    task_roadmap_diff_func,
+    task_roadmap_func,
+    task_search_func,
+    task_suggest_code_links_func,
+    task_topological_sort_func,
+    task_unlink_code_func,
+    task_update_func,
+    task_validate_func,
+    task_find_for_impact_func,
+    task_suggest_contracts_func,
+    task_check_rollup_func,
+)
 
 # NOTE: Thread-safe for stdio MCP (single-threaded). If adding HTTP/SSE
 # transport with concurrent requests, replace with contextvars.ContextVar.
@@ -796,6 +838,947 @@ def pre_merge_check(base: str = "HEAD~1") -> list[dict]:
         base: Git ref to diff against. Default: HEAD~1.
     """
     return pre_merge_check_prompt(base=base)
+
+
+# ===========================================================================
+# Task DAG tools (29-63)
+# ===========================================================================
+
+# --- Active root (1) ---
+
+@mcp.tool()
+def task_get_active_root(
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Return the single open root task (or null if pipeline is idle).
+
+    [BRAINSTORM] Single-pipeline discipline: at most one root task may be
+    open (status not done/archived) at a time.  Use this to:
+    - Check if a pipeline is running before calling task_roadmap
+    - Verify nothing is open before creating a new root task
+    - Orient quickly at the start of a session
+
+    Returns ``{active_root: {id, title, status, ...}}`` or
+    ``{active_root: null}`` when idle.
+    """
+    return task_get_active_root_func(repo_root=repo_root)
+
+
+# --- CRUD (9) ---
+
+@mcp.tool()
+def task_create(
+    title: str,
+    description: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Create a new task for brainstorm-driven planning.
+
+    [BRAINSTORM] Creates a task optionally under a parent task.
+
+    Args:
+        title: Task title (required).
+        description: Optional description.
+        parent_id: Parent task ID. Omit to create a root task.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_create_func(title=title, description=description,
+                            parent_id=parent_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_update(
+    task_id: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    status: Optional[str] = None,
+    spec: Optional[str] = None,
+    acceptance_criteria: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Update fields of an existing task.
+
+    [BRAINSTORM] Only supplied (non-None) fields are changed.
+    Valid status: draft | refined | ready | in_progress | done | archived.
+
+    Args:
+        task_id: Task ID to update.
+        title: New title.
+        description: New description.
+        status: New status.
+        spec: Full coder specification.
+        acceptance_criteria: Verification criteria.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_update_func(task_id=task_id, title=title, description=description,
+                            status=status, spec=spec,
+                            acceptance_criteria=acceptance_criteria, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_edit(
+    task_id: str,
+    field: str,
+    search: Optional[str] = None,
+    replace: Optional[str] = None,
+    line_start: Optional[int] = None,
+    line_end: Optional[int] = None,
+    content: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Surgically edit a text field of a task without rewriting the whole field.
+
+    [BRAINSTORM] Two modes:
+    - search/replace: supply search + replace (fails if ambiguous).
+    - line range: supply line_start + line_end + content.
+    Editable fields: description | spec | acceptance_criteria.
+
+    Args:
+        task_id: Task to edit.
+        field: Field to edit (description|spec|acceptance_criteria).
+        search: String to find (search/replace mode).
+        replace: Replacement (search/replace mode).
+        line_start: First line (line range mode, 1-indexed).
+        line_end: Last line (line range mode, inclusive).
+        content: New content (line range mode).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_edit_func(task_id=task_id, field=field, search=search, replace=replace,
+                          line_start=line_start, line_end=line_end,
+                          content=content, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_delete(
+    task_id: str,
+    cascade: bool = False,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Delete a task permanently.
+
+    [BRAINSTORM] Set cascade=True to also delete all subtasks. To preserve
+    history, use task_archive instead.
+
+    Args:
+        task_id: Task to delete.
+        cascade: If True, delete all subtasks recursively.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_delete_func(task_id=task_id, cascade=cascade, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_get(
+    task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Get a task by ID.
+
+    [BRAINSTORM] Returns all fields of the task row.
+
+    Args:
+        task_id: Task ID to retrieve.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_get_func(task_id=task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_list(
+    parent_id: Optional[str] = None,
+    status: Optional[str] = None,
+    root_only: bool = False,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """List tasks with optional filters.
+
+    [BRAINSTORM] Returns matching tasks sorted by creation time.
+
+    Args:
+        parent_id: Return only direct children of this task.
+        status: Filter by status.
+        root_only: If True, return only top-level tasks.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_list_func(parent_id=parent_id, status=status,
+                          root_only=root_only, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_move(
+    task_id: str,
+    new_parent_id: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Move a task to a new parent (or promote it to root).
+
+    [BRAINSTORM] Fails if the move would create a hierarchy cycle.
+
+    Args:
+        task_id: Task to move.
+        new_parent_id: New parent task ID. Pass None to make it a root task.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_move_func(task_id=task_id, new_parent_id=new_parent_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_search(
+    root_task_id: str,
+    query: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Keyword search within a task subtree.
+
+    [BRAINSTORM] Searches title, description, and spec (case-insensitive).
+
+    Args:
+        root_task_id: Root of the subtree to search.
+        query: Search string.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_search_func(root_task_id=root_task_id, query=query, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_archive(
+    task_id: str,
+    reason: str,
+    cascade: bool = True,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Archive a task (preserves history, unlike task_delete).
+
+    [BRAINSTORM] Sets status to 'archived' with a recorded reason.
+    Use when the direction changes fundamentally.
+
+    Args:
+        task_id: Task to archive.
+        reason: Why this task is being archived (required).
+        cascade: If True (default), archive all subtasks too.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_archive_func(task_id=task_id, reason=reason, cascade=cascade, repo_root=repo_root)
+
+
+# --- DAG Edges (5) ---
+
+@mcp.tool()
+def task_add_edge(
+    source_id: str,
+    target_id: str,
+    edge_type: str,
+    description: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Add a directed edge between two tasks.
+
+    [BRAINSTORM] Edge types: depends_on | blocks | shares_context |
+    conflicts_with | informs. Cycle detection enforced for depends_on/blocks.
+
+    Args:
+        source_id: Source task ID.
+        target_id: Target task ID.
+        edge_type: Relationship type.
+        description: Optional description.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_add_edge_func(source_id=source_id, target_id=target_id,
+                              edge_type=edge_type, description=description, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_remove_edge(
+    source_id: str,
+    target_id: str,
+    edge_type: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Remove an edge between two tasks.
+
+    [BRAINSTORM] Raises NOT_FOUND if the edge does not exist.
+
+    Args:
+        source_id: Source task ID.
+        target_id: Target task ID.
+        edge_type: Type of edge to remove.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_remove_edge_func(source_id=source_id, target_id=target_id,
+                                 edge_type=edge_type, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_get_edges(
+    task_id: str,
+    direction: str = "both",
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Get all edges for a task.
+
+    [BRAINSTORM] Returns dependency and relationship edges.
+
+    Args:
+        task_id: Task ID.
+        direction: incoming | outgoing | both (default).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_get_edges_func(task_id=task_id, direction=direction, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_get_dag(
+    root_task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Get the full DAG rooted at a task.
+
+    [BRAINSTORM] Returns all tasks in the subtree plus all edges between them.
+
+    Args:
+        root_task_id: Root of the DAG to retrieve.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_get_dag_func(root_task_id=root_task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_topological_sort(
+    root_task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Topologically sort leaf tasks by their depends_on relationships.
+
+    [BRAINSTORM] Returns leaf tasks in dependency order (dependencies first).
+
+    Args:
+        root_task_id: Root of the subtree to sort.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_topological_sort_func(root_task_id=root_task_id, repo_root=repo_root)
+
+
+# --- Code Links (5) ---
+
+@mcp.tool()
+def task_link_code(
+    task_id: str,
+    ref_type: str,
+    code_node_id: Optional[int] = None,
+    qualified_name: Optional[str] = None,
+    description: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Link a task to a code graph node.
+
+    [BRAINSTORM] Associates a task with a code entity (function, class, file).
+
+    Provide EITHER code_node_id OR qualified_name — not both.
+
+    Both fields are now returned directly by semantic_search_nodes_tool, so
+    LLM can pass either without an extra lookup step:
+
+        # Option A: use integer id from search results
+        task_link_code(task_id, ref_type="modifies", code_node_id=1786)
+
+        # Option B: use qualified_name from search results or task_export
+        task_link_code(task_id, ref_type="modifies",
+                       qualified_name="code_review_graph/tasks.py::create_task")
+
+    ref_type values: modifies | creates | deletes | reads | tests
+
+    Args:
+        task_id: Task ID.
+        ref_type: How the task relates to the code.
+        code_node_id: Integer ``id`` from semantic_search_nodes_tool results.
+        qualified_name: ``qualified_name`` string from search results or code_refs.
+        description: Optional description of the relationship.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_link_code_func(task_id=task_id, ref_type=ref_type,
+                               code_node_id=code_node_id,
+                               qualified_name=qualified_name,
+                               description=description, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_unlink_code(
+    task_id: str,
+    code_node_id: int,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Remove all code refs between a task and a code node.
+
+    [BRAINSTORM] Removes the association regardless of ref_type.
+
+    Args:
+        task_id: Task ID.
+        code_node_id: Integer ID of the code node.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_unlink_code_func(task_id=task_id, code_node_id=code_node_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_get_code_refs(
+    task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Get all code nodes linked to a task.
+
+    [BRAINSTORM] Returns code nodes with metadata (name, file, lines).
+
+    Args:
+        task_id: Task ID.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_get_code_refs_func(task_id=task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_find_by_code_node(
+    code_node_id: int,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Find all tasks that reference a given code node.
+
+    [BRAINSTORM] Useful for understanding which tasks touch a specific function.
+
+    Args:
+        code_node_id: Integer ID of the code node.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_find_by_code_node_func(code_node_id=code_node_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_suggest_code_links(
+    task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Suggest code nodes to link to a task based on keyword extraction.
+
+    [BRAINSTORM] Does NOT create links — returns candidates for review.
+
+    Args:
+        task_id: Task ID.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_suggest_code_links_func(task_id=task_id, repo_root=repo_root)
+
+
+# --- Analysis (4) ---
+
+@mcp.tool()
+def task_find_conflicts(
+    root_task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Find conflicting leaf tasks whose code refs intersect.
+
+    [BRAINSTORM] Algorithmically detects tasks that touch the same code nodes.
+    Run this after decomposing tasks to catch coordination issues early.
+
+    Args:
+        root_task_id: Root of the subtree to analyze.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_find_conflicts_func(root_task_id=root_task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_check_isolation(
+    task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Check how isolated a leaf task is from the rest of the codebase.
+
+    [BRAINSTORM] Score = internal / (internal + external). Low score (<0.5)
+    suggests the task may be too coupled and should be split.
+
+    Args:
+        task_id: Task ID to check.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_check_isolation_func(task_id=task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_blast_radius(
+    task_id: str,
+    depth: int = 2,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Compute the code graph blast radius of a task.
+
+    [BRAINSTORM] Shows direct nodes, affected nodes (up to depth hops),
+    uncovered nodes (risk zones), and coverage ratio.
+
+    Args:
+        task_id: Task ID to analyze.
+        depth: BFS depth (default: 2).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_blast_radius_func(task_id=task_id, depth=depth, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_execution_order(
+    root_task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Compute parallelism-aware execution order for leaf tasks.
+
+    [BRAINSTORM] Groups leaf tasks into levels. Tasks in the same level
+    can run in parallel. Based on depends_on edges.
+
+    Args:
+        root_task_id: Root of the subtree to analyze.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_execution_order_func(root_task_id=root_task_id, repo_root=repo_root)
+
+
+# --- Validation & Context (3) ---
+
+@mcp.tool()
+def task_validate(
+    root_task_id: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Validate the task DAG before handing it off to a coder.
+
+    [BRAINSTORM] Gate-check: runs 9 algorithmic checks covering cycles,
+    dependencies, code refs, open questions, assumptions, contracts,
+    acceptance criteria, descriptions, and leaf-vs-parent attachment.
+
+    If *root_task_id* is omitted, the active root task is auto-detected.
+
+    Single-pipeline rule: the brainstorm phase must be fully complete
+    (all errors resolved) before starting implementation.
+
+    Args:
+        root_task_id: Root of the DAG to validate. Auto-detected if omitted.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_validate_func(root_task_id=root_task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_export(
+    task_id: Optional[str] = None,
+    include_analysis: bool = False,
+    include_source: bool = False,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Export full task context — primary entry point for LLM consumption.
+
+    [BRAINSTORM] Single call that assembles all layers of a task into one dict.
+    Replaces the old ``task_build_context`` tool (removed).
+
+    If *task_id* is omitted, the active root task is auto-detected — since
+    the single-pipeline discipline guarantees at most one open root at a time.
+
+    Use this to hand off a task to a coder, review progress, or let LLM
+    reason about what a task requires.
+
+    Returns:
+        task: {id, title, description, spec, acceptance_criteria, status, ...}
+        parent_chain: [{id, title, description}] — from root down to parent
+        subtasks: [{...task fields, edges: [...]}] — direct children
+        edges: {incoming: [...], outgoing: [...]} — DAG edges
+        related_tasks: [{id, title, edge_type, direction}] — flat edge list
+        code_refs: [{node_id, name, file, line_start, line_end, ref_type,
+                     qualified_name, kind, language}]  — linked code nodes
+        notes: [{id, note_type, content, status, resolution, ...}]
+                — notes from this task AND all ancestors
+        contracts: {
+            as_provider: [{id, name, contract_type, definition, status,
+                           provider_task_ids, consumer_task_ids, code_node_id}],
+            as_consumer: [...]
+        }
+        open_items: {unresolved_questions, unverified_assumptions,
+                     pending_contracts}  — always present
+        isolation: {isolation_score, external_dependencies, ...}
+                    — only if include_analysis=True
+        conflicts: [{task_a_id, task_b_id, shared_nodes, conflict_type}]
+                    — only if include_analysis=True
+        pipeline_state: {ready_for_coder, open_questions, open_assumptions,
+                         pending_contracts}
+                    — only if include_analysis=True
+
+    Args:
+        task_id: Task ID to export.
+        include_analysis: Add isolation, sibling conflicts, pipeline_state.
+            Equivalent to the old task_build_context behaviour. Default False.
+        include_source: Attach line-range info to code_refs so LLM knows
+            exactly where to read without loading full files. Default False.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_export_func(task_id=task_id, include_analysis=include_analysis,
+                            include_source=include_source, repo_root=repo_root)
+
+
+# --- Notes (4) ---
+
+@mcp.tool()
+def note_add(
+    task_id: str,
+    note_type: str,
+    content: str,
+    status: str = "open",
+    resolution: Optional[str] = None,
+    rationale: Optional[str] = None,
+    alternatives: Optional[list] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Add a brainstorm note to a task.
+
+    [BRAINSTORM] Types: decision | question | assumption | constraint | risk.
+    For resolved decisions, set status='resolved' and supply resolution.
+
+    Args:
+        task_id: Task to attach the note to.
+        note_type: decision|question|assumption|constraint|risk.
+        content: Note text (required).
+        status: open|resolved|rejected|deferred (default: open).
+        resolution: The answer or decision text.
+        rationale: Why this decision was made.
+        alternatives: List of considered alternatives that were rejected.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return note_add_func(task_id=task_id, note_type=note_type, content=content,
+                         status=status, resolution=resolution, rationale=rationale,
+                         alternatives=alternatives, repo_root=repo_root)
+
+
+@mcp.tool()
+def note_update(
+    note_id: str,
+    status: Optional[str] = None,
+    resolution: Optional[str] = None,
+    rationale: Optional[str] = None,
+    content: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Update an existing note.
+
+    [BRAINSTORM] Use to resolve open questions or update rationale.
+
+    Args:
+        note_id: Note ID to update.
+        status: New status (open|resolved|rejected|deferred).
+        resolution: Answer or decision text.
+        rationale: Reasoning.
+        content: Updated note text.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return note_update_func(note_id=note_id, status=status, resolution=resolution,
+                            rationale=rationale, content=content, repo_root=repo_root)
+
+
+@mcp.tool()
+def note_list(
+    task_id: str,
+    note_type: Optional[str] = None,
+    status: Optional[str] = None,
+    include_parent: bool = True,
+    include_children: bool = False,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """List notes for a task.
+
+    [BRAINSTORM] With include_parent=True (default), includes notes from all
+    ancestor tasks — the full decision history for this task.
+    With include_children=True, includes notes from all descendants —
+    useful for searching notes across an entire brainstorm subtree.
+
+    Args:
+        task_id: Task ID.
+        note_type: Filter by type (decision|question|assumption|constraint|risk).
+        status: Filter by status.
+        include_parent: Include ancestor notes (default: True).
+        include_children: Include descendant notes — search entire subtree.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return note_list_func(task_id=task_id, note_type=note_type, status=status,
+                          include_parent=include_parent, include_children=include_children,
+                          repo_root=repo_root)
+
+
+@mcp.tool()
+def note_delete(
+    note_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Delete a note by ID.
+
+    [BRAINSTORM] Permanently removes the note.
+
+    Args:
+        note_id: Note ID to delete.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return note_delete_func(note_id=note_id, repo_root=repo_root)
+
+
+# --- Contracts (5) ---
+
+@mcp.tool()
+def contract_add(
+    name: str,
+    contract_type: str,
+    definition: str,
+    scope_task_id: str,
+    provider_task_id: Optional[str] = None,
+    consumer_task_ids: Optional[list] = None,
+    code_node_id: Optional[int] = None,
+    qualified_name: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Create a contract / design entity scoped to a brainstorm subtree.
+
+    [BRAINSTORM] Represents a data structure (OAuthToken), interface
+    (IUserRepo), API spec, or schema change on existing code. Participants
+    are optional at creation — attach them later with contract_link.
+
+    Types: interface | api | schema | event | data_format
+
+    Args:
+        name: Short identifier, e.g. "OAuthToken", "UserRepo.save()".
+        contract_type: Contract type.
+        definition: Human-readable spec (TypeScript-like, JSON Schema, etc.).
+        scope_task_id: Root task that owns this brainstorm scope.
+        provider_task_id: Task that will implement this contract (optional).
+        consumer_task_ids: Tasks that will use this contract (optional).
+        code_node_id: Integer node id from semantic_search_nodes_tool results.
+        qualified_name: Qualified name string from search results or code_refs.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return contract_add_func(name=name, contract_type=contract_type,
+                             definition=definition, scope_task_id=scope_task_id,
+                             provider_task_id=provider_task_id,
+                             consumer_task_ids=consumer_task_ids,
+                             code_node_id=code_node_id,
+                             qualified_name=qualified_name,
+                             repo_root=repo_root)
+
+
+@mcp.tool()
+def contract_link(
+    contract_id: str,
+    task_id: str,
+    role: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Attach a task to a contract as provider or consumer.
+
+    [BRAINSTORM] Use after task decomposition when new subtasks need to
+    participate in an existing design entity/contract.
+
+    Args:
+        contract_id: Contract to link to.
+        task_id: Task to attach.
+        role: 'provider' or 'consumer'.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return contract_link_func(contract_id=contract_id, task_id=task_id,
+                              role=role, repo_root=repo_root)
+
+
+@mcp.tool()
+def contract_unlink(
+    contract_id: str,
+    task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Remove all links between a task and a contract.
+
+    [BRAINSTORM] Use when a task no longer owns or uses a design entity.
+
+    Args:
+        contract_id: Contract to unlink from.
+        task_id: Task to detach.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return contract_unlink_func(contract_id=contract_id, task_id=task_id,
+                                repo_root=repo_root)
+
+
+@mcp.tool()
+def contract_update(
+    contract_id: str,
+    name: Optional[str] = None,
+    definition: Optional[str] = None,
+    status: Optional[str] = None,
+    code_node_id: Optional[int] = None,
+    qualified_name: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Update a contract's name, definition, status, or code_node reference.
+
+    [BRAINSTORM] Lifecycle: proposed -> agreed -> implemented -> verified.
+    Status is also auto-propagated when participant task statuses change.
+
+    To link to an existing code node provide EITHER *code_node_id* (integer
+    ``id`` from ``semantic_search_nodes_tool``) OR *qualified_name* (string
+    ``qualified_name`` field from the same results).
+
+    Args:
+        contract_id: Contract ID to update.
+        name: Updated name.
+        definition: Updated contract definition.
+        status: New status (proposed|agreed|implemented|verified|void).
+        code_node_id: Integer node id from semantic_search_nodes_tool results.
+        qualified_name: Qualified name string from search results or code_refs.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return contract_update_func(contract_id=contract_id, name=name,
+                                definition=definition, status=status,
+                                code_node_id=code_node_id,
+                                qualified_name=qualified_name,
+                                repo_root=repo_root)
+
+
+@mcp.tool()
+def contract_list(
+    scope_task_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    name: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """List contracts matching given filters.
+
+    [BRAINSTORM] Filters can be combined:
+    - scope_task_id — all contracts in a brainstorm subtree (including orphans
+      not yet linked to any task).
+    - task_id — contracts where this task participates (any role).
+    - name — partial name match (case-insensitive).
+
+    Args:
+        scope_task_id: Root of the brainstorm scope.
+        task_id: Task participating in the contracts.
+        name: Partial name to search for.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return contract_list_func(scope_task_id=scope_task_id, task_id=task_id,
+                              name=name, repo_root=repo_root)
+
+
+# --- Roadmap (2) ---
+
+@mcp.tool()
+def task_roadmap(
+    root_task_id: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Get an aggregated progress snapshot for the entire task tree.
+
+    [BRAINSTORM] The primary orientation tool — call this at the start of
+    every session. Returns progress counts, execution phases, contract
+    statuses, and an attention block showing what needs action right now.
+
+    If *root_task_id* is omitted, the active root task is auto-detected.
+    This is the typical usage: since the single-pipeline discipline ensures
+    there is at most one open root task at a time.
+
+    Args:
+        root_task_id: Root task ID. Auto-detected if omitted.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_roadmap_func(root_task_id=root_task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_roadmap_diff(
+    root_task_id: str,
+    since_timestamp: float,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Get what changed in the task tree since a given Unix timestamp.
+
+    [BRAINSTORM] Use at the start of a resumed session to quickly understand
+    what happened since you last worked on this brainstorm.
+
+    Args:
+        root_task_id: Root task ID.
+        since_timestamp: Unix timestamp (float). Changes after this are returned.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_roadmap_diff_func(root_task_id=root_task_id,
+                                  since_timestamp=since_timestamp, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_find_for_impact(
+    file_paths: list[str],
+    root_task_id: Optional[str] = None,
+    max_depth: int = 2,
+    open_only: bool = True,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Find open tasks whose code refs overlap the blast radius of changed files.
+
+    [BRAINSTORM] Cross-query bridging code graph and task DAG. Given a list of
+    changed file paths, expands their impact radius in the code graph (BFS),
+    then returns all tasks that reference nodes within that radius.
+
+    Use before merging: "Are there open tasks for code I'm about to change?"
+
+    Args:
+        file_paths: Changed file paths — relative (``code_review_graph/tasks.py``),
+            absolute (``C:\\path\\tasks.py``), or filename-only (``tasks.py``).
+            All forms are normalised and matched the same way as
+            ``get_impact_radius_tool`` (converts to absolute via repo_root,
+            then falls back to suffix/tail matching).
+        root_task_id: Restrict results to this task subtree. Omit for all tasks.
+        max_depth: BFS hops into code graph. Default 2.
+        open_only: If True (default), only return non-done/archived tasks.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_find_for_impact_func(file_paths=file_paths, root_task_id=root_task_id,
+                                     max_depth=max_depth, open_only=open_only,
+                                     repo_root=repo_root)
+
+
+@mcp.tool()
+def task_suggest_contracts(
+    root_task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Suggest contracts between tasks with implicit code-level dependencies.
+
+    [BRAINSTORM] Detects pairs of leaf tasks whose code refs are connected
+    via code graph edges (calls/imports) but have no explicit task_edge or
+    contract between them. These hidden dependencies need interface contracts.
+
+    Args:
+        root_task_id: Root of the subtree to analyze.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_suggest_contracts_func(root_task_id=root_task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_check_rollup(
+    task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Check whether a task's parent (and ancestors) can change status.
+
+    [BRAINSTORM] After completing or archiving a task, call this to find out
+    if the parent task can now be closed or archived as well. Walks the full
+    ancestor chain and reports readiness at each level.
+
+    Does NOT modify any data — purely analytical. The LLM/user decides
+    whether to act on the suggestions.
+
+    Args:
+        task_id: The task that was just updated (completed/archived).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_check_rollup_func(task_id=task_id, repo_root=repo_root)
 
 
 def main(repo_root: str | None = None) -> None:

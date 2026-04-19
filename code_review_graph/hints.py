@@ -43,6 +43,48 @@ _INTENT_TOOLS: dict[str, set[str]] = {
         "list_flows",
         "list_graph_stats",
     },
+    "brainstorming": {
+        "task_create",
+        "task_update",
+        "task_edit",
+        "task_get",
+        "task_list",
+        "task_search",
+        "task_move",
+        "task_delete",
+        "task_archive",
+        "task_add_edge",
+        "task_remove_edge",
+        "task_get_edges",
+        "task_get_dag",
+        "task_topological_sort",
+        "task_link_code",
+        "task_unlink_code",
+        "task_get_code_refs",
+        "task_find_by_code_node",
+        "task_suggest_code_links",
+        "task_find_conflicts",
+        "task_check_isolation",
+        "task_blast_radius",
+        "task_execution_order",
+        "task_validate",
+"task_export",
+        "task_export",
+        "note_add",
+        "note_update",
+        "note_list",
+        "note_delete",
+        "contract_add",
+        "contract_update",
+        "contract_list",
+        "task_roadmap",
+        "task_roadmap_diff",
+        "task_find_for_impact",
+        "task_suggest_contracts",
+        "task_check_rollup",
+        "contract_link",
+        "contract_unlink",
+    },
 }
 
 # ---- workflow adjacency: for each tool, which tools are useful next ----
@@ -110,6 +152,188 @@ _WORKFLOW: dict[str, list[dict[str, str]]] = {
             "tool": "semantic_search_nodes_tool",
             "suggestion": "Search for symbols from the imported graph",
         },
+    ],
+    # --- Task DAG tools (brainstorming workflow) ---
+    "task_create": [
+        {"tool": "task_link_code", "suggestion": "Link the new task to code graph nodes"},
+        {"tool": "note_add", "suggestion": "Add design decisions or open questions"},
+        {"tool": "task_add_edge", "suggestion": "Define dependencies between tasks"},
+    ],
+    "task_update": [
+        {"tool": "task_check_rollup", "suggestion": "Check if parent can now be closed/archived"},
+        {"tool": "task_validate", "suggestion": "Check if the DAG is ready for handoff"},
+        {"tool": "task_export", "suggestion": "Export full context for this task (include_analysis=True for isolation+conflicts)"},
+    ],
+    "task_archive": [
+        {"tool": "task_check_rollup", "suggestion": "Check if parent can now be archived too"},
+        {"tool": "task_roadmap", "suggestion": "Review updated progress after archiving"},
+    ],
+    "task_check_rollup": [
+        {"tool": "task_update", "suggestion": "Close parent task if all subtasks are done"},
+        {"tool": "task_archive", "suggestion": "Archive parent if all subtasks are archived"},
+        {"tool": "task_roadmap", "suggestion": "Review overall progress snapshot"},
+    ],
+    "task_edit": [
+        {"tool": "task_get", "suggestion": "Verify the edited field content"},
+        {"tool": "task_validate", "suggestion": "Re-validate after spec changes"},
+    ],
+    "task_get": [
+        {"tool": "task_get_code_refs", "suggestion": "See code nodes linked to this task"},
+        {"tool": "note_list", "suggestion": "Browse decisions and open questions"},
+        {"tool": "task_get_edges", "suggestion": "See dependencies and related tasks"},
+        {"tool": "task_export", "suggestion": "Get full aggregated context (include_analysis=True)"},
+    ],
+    "task_list": [
+        {"tool": "task_get", "suggestion": "Inspect a specific task in detail"},
+        {"tool": "task_roadmap", "suggestion": "See overall progress and attention items"},
+    ],
+    "task_search": [
+        {"tool": "task_get", "suggestion": "Inspect a matched task"},
+        {"tool": "task_find_by_code_node", "suggestion": "Find tasks by code node instead"},
+    ],
+    "task_delete": [
+        {"tool": "task_list", "suggestion": "Verify remaining task structure"},
+        {"tool": "task_validate", "suggestion": "Check DAG integrity after deletion"},
+    ],
+    "task_move": [
+        {"tool": "task_get_dag", "suggestion": "Visualise the updated DAG"},
+        {"tool": "task_validate", "suggestion": "Check DAG integrity after move"},
+    ],
+    "task_archive": [
+        {"tool": "task_create", "suggestion": "Create a replacement task if needed"},
+        {"tool": "task_roadmap", "suggestion": "See updated progress after archival"},
+    ],
+    "task_add_edge": [
+        {"tool": "task_execution_order", "suggestion": "See parallelism-aware execution levels"},
+        {"tool": "task_topological_sort", "suggestion": "Get dependency-ordered task list"},
+        {"tool": "task_validate", "suggestion": "Check for cycles or blocked tasks"},
+    ],
+    "task_remove_edge": [
+        {"tool": "task_get_edges", "suggestion": "Verify remaining edges"},
+        {"tool": "task_execution_order", "suggestion": "Re-check execution grouping"},
+    ],
+    "task_get_edges": [
+        {"tool": "task_add_edge", "suggestion": "Add a missing dependency"},
+        {"tool": "task_get_dag", "suggestion": "See the full DAG structure"},
+    ],
+    "task_get_dag": [
+        {"tool": "task_validate", "suggestion": "Run validation on the DAG"},
+        {"tool": "task_find_conflicts", "suggestion": "Check for code-level conflicts"},
+        {"tool": "task_suggest_contracts", "suggestion": "Find missing interface contracts"},
+    ],
+    "task_topological_sort": [
+        {"tool": "task_execution_order", "suggestion": "See parallel execution groups"},
+        {"tool": "task_export", "suggestion": "Export context for the first task"},
+    ],
+    "task_link_code": [
+        {"tool": "task_check_isolation", "suggestion": "Check isolation score after linking"},
+        {"tool": "task_find_conflicts", "suggestion": "Check for new conflicts"},
+        {"tool": "task_suggest_code_links", "suggestion": "Find more code to link"},
+    ],
+    "task_unlink_code": [
+        {"tool": "task_get_code_refs", "suggestion": "Verify remaining code refs"},
+        {"tool": "task_check_isolation", "suggestion": "Re-check isolation score"},
+    ],
+    "task_get_code_refs": [
+        {"tool": "query_graph_tool", "suggestion": "Inspect callers/callees of linked nodes"},
+        {"tool": "task_check_isolation", "suggestion": "Check isolation of this task"},
+    ],
+    "task_find_by_code_node": [
+        {"tool": "task_get", "suggestion": "Inspect the matched task"},
+        {"tool": "task_find_conflicts", "suggestion": "Check if these tasks conflict"},
+    ],
+    "task_suggest_code_links": [
+        {"tool": "task_link_code", "suggestion": "Link a suggested code node"},
+        {"tool": "semantic_search_nodes_tool", "suggestion": "Search for more code symbols"},
+    ],
+    "task_find_conflicts": [
+        {"tool": "contract_add", "suggestion": "Add a contract between conflicting tasks"},
+        {"tool": "task_suggest_contracts", "suggestion": "Get full contract suggestions"},
+        {"tool": "task_add_edge", "suggestion": "Add depends_on to serialise conflicting tasks"},
+    ],
+    "task_check_isolation": [
+        {"tool": "task_blast_radius", "suggestion": "See full blast radius of this task"},
+        {"tool": "task_link_code", "suggestion": "Link missing external dependencies"},
+    ],
+    "task_blast_radius": [
+        {"tool": "task_find_for_impact", "suggestion": "Find tasks for impacted files"},
+        {"tool": "task_find_conflicts", "suggestion": "Check conflicts with sibling tasks"},
+    ],
+    "task_execution_order": [
+        {"tool": "task_export", "suggestion": "Export context for a ready task"},
+        {"tool": "task_validate", "suggestion": "Validate before starting execution"},
+    ],
+    "task_validate": [
+        {"tool": "task_export", "suggestion": "Export context for a validated task (include_analysis=True)"},
+        {"tool": "task_roadmap", "suggestion": "See overall progress and next steps"},
+    ],
+    "task_export": [
+        {"tool": "task_update", "suggestion": "Update status to in_progress after handoff"},
+        {"tool": "task_roadmap", "suggestion": "Check overall brainstorm progress"},
+    ],
+    "note_add": [
+        {"tool": "note_list", "suggestion": "Browse all notes for context"},
+        {"tool": "task_validate", "suggestion": "Check if open questions block validation"},
+    ],
+    "note_update": [
+        {"tool": "note_list", "suggestion": "Verify note was updated correctly"},
+        {"tool": "task_validate", "suggestion": "Re-validate after resolving decisions"},
+    ],
+    "note_list": [
+        {"tool": "note_add", "suggestion": "Add a new decision or question"},
+        {"tool": "note_update", "suggestion": "Resolve an open question"},
+    ],
+    "note_delete": [
+        {"tool": "note_list", "suggestion": "Verify remaining notes"},
+    ],
+    "contract_add": [
+        {"tool": "contract_link", "suggestion": "Attach tasks to this contract as participants"},
+        {"tool": "contract_list", "suggestion": "Verify the contract was recorded in the scope"},
+        {"tool": "task_suggest_contracts", "suggestion": "Find other implicit code deps needing contracts"},
+    ],
+    "contract_link": [
+        {"tool": "contract_list", "suggestion": "Verify all participants are correctly linked"},
+        {"tool": "task_validate", "suggestion": "Re-validate after adding a new participant"},
+    ],
+    "contract_unlink": [
+        {"tool": "contract_list", "suggestion": "Verify remaining participants after unlinking"},
+        {"tool": "task_validate", "suggestion": "Re-validate — orphaned contracts may need reassignment"},
+    ],
+    "contract_update": [
+        {"tool": "task_validate", "suggestion": "Re-validate the DAG after agreeing a contract"},
+        {"tool": "task_roadmap", "suggestion": "Check overall contract status in roadmap"},
+    ],
+    "contract_list": [
+        {"tool": "contract_add", "suggestion": "Add a missing contract/design entity"},
+        {"tool": "contract_link", "suggestion": "Link an existing task to an orphan contract"},
+        {"tool": "task_suggest_contracts", "suggestion": "Find implicit code deps needing contracts"},
+        {"tool": "task_validate", "suggestion": "Validate DAG — check for unacknowledged contracts"},
+    ],
+    "contract_update": [
+        {"tool": "contract_list", "suggestion": "Verify updated contract status"},
+        {"tool": "task_validate", "suggestion": "Re-validate after contract change"},
+    ],
+    "contract_list": [
+        {"tool": "contract_add", "suggestion": "Add a new contract"},
+        {"tool": "task_suggest_contracts", "suggestion": "Find missing contracts"},
+    ],
+    "task_roadmap": [
+        {"tool": "task_export", "suggestion": "Export full context for a ready task (include_analysis=True)"},
+        {"tool": "task_validate", "suggestion": "Validate tasks in the attention list"},
+        {"tool": "task_find_conflicts", "suggestion": "Check for code conflicts"},
+    ],
+    "task_roadmap_diff": [
+        {"tool": "task_roadmap", "suggestion": "See full roadmap snapshot"},
+        {"tool": "task_validate", "suggestion": "Validate if new changes are clean"},
+    ],
+    "task_find_for_impact": [
+        {"tool": "task_get", "suggestion": "Inspect an impacted task"},
+        {"tool": "task_blast_radius", "suggestion": "See blast radius of a specific task"},
+        {"tool": "detect_changes_tool", "suggestion": "Get risk-scored change analysis"},
+    ],
+    "task_suggest_contracts": [
+        {"tool": "contract_add", "suggestion": "Create a contract for the top suggestion"},
+        {"tool": "task_find_conflicts", "suggestion": "Also check for direct code conflicts"},
     ],
     # --- query / search / stats tools ---
     "query_graph": [
@@ -409,6 +633,47 @@ _TOOL_META: dict[str, dict[str, str]] = {
         "confidence": "exact",
         "reason": "scip_graph_import",
     },
+    # --- Task DAG tools ---
+    "task_create": {"confidence": "exact", "reason": "task_crud_insert"},
+    "task_update": {"confidence": "exact", "reason": "task_crud_update"},
+    "task_edit": {"confidence": "exact", "reason": "task_field_patch"},
+    "task_get": {"confidence": "exact", "reason": "task_crud_read"},
+    "task_list": {"confidence": "exact", "reason": "task_crud_list"},
+    "task_search": {"confidence": "inferred", "reason": "task_fts_search"},
+    "task_delete": {"confidence": "exact", "reason": "task_crud_delete"},
+    "task_move": {"confidence": "exact", "reason": "task_hierarchy_move"},
+    "task_archive": {"confidence": "exact", "reason": "task_cascade_archive"},
+    "task_add_edge": {"confidence": "exact", "reason": "task_dag_edge_insert"},
+    "task_remove_edge": {"confidence": "exact", "reason": "task_dag_edge_delete"},
+    "task_get_edges": {"confidence": "exact", "reason": "task_dag_edge_query"},
+    "task_get_dag": {"confidence": "exact", "reason": "task_dag_full_query"},
+    "task_topological_sort": {"confidence": "exact", "reason": "task_kahn_sort"},
+    "task_link_code": {"confidence": "exact", "reason": "task_code_ref_insert"},
+    "task_unlink_code": {"confidence": "exact", "reason": "task_code_ref_delete"},
+    "task_get_code_refs": {"confidence": "exact", "reason": "task_code_ref_query"},
+    "task_find_by_code_node": {"confidence": "exact", "reason": "task_code_reverse_lookup"},
+    "task_suggest_code_links": {"confidence": "heuristic", "reason": "task_keyword_code_search"},
+    "task_find_conflicts": {"confidence": "inferred", "reason": "task_code_intersection"},
+    "task_check_isolation": {"confidence": "inferred", "reason": "task_bfs_isolation_score"},
+    "task_blast_radius": {"confidence": "inferred", "reason": "task_bfs_blast_radius"},
+    "task_execution_order": {"confidence": "exact", "reason": "task_dag_parallel_levels"},
+    "task_validate": {"confidence": "heuristic", "reason": "task_dag_gate_check"},
+
+    "task_export": {"confidence": "exact", "reason": "task_flat_export"},
+    "note_add": {"confidence": "exact", "reason": "note_crud_insert"},
+    "note_update": {"confidence": "exact", "reason": "note_crud_update"},
+    "note_list": {"confidence": "exact", "reason": "note_crud_list"},
+    "note_delete": {"confidence": "exact", "reason": "note_crud_delete"},
+    "contract_add": {"confidence": "exact", "reason": "contract_crud_insert"},
+    "contract_update": {"confidence": "exact", "reason": "contract_crud_update"},
+    "contract_list": {"confidence": "exact", "reason": "contract_crud_list"},
+    "task_roadmap": {"confidence": "inferred", "reason": "task_progress_aggregation"},
+    "task_roadmap_diff": {"confidence": "inferred", "reason": "task_temporal_diff"},
+    "task_find_for_impact": {"confidence": "inferred", "reason": "task_impact_cross_query"},
+    "task_suggest_contracts": {"confidence": "heuristic", "reason": "task_implicit_dep_detection"},
+    "task_check_rollup": {"confidence": "exact", "reason": "task_parent_status_rollup"},
+    "contract_link": {"confidence": "exact", "reason": "contract_participant_link"},
+    "contract_unlink": {"confidence": "exact", "reason": "contract_participant_unlink"},
 }
 
 
@@ -444,6 +709,21 @@ def _extract_evidence(tool_name: str, result: dict) -> dict[str, Any]:
         "cycles",
         "flows",
         "communities",
+        # Task DAG evidence
+        "tasks",
+        "edges",
+        "nodes",
+        "notes",
+        "contracts",
+        "conflicts",
+        "suggestions",
+        "levels",
+        "errors",
+        "warnings",
+        "ok",
+        "uncovered_nodes",
+        "archived_ids",
+        "matched_nodes",
     ):
         val = result.get(key)
         if isinstance(val, list):

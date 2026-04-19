@@ -1,4 +1,4 @@
-# LLM-OPTIMIZED REFERENCE -- code-review-graph v2.1.0
+# LLM-OPTIMIZED REFERENCE -- code-review-graph v2.2.0
 
 Claude Code: Read ONLY the exact `<section>` you need. Never load the whole file.
 
@@ -24,10 +24,26 @@ Never include full files unless explicitly asked.
 </section>
 
 <section name="commands">
-MCP tools (22): build_or_update_graph_tool, get_impact_radius_tool, query_graph_tool, get_review_context_tool, semantic_search_nodes_tool, embed_graph_tool, list_graph_stats_tool, get_docs_section_tool, find_large_functions_tool, list_flows_tool, get_flow_tool, get_affected_flows_tool, list_communities_tool, get_community_tool, get_architecture_overview_tool, detect_changes_tool, refactor_tool, apply_refactor_tool, generate_wiki_tool, get_wiki_page_tool, list_repos_tool, cross_repo_search_tool
+Code-graph MCP tools (28): build_or_update_graph_tool, get_impact_radius_tool, query_graph_tool, get_review_context_tool, semantic_search_nodes_tool, embed_graph_tool, list_graph_stats_tool, get_docs_section_tool, find_large_functions_tool, list_flows_tool, get_flow_tool, get_affected_flows_tool, list_communities_tool, get_community_tool, get_architecture_overview_tool, detect_changes_tool, refactor_tool, apply_refactor_tool, generate_wiki_tool, get_wiki_page_tool, list_repos_tool, cross_repo_search_tool, find_files_by_pattern_tool, analyze_edit_region_tool, audit_workspace_tool, trace_dataflow_tool, export_scip_tool, import_scip_tool
+Task DAG MCP tools (35): task_create, task_update, task_edit, task_delete, task_get, task_list, task_move, task_search, task_archive, task_add_edge, task_remove_edge, task_get_edges, task_get_dag, task_topological_sort, task_link_code, task_unlink_code, task_get_code_refs, task_find_by_code_node, task_suggest_code_links, task_find_conflicts, task_check_isolation, task_blast_radius, task_execution_order, task_validate, task_build_context, task_export, note_add, note_update, note_list, note_delete, contract_add, contract_update, contract_list, task_roadmap, task_roadmap_diff
 MCP prompts (5): review_changes, architecture_map, debug_issue, onboard_developer, pre_merge_check
 Skills: build-graph, review-delta, review-pr
 CLI: code-review-graph [install|init|build|update|status|watch|visualize|serve|wiki|detect-changes|register|unregister|repos|eval]
+</section>
+
+<section name="brainstorm">
+Task DAG: decompose features into validated, isolated subtasks linked to code nodes.
+Start: task_create(title, description) → root_id
+Decompose: task_create(title, parent_id=root_id) × N subtasks
+Dependencies: task_add_edge(src, tgt, "depends_on"|"blocks"|"shares_context"|"conflicts_with"|"informs")
+Link code: semantic_search_nodes_tool("ClassName") → id → task_link_code(task_id, code_node_id, ref_type)
+Notes: note_add(task_id, type, content) — types: decision|question|assumption|constraint|risk
+Contracts: contract_add(provider_id, consumer_id, type, definition) — types: interface|api|schema|event|data_format
+Analysis: task_find_conflicts → task_check_isolation → task_execution_order
+Validate: task_validate(root_id) → must have errors=[] before handoff to coder
+Context: task_build_context(task_id) → full spec | task_export(task_id) → flat handoff
+Orient: task_roadmap(root_id) → progress + phases + attention | task_roadmap_diff(root_id, ts) → resume
+Full workflow example: see docs/TASK-DAG.md
 </section>
 
 <section name="legal">

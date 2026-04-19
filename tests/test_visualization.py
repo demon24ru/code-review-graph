@@ -119,7 +119,8 @@ def test_export_graph_data(store_with_data):
     assert len(data["nodes"]) == 5
     assert len(data["edges"]) == 2
     node_names = {n["name"] for n in data["nodes"]}
-    assert "auth.py" in node_names
+    # File node name is now the normalised relative path (src/auth.py)
+    assert any("auth.py" in nm for nm in node_names), f"auth.py not in {node_names}"
     assert "AuthService" in node_names
     assert "login" in node_names
     edge_kinds = {e["kind"] for e in data["edges"]}

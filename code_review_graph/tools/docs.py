@@ -135,6 +135,7 @@ def get_docs_section(section_name: str, repo_root: str | None = None) -> dict[st
         "embeddings",
         "languages",
         "troubleshooting",
+        "brainstorm",
     ]
     return {
         "status": "not_found",

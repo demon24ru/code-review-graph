@@ -67,6 +67,73 @@ CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_qualified);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_qualified);
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_file ON edges(file_path);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT REFERENCES tasks(id),
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    spec TEXT,
+    acceptance_criteria TEXT,
+    archive_reason TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_edges (
+    source_task_id TEXT NOT NULL REFERENCES tasks(id),
+    target_task_id TEXT NOT NULL REFERENCES tasks(id),
+    type TEXT NOT NULL,
+    description TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (source_task_id, target_task_id, type)
+);
+
+CREATE TABLE IF NOT EXISTS task_code_refs (
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    code_node_id INTEGER NOT NULL REFERENCES nodes(id),
+    ref_type TEXT NOT NULL,
+    description TEXT,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (task_id, code_node_id, ref_type)
+);
+
+CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    note_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolution TEXT,
+    rationale TEXT,
+    alternatives TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contracts (
+    id TEXT PRIMARY KEY,
+    provider_task_id TEXT NOT NULL REFERENCES tasks(id),
+    consumer_task_id TEXT NOT NULL REFERENCES tasks(id),
+    contract_type TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_task_edges_source ON task_edges(source_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_edges_target ON task_edges(target_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_code_refs_task ON task_code_refs(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_code_refs_node ON task_code_refs(code_node_id);
+CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task_id);
+CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(note_type);
+CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status);
+CREATE INDEX IF NOT EXISTS idx_contracts_provider ON contracts(provider_task_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_consumer ON contracts(consumer_task_id);
 """
 
 
@@ -118,9 +185,19 @@ class GraphStats:
 class GraphStore:
     """SQLite-backed code knowledge graph."""
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, repo_root: Path | None = None) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # repo_root is used to compute relative qualified_names.
+        # When set, _make_qualified strips repo_root from file_path so that
+        # stored qualified_names are portable across machines and platforms.
+        # Falls back to db_path.parent.parent (conventional .code-review-graph/graph.db
+        # layout → parent is .code-review-graph, grandparent is repo root).
+        if repo_root is not None:
+            self.repo_root: Path | None = Path(repo_root).resolve()
+        else:
+            inferred = self.db_path.parent.parent
+            self.repo_root = inferred if inferred.is_dir() else None
         self._conn = sqlite3.connect(
             str(self.db_path), timeout=30, check_same_thread=False
         )
@@ -160,11 +237,33 @@ class GraphStore:
 
     # --- Write operations ---
 
+    def _relativise_path(self, file_path: str) -> str:
+        """Convert an absolute file path to repo-relative POSIX form.
+
+        Mirrors the file-path logic in ``_make_qualified``.  Used to
+        normalise both ``file_path`` and ``name`` (for File nodes) stored
+        in the ``nodes`` table so that all three path-bearing columns
+        (``name``, ``qualified_name``, ``file_path``) are consistent.
+        """
+        if self.repo_root is None:
+            return file_path
+        try:
+            return Path(file_path).resolve().relative_to(self.repo_root).as_posix()
+        except ValueError:
+            return Path(file_path).as_posix()
+
     def upsert_node(self, node: NodeInfo, file_hash: str = "") -> int:
         """Insert or update a node. Returns the node ID."""
         now = time.time()
         qualified = self._make_qualified(node)
         extra = json.dumps(node.extra) if node.extra else "{}"
+
+        # Normalise file_path to repo-relative POSIX so that all
+        # path-bearing columns (name for File nodes, qualified_name,
+        # file_path) are consistent after a fresh build.
+        rel_fp = self._relativise_path(node.file_path)
+        # For File nodes the name IS the path — normalise it too.
+        node_name = rel_fp if node.kind == "File" else node.name
 
         self._conn.execute(
             """INSERT INTO nodes
@@ -182,7 +281,7 @@ class GraphStore:
                  extra=excluded.extra, updated_at=excluded.updated_at
             """,
             (
-                node.kind, node.name, qualified, node.file_path,
+                node.kind, node_name, qualified, rel_fp,
                 node.line_start, node.line_end, node.language,
                 node.parent_name, node.params, node.return_type,
                 node.modifiers, int(node.is_test), file_hash,
@@ -199,12 +298,17 @@ class GraphStore:
         now = time.time()
         extra = json.dumps(edge.extra) if edge.extra else "{}"
 
+        # Normalise source/target to repo-relative POSIX paths so that
+        # edge qualified names are consistent with node qualified names.
+        src = self._relativise_qname(edge.source)
+        tgt = self._relativise_qname(edge.target)
+
         # Check for existing edge (include line so multiple call sites are preserved)
         existing = self._conn.execute(
             """SELECT id FROM edges
                WHERE kind=? AND source_qualified=? AND target_qualified=?
                      AND file_path=? AND line=?""",
-            (edge.kind, edge.source, edge.target, edge.file_path, edge.line),
+            (edge.kind, src, tgt, edge.file_path, edge.line),
         ).fetchone()
 
         if existing:
@@ -218,14 +322,26 @@ class GraphStore:
             """INSERT INTO edges
                (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (edge.kind, edge.source, edge.target, edge.file_path, edge.line, extra, now),
+            (edge.kind, src, tgt, edge.file_path, edge.line, extra, now),
         )
         return self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     def remove_file_data(self, file_path: str) -> None:
         """Remove all nodes and edges associated with a file."""
-        self._conn.execute("DELETE FROM nodes WHERE file_path = ?", (file_path,))
-        self._conn.execute("DELETE FROM edges WHERE file_path = ?", (file_path,))
+        # Normalise to relative POSIX so it matches what upsert_node stores.
+        rel_fp = self._relativise_path(file_path)
+        # Also try the original absolute path for backward compatibility with
+        # DBs built before the relative-path migration.
+        if rel_fp != file_path:
+            self._conn.execute(
+                "DELETE FROM nodes WHERE file_path = ? OR file_path = ?", (rel_fp, file_path)
+            )
+            self._conn.execute(
+                "DELETE FROM edges WHERE file_path = ? OR file_path = ?", (rel_fp, file_path)
+            )
+        else:
+            self._conn.execute("DELETE FROM nodes WHERE file_path = ?", (rel_fp,))
+            self._conn.execute("DELETE FROM edges WHERE file_path = ?", (rel_fp,))
         self._invalidate_cache()
 
     def store_file_nodes_edges(
@@ -267,8 +383,10 @@ class GraphStore:
         return self._row_to_node(row) if row else None
 
     def get_nodes_by_file(self, file_path: str) -> list[GraphNode]:
+        rel_fp = self._relativise_path(file_path)
         rows = self._conn.execute(
-            "SELECT * FROM nodes WHERE file_path = ?", (file_path,)
+            "SELECT * FROM nodes WHERE file_path = ? OR file_path = ?",
+            (rel_fp, file_path),
         ).fetchall()
         return [self._row_to_node(r) for r in rows]
 
@@ -630,18 +748,27 @@ class GraphStore:
     def get_node_ids_by_files(
         self, file_paths: list[str],
     ) -> set[int]:
-        """Return node IDs belonging to the given file paths."""
+        """Return node IDs belonging to the given file paths.
+
+        Accepts absolute paths, repo-relative POSIX paths, or filename-only
+        strings.  Normalises each path to repo-relative form and tries exact
+        match; falls back to tail-suffix LIKE so callers do not need to know
+        the exact storage format.
+        """
         if not file_paths:
             return set()
         result: set[int] = set()
-        batch_size = 450
-        for i in range(0, len(file_paths), batch_size):
-            batch = file_paths[i:i + batch_size]
-            placeholders = ",".join("?" for _ in batch)
-            rows = self._conn.execute(  # nosec B608
-                "SELECT id FROM nodes "
-                f"WHERE file_path IN ({placeholders})",
-                batch,
+        for fp in file_paths:
+            # Try repo-relative form first (most common case after migration)
+            rel = self._relativise_path(fp)
+            # POSIX normalised suffix for tail matching (filename-only or
+            # absolute paths that could not be relativised)
+            fp_norm = Path(fp).as_posix().lstrip("/")
+            rows = self._conn.execute(
+                "SELECT id FROM nodes WHERE file_path = ?"
+                " OR file_path = ?"
+                " OR replace(file_path,'\\\\','/') LIKE '%/' || ?",
+                (rel, fp, fp_norm),
             ).fetchall()
             result.update(r["id"] for r in rows)
         return result
@@ -819,12 +946,56 @@ class GraphStore:
             self._nxg_cache = g
             return g
 
+    def _relativise_qname(self, qname: str) -> str:
+        """Convert an absolute qualified_name to repo-relative POSIX form.
+
+        Used by ``upsert_edge`` to keep ``source_qualified`` / ``target_qualified``
+        consistent with the relative names produced by ``_make_qualified``.
+
+        Handles both ``/abs/path/file.py::fn`` and ``C:\\abs\\path\\file.py::fn``.
+        Returns the input unchanged when ``repo_root`` is not set or the path
+        is already relative.
+        """
+        if self.repo_root is None:
+            return qname
+        if "::" in qname:
+            file_part, rest = qname.split("::", 1)
+            try:
+                rel = Path(file_part).resolve().relative_to(self.repo_root).as_posix()
+                return f"{rel}::{rest}"
+            except ValueError:
+                return Path(file_part).as_posix() + "::" + rest
+        # File node — the whole thing is the path
+        try:
+            return Path(qname).resolve().relative_to(self.repo_root).as_posix()
+        except ValueError:
+            return Path(qname).as_posix()
+
     def _make_qualified(self, node: NodeInfo) -> str:
+        """Build a portable qualified name using a repo-relative file path.
+
+        When ``repo_root`` is set the absolute ``file_path`` is converted to a
+        POSIX-style relative path (e.g. ``code_review_graph/tasks.py``).  This
+        makes qualified names identical on Windows and Linux and across
+        different checkout locations — the only requirement is that each
+        repository has its own isolated SQLite database (the default layout).
+
+        Falls back to the raw ``file_path`` when relativisation fails (e.g.
+        the file is outside the repo root, which can happen with generated or
+        vendored code).
+        """
+        fp = node.file_path
+        if self.repo_root is not None:
+            try:
+                fp = Path(fp).resolve().relative_to(self.repo_root).as_posix()
+            except ValueError:
+                # File is outside repo_root — keep absolute path as fallback
+                fp = Path(fp).as_posix()
         if node.kind == "File":
-            return node.file_path
+            return fp
         if node.parent_name:
-            return f"{node.file_path}::{node.parent_name}.{node.name}"
-        return f"{node.file_path}::{node.name}"
+            return f"{fp}::{node.parent_name}.{node.name}"
+        return f"{fp}::{node.name}"
 
     def _row_to_node(self, row: sqlite3.Row) -> GraphNode:
         return GraphNode(

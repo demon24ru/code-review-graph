@@ -1,6 +1,6 @@
 """MCP tool definitions for the Code Review Graph server.
 
-Exposes 28 tools:
+Exposes 68 tools (28 code-graph + 40 task DAG):
 1.  build_or_update_graph    - full or incremental build
 2.  get_impact_radius        - blast radius from changed files
 3.  query_graph              - predefined graph queries
@@ -29,6 +29,14 @@ Exposes 28 tools:
 26. trace_dataflow           - forward BFS data-flow tracing (source to sink)
 27. export_scip              - export graph to SCIP JSON
 28. import_scip              - import SCIP JSON into the graph
+
+Task DAG tools (40):
+29-63. (see task_tools.py) — CRUD, DAG edges, code links, analysis, notes, contracts, roadmap
+64. task_find_for_impact     - cross-query: open tasks in blast radius of changed files
+65. task_suggest_contracts   - implicit code deps between tasks needing interface contracts
+66. task_check_rollup        - check if parent/ancestors can be closed or archived after subtask completes
+67. contract_link            - attach a task to an existing contract as provider/consumer
+68. contract_unlink          - remove all links between a task and a contract
 """
 
 from __future__ import annotations
@@ -94,6 +102,48 @@ from .review import (
 # -- scip_tools -------------------------------------------------------------
 from .scip_tools import export_scip_func, import_scip_func
 
+# -- task_tools -------------------------------------------------------------
+from .task_tools import (
+    contract_add_func,
+    contract_list_func,
+    contract_update_func,
+    note_add_func,
+    note_delete_func,
+    note_list_func,
+    note_update_func,
+    task_add_edge_func,
+    task_archive_func,
+    task_blast_radius_func,
+
+    task_check_isolation_func,
+    task_create_func,
+    task_get_active_root_func,
+    task_delete_func,
+    task_edit_func,
+    task_execution_order_func,
+    task_export_func,
+    task_find_by_code_node_func,
+    task_find_conflicts_func,
+    task_get_code_refs_func,
+    task_get_dag_func,
+    task_get_edges_func,
+    task_get_func,
+    task_link_code_func,
+    task_list_func,
+    task_move_func,
+    task_remove_edge_func,
+    task_roadmap_diff_func,
+    task_roadmap_func,
+    task_search_func,
+    task_suggest_code_links_func,
+    task_topological_sort_func,
+    task_unlink_code_func,
+    task_update_func,
+    task_validate_func,
+    task_find_for_impact_func,
+    task_suggest_contracts_func,
+)
+
 __all__ = [
     # _common
     "_BUILTIN_CALL_NAMES",
@@ -136,6 +186,47 @@ __all__ = [
     # scip_tools
     "export_scip_func",
     "import_scip_func",
+    # task_tools
+    "contract_add_func",
+    "contract_list_func",
+    "contract_update_func",
+    "note_add_func",
+    "note_delete_func",
+    "note_list_func",
+    "note_update_func",
+    "task_add_edge_func",
+    "task_archive_func",
+    "task_blast_radius_func",
+
+    "task_check_isolation_func",
+    "task_create_func",
+    "task_delete_func",
+    "task_edit_func",
+    "task_execution_order_func",
+    "task_export_func",
+    "task_find_by_code_node_func",
+    "task_find_conflicts_func",
+    "task_get_code_refs_func",
+    "task_get_dag_func",
+    "task_get_edges_func",
+    "task_get_func",
+    "task_link_code_func",
+    "task_list_func",
+    "task_move_func",
+    "task_remove_edge_func",
+    "task_roadmap_diff_func",
+    "task_roadmap_func",
+    "task_search_func",
+    "task_suggest_code_links_func",
+    "task_topological_sort_func",
+    "task_unlink_code_func",
+    "task_update_func",
+    "task_validate_func",
+    "task_find_for_impact_func",
+    "task_suggest_contracts_func",
+    "task_check_rollup_func",
+    "contract_link_func",
+    "contract_unlink_func",
     # re-exported for backward compat (used in test patches)
     "get_changed_files",
     "get_staged_and_unstaged",
