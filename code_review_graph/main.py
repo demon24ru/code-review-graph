@@ -1164,42 +1164,58 @@ def task_topological_sort(
 @mcp.tool()
 def task_link_code(
     task_id: str,
-    ref_type: str,
+    ref_type: str = "modifies",
     code_node_id: Optional[int] = None,
     qualified_name: Optional[str] = None,
     description: Optional[str] = None,
+    batch: Optional[list] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Link a task to a code graph node.
+    """Link a task to one or many code graph nodes.
 
-    [BRAINSTORM] Associates a task with a code entity (function, class, file).
+    [BRAINSTORM] Associates a task with code entities (functions, classes, files).
 
-    Provide EITHER code_node_id OR qualified_name — not both.
+    **Single mode** — link one node (existing behaviour):
 
-    Both fields are now returned directly by semantic_search_nodes_tool, so
-    LLM can pass either without an extra lookup step:
-
-        # Option A: use integer id from search results
+        # Option A: integer id from semantic_search_nodes_tool
         task_link_code(task_id, ref_type="modifies", code_node_id=1786)
 
-        # Option B: use qualified_name from search results or task_export
+        # Option B: qualified_name string from search results or task_export
         task_link_code(task_id, ref_type="modifies",
                        qualified_name="code_review_graph/tasks.py::create_task")
+
+    **Batch mode** — link many nodes in a single call:
+
+        task_link_code(task_id, batch=[
+            {"ref_type": "modifies", "code_node_id": 101},
+            {"ref_type": "modifies", "code_node_id": 102},
+            {"ref_type": "reads",    "qualified_name": "src/auth.py::TokenService"},
+            {"ref_type": "creates",  "qualified_name": "src/models.py::OAuthToken",
+             "description": "new model class"},
+        ])
+
+        When batch is provided, top-level ref_type/code_node_id/qualified_name
+        are ignored. Each item is processed independently — errors are collected
+        in ``result.errors`` and do not abort the whole batch.
 
     ref_type values: modifies | creates | deletes | reads | tests
 
     Args:
         task_id: Task ID.
-        ref_type: How the task relates to the code.
+        ref_type: Ref type for single mode (modifies|creates|deletes|reads|tests).
         code_node_id: Integer ``id`` from semantic_search_nodes_tool results.
         qualified_name: ``qualified_name`` string from search results or code_refs.
-        description: Optional description of the relationship.
+        description: Optional description (single mode only).
+        batch: List of {ref_type, code_node_id|qualified_name, description?} dicts.
+               Enables batch mode — links multiple nodes in one call.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return task_link_code_func(task_id=task_id, ref_type=ref_type,
                                code_node_id=code_node_id,
                                qualified_name=qualified_name,
-                               description=description, repo_root=repo_root)
+                               description=description,
+                               batch=batch,
+                               repo_root=repo_root)
 
 
 @mcp.tool()

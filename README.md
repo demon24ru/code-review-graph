@@ -392,6 +392,45 @@ Each rewrite erases prior work. The root cause is always the same: implementatio
 1. BRAINSTORM  →  2. VALIDATE  →  3. IMPLEMENT  →  4. CLOSE
 ```
 
+### Decomposition Sweet Spot
+
+Before starting Phase 1, understand the correct granularity for tasks and code links.
+
+```
+Too coarse — "Add OAuth" touches 50+ nodes → code links are noise, not signal
+Too fine   — "Add expires_at field" touches 1 node → 50 such tasks → management hell
+
+Sweet spot — "Implement JWT token service" touches 3-8 nodes → useful, manageable
+```
+
+**The correct decomposition rule for LLM: "1 task = 1 coherent logical change", not "1 task = 1 code node".**
+
+A coherent logical change typically touches:
+- 1 primary file (`creates` / `modifies`)
+- 2–4 related files (`modifies`)
+- 1–3 context files (`reads`)
+
+**→ 3–8 code nodes per leaf task is normal and correct.**
+
+Code links are only meaningful at the leaf level. Parent and mid-level tasks are grouping containers — they do not get direct code refs.
+
+```
+Root task (Add OAuth)                        ← no code links
+├── Mid-level (JWT token service)            ← no code links, goes to designer
+│   ├── Leaf (Token model)                   ← 2-3 code links  ← goes to coder
+│   ├── Leaf (Token validation logic)        ← 3-5 code links  ← goes to coder
+│   └── Leaf (Token refresh flow)            ← 4-6 code links  ← goes to coder
+├── Mid-level (Google OAuth flow)            ← no code links, goes to designer
+│   ├── Leaf (Redirect handler)              ← 2-4 code links  ← goes to coder
+│   └── Leaf (Token exchange)                ← 3-5 code links  ← goes to coder
+└── Mid-level (Login endpoint)               ← no code links, goes to designer
+    └── Leaf (Session creation)              ← 3-4 code links  ← goes to coder
+```
+
+**What this means for handoff:**
+- **Designer** receives a mid-level task via `task_export(mid_task_id, include_analysis=True)` — sees all leaf subtasks, contracts, and notes. Enough context to design without drowning in details.
+- **Coder** receives a leaf task via `task_export(leaf_task_id, include_analysis=True)` — sees exact code nodes, line ranges, contracts to implement, acceptance criteria.
+
 #### Phase 1: Brainstorm (Do NOT write code yet)
 
 Create the root task and decompose it until every leaf is small enough to implement without ambiguity:
@@ -547,9 +586,20 @@ task_create("Feature X")                            # create root
 task_create("Subtask Y", parent_id=root_id)
 task_add_edge(child_id, blocker_id, "depends_on")
 
-# Interview each leaf
-semantic_search_nodes_tool("AuthService")           # find code nodes → get id + qualified_name
+# Interview each leaf (link 3-8 code nodes per leaf task — sweet spot)
+semantic_search_nodes_tool("AuthService")           # find nodes → returns id + qualified_name
+
+# Single link
 task_link_code(task_id, qualified_name="src/auth.py::AuthService", ref_type="modifies")
+
+# Batch link — one call for all nodes of a leaf task
+task_link_code(task_id, batch=[
+    {"ref_type": "modifies", "qualified_name": "src/auth.py::AuthService"},
+    {"ref_type": "modifies", "qualified_name": "src/auth.py::TokenModel"},
+    {"ref_type": "reads",    "qualified_name": "src/config.py::JWTConfig"},
+    {"ref_type": "creates",  "qualified_name": "src/auth.py::TokenResponse"},
+])
+
 note_add(task_id, type="question", content="Should tokens be stored in httpOnly cookies?")
 contract_add(name="OAuthToken", ..., scope_task_id=root_id)
 

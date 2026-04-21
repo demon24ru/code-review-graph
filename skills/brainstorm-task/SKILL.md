@@ -49,9 +49,31 @@ note_add(task_id, note_type="risk",       content="...")   # known risk
 
 ## Phase 3: Link Code to Tasks
 
-**Find nodes** — two approaches:
+### Decomposition sweet spot
+
+**Rule: 1 task = 1 coherent logical change, NOT 1 task = 1 code node.**
+
 ```
-# By keyword search (returns id + qualified_name)
+Too coarse: "Add OAuth"          → 50+ nodes → noise
+Too fine:   "Add expires_at"     → 1 node → 50 tasks → management hell
+Sweet spot: "JWT token service"  → 3-8 nodes → useful, manageable
+```
+
+Target **3–8 code nodes per leaf task**:
+- 1 primary file (`creates` / `modifies`)
+- 2–4 related files (`modifies`)
+- 1–3 context files (`reads`)
+
+**Code links only on leaf tasks.** Parent/mid-level tasks are grouping containers — no direct code refs (task_validate warns if violated).
+
+**Handoff levels:**
+- Designer → `task_export(mid_task_id)` — sees all leaf subtasks, contracts, notes
+- Coder → `task_export(leaf_task_id)` — sees exact nodes, line ranges, acceptance criteria
+
+### Finding nodes
+
+```
+# By keyword search (returns id + qualified_name directly)
 semantic_search_nodes_tool(query="create_task", kind="Function")
 → { id: 1791, qualified_name: "code_review_graph/tasks.py::create_task", ... }
 
@@ -59,7 +81,9 @@ semantic_search_nodes_tool(query="create_task", kind="Function")
 query_graph_tool(pattern="children_of", target="code_review_graph/tasks.py")
 ```
 
-**Link to task** — use either id or qualified_name:
+### Linking nodes — single and batch
+
+**Single link:**
 ```
 task_link_code(task_id, ref_type="modifies",  code_node_id=1791)
 task_link_code(task_id, ref_type="modifies",  qualified_name="code_review_graph/tasks.py::create_task")
@@ -68,6 +92,22 @@ task_link_code(task_id, ref_type="creates",   qualified_name="...")
 task_link_code(task_id, ref_type="deletes",   qualified_name="...")
 task_link_code(task_id, ref_type="tests",     qualified_name="...")
 ```
+
+**Batch link — preferred for leaf tasks (3-8 nodes in one call):**
+```
+task_link_code(task_id, batch=[
+    {"ref_type": "modifies", "code_node_id": 1791},
+    {"ref_type": "modifies", "qualified_name": "src/auth.py::TokenModel"},
+    {"ref_type": "reads",    "qualified_name": "src/config.py::JWTConfig"},
+    {"ref_type": "creates",  "qualified_name": "src/auth.py::TokenResponse",
+     "description": "new response schema"},
+])
+# Returns: {success_count, error_count, total, linked[], errors[]}
+# Partial failures do NOT abort the batch — errors are collected, valid items linked.
+```
+
+Both `code_node_id` (int) and `qualified_name` (str) can be mixed in the same batch.
+Use values directly from `semantic_search_nodes_tool` — no extra lookup needed.
 
 **ref_type guide:**
 | ref_type | When to use |
@@ -205,6 +245,9 @@ task_execution_order(root_task_id)   # returns parallel levels
 
 ## Tips
 
+- **Sweet spot**: 3–8 code nodes per leaf task — not 1, not 50
+- **Batch link**: use `task_link_code(task_id, batch=[...])` to link all leaf nodes in one call instead of N separate calls
+- **Handoff**: designer gets `task_export(mid_task_id)`, coder gets `task_export(leaf_task_id, include_analysis=True)`
 - Always link leaf tasks to code before `task_validate` — unlisted code refs are a warning
 - Use `note_list(include_children=True)` to search decisions across the whole brainstorm
 - `task_suggest_code_links(task_id)` auto-suggests nodes from task title/description keywords

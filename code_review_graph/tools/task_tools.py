@@ -498,46 +498,66 @@ def task_topological_sort_func(
 
 def task_link_code_func(
     task_id: str,
-    ref_type: str,
+    ref_type: str = "modifies",
     code_node_id: Optional[int] = None,
     qualified_name: Optional[str] = None,
     description: Optional[str] = None,
+    batch: Optional[list] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Link a task to a code graph node.
+    """Link a task to one or many code graph nodes.
 
-    [BRAINSTORM] Associates a task with a code entity (function, class, file).
-    Valid ref_type values: modifies, creates, deletes, reads, tests.
+    [BRAINSTORM] Associates a task with code entities (functions, classes, files).
 
-    Provide EITHER code_node_id OR qualified_name — not both:
-    - code_node_id: integer ``id`` field from semantic_search_nodes_tool results
-    - qualified_name: string from semantic_search_nodes_tool, task_export code_refs,
-      or query_graph_tool results (e.g. "src/auth.py::login")
+    **Single mode** — link one node:
+        task_link_code(task_id, ref_type="modifies", code_node_id=1786)
+        task_link_code(task_id, ref_type="modifies",
+                       qualified_name="src/auth.py::login")
 
-    Both values are now returned directly by semantic_search_nodes_tool, so LLM
-    can pass either field without an extra lookup step.
+    **Batch mode** — link many nodes in one call:
+        task_link_code(task_id, batch=[
+            {"ref_type": "modifies", "code_node_id": 101},
+            {"ref_type": "modifies", "code_node_id": 102},
+            {"ref_type": "reads",    "qualified_name": "src/auth.py::TokenService"},
+            {"ref_type": "creates",  "qualified_name": "src/models.py::OAuthToken",
+             "description": "new model"},
+        ])
+        When batch is provided, top-level ref_type/code_node_id/qualified_name are ignored.
+        Failed items are collected in ``errors`` — does not abort the whole batch.
+
+    Both ``id`` and ``qualified_name`` are returned by semantic_search_nodes_tool,
+    so no extra lookup step is needed.
+
+    ref_type values: modifies | creates | deletes | reads | tests
 
     Args:
         task_id: Task ID.
-        ref_type: How the task relates to the code (modifies|creates|deletes|reads|tests).
-        code_node_id: Integer node ID (from search results ``id`` field).
-        qualified_name: Qualified name string (from search results ``qualified_name`` field).
-        description: Optional description of the relationship.
+        ref_type: Default ref type for single mode (modifies|creates|deletes|reads|tests).
+        code_node_id: Integer node ID from semantic_search_nodes_tool results.
+        qualified_name: Qualified name string from search results or task_export code_refs.
+        description: Optional description of the relationship (single mode).
+        batch: List of {ref_type, code_node_id|qualified_name, description?} dicts.
         repo_root: Repository root path. Auto-detected if omitted.
-
-    Returns:
-        The created code ref dict with resolved code_node_id.
     """
-    def _fn(conn, task_id, ref_type, code_node_id, qualified_name, description):
+    def _fn(conn, task_id, ref_type, code_node_id, qualified_name, description, batch):
         ref = tasks.link_task_code(
             conn, task_id, ref_type,
             code_node_id=code_node_id,
             qualified_name=qualified_name,
             description=description,
+            batch=batch,
         )
+        if batch is not None:
+            sc = ref["success_count"]
+            ec = ref["error_count"]
+            msg = f"Batch linked {sc}/{ref['total']} nodes to task {task_id[:8]}"
+            if ec:
+                msg += f" ({ec} errors)"
+            return _ok(msg, ref=ref)
         node_ref = ref.get("code_node_id", code_node_id or qualified_name)
         return _ok(f"Linked task {task_id[:8]} --{ref_type}--> node {node_ref}", ref=ref)
-    return _run(repo_root, _fn, task_id, ref_type, code_node_id, qualified_name, description)
+    return _run(repo_root, _fn, task_id, ref_type, code_node_id, qualified_name,
+                description, batch)
 
 
 def task_unlink_code_func(

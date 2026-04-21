@@ -936,22 +936,95 @@ def link_task_code(
     code_node_id: Optional[int] = None,
     qualified_name: Optional[str] = None,
     description: Optional[str] = None,
+    batch: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Link a task to a code graph node.
+    """Link a task to one or many code graph nodes.
 
-    Exactly one of *code_node_id* (integer) or *qualified_name* (string) must
-    be provided.  Using *qualified_name* lets LLM pass the value directly from
+    **Single mode** (existing behaviour):
+        Exactly one of *code_node_id* or *qualified_name* must be supplied.
+
+    **Batch mode** (new):
+        Supply *batch* — a list of dicts, each with at least ``ref_type`` and
+        one of ``code_node_id`` / ``qualified_name``.  Top-level
+        ``code_node_id``, ``qualified_name``, and ``ref_type`` are ignored
+        when *batch* is provided.
+
+        Each batch item:
+            {
+                "ref_type": "modifies",          # required
+                "code_node_id": 101,             # either this …
+                "qualified_name": "src/fn",      # … or this
+                "description": "optional note",  # optional
+            }
+
+    Returns (batch mode):
+        {
+            "task_id": "…",
+            "linked": [{"code_node_id": …, "ref_type": …, "qualified_name": …}, …],
+            "errors": [{"item": …, "error": "…"}, …],
+            "total": N,
+            "success_count": N,
+            "error_count": N,
+        }
+
+    Using *qualified_name* lets the LLM pass the value directly from
     ``semantic_search_nodes_tool`` or ``task_export`` code_refs without a
-    separate ID-lookup step.
-
-    Path separators in *qualified_name* are normalised (``\\`` → ``/``) before
-    matching so that results from Windows graph builds work on any platform.
+    separate ID-lookup step.  Path separators are normalised (``\\`` → ``/``).
     """
     get_task(conn, task_id)
+    now = _now()
+
+    # ── Batch mode ────────────────────────────────────────────────────────────
+    if batch is not None:
+        if not isinstance(batch, list):
+            raise ValueError("batch must be a list of dicts")
+        linked: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+
+        for item in batch:
+            if not isinstance(item, dict):
+                errors.append({"item": item, "error": "each batch item must be a dict"})
+                continue
+            item_ref_type = item.get("ref_type")
+            item_node_id: Optional[int] = item.get("code_node_id")
+            item_qname: Optional[str] = item.get("qualified_name")
+            item_desc: Optional[str] = item.get("description")
+            try:
+                _check_enum(item_ref_type, CODE_REF_TYPES, "ref_type")
+                resolved_id = _resolve_code_node(
+                    conn, item_node_id, item_qname, caller="link_task_code[batch]"
+                )
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO task_code_refs
+                        (task_id, code_node_id, ref_type, description, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (task_id, resolved_id, item_ref_type, item_desc, now),
+                )
+                linked.append({
+                    "code_node_id": resolved_id,
+                    "ref_type": item_ref_type,
+                    "qualified_name": item_qname,
+                    "description": item_desc,
+                })
+            except (KeyError, ValueError) as exc:
+                errors.append({"item": item, "error": str(exc)})
+
+        conn.commit()
+        return {
+            "task_id": task_id,
+            "linked": linked,
+            "errors": errors,
+            "total": len(batch),
+            "success_count": len(linked),
+            "error_count": len(errors),
+        }
+
+    # ── Single mode ───────────────────────────────────────────────────────────
     _check_enum(ref_type, CODE_REF_TYPES, "ref_type")
     code_node_id = _resolve_code_node(conn, code_node_id, qualified_name, caller="link_task_code")
 
-    now = _now()
     conn.execute(
         """
         INSERT OR REPLACE INTO task_code_refs

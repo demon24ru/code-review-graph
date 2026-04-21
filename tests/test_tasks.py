@@ -1060,4 +1060,190 @@ class TestLinkCodeQualifiedName(TestTaskBase):
             self.conn, t["id"], "reads",
             qualified_name="C:\\proj\\src2.py::win2_fn",
         )
-        assert ref["code_node_id"] == nid
+
+
+# ---------------------------------------------------------------------------
+# Batch link_task_code
+# ---------------------------------------------------------------------------
+
+class TestBatchLinkCode(TestTaskBase):
+    """Tests for batch mode of link_task_code."""
+
+    def test_batch_by_code_node_id(self):
+        """Batch with code_node_id integers links all nodes."""
+        t = tasks.create_task(self.conn, "T")
+        n1 = self._node("fn_a", "src/a.py")
+        n2 = self._node("fn_b", "src/b.py")
+        n3 = self._node("fn_c", "src/c.py")
+
+        result = tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies", "code_node_id": n1},
+                {"ref_type": "reads",    "code_node_id": n2},
+                {"ref_type": "creates",  "code_node_id": n3},
+            ],
+        )
+        assert result["success_count"] == 3
+        assert result["error_count"] == 0
+        assert result["total"] == 3
+        refs = tasks.get_task_code_refs(self.conn, t["id"])
+        assert len(refs) == 3
+        ref_types = {r["ref_type"] for r in refs}
+        assert ref_types == {"modifies", "reads", "creates"}
+
+    def test_batch_by_qualified_name(self):
+        """Batch with qualified_name strings links all nodes."""
+        t = tasks.create_task(self.conn, "T")
+        self._node("svc_a", "src/svc.py")
+        self._node("svc_b", "src/svc.py")
+
+        result = tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies", "qualified_name": "src/svc.py::svc_a"},
+                {"ref_type": "reads",    "qualified_name": "src/svc.py::svc_b"},
+            ],
+        )
+        assert result["success_count"] == 2
+        assert result["error_count"] == 0
+        refs = tasks.get_task_code_refs(self.conn, t["id"])
+        assert len(refs) == 2
+
+    def test_batch_mixed_id_and_qualified_name(self):
+        """Batch can mix code_node_id and qualified_name."""
+        t = tasks.create_task(self.conn, "T")
+        n1 = self._node("fn_x", "src/x.py")
+        self._node("fn_y", "src/y.py")
+
+        result = tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies", "code_node_id": n1},
+                {"ref_type": "reads",    "qualified_name": "src/y.py::fn_y"},
+            ],
+        )
+        assert result["success_count"] == 2
+        assert result["error_count"] == 0
+
+    def test_batch_with_description(self):
+        """Each batch item can have its own description."""
+        t = tasks.create_task(self.conn, "T")
+        n1 = self._node("fn_d", "src/d.py")
+        n2 = self._node("fn_e", "src/e.py")
+
+        result = tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies", "code_node_id": n1,
+                 "description": "core change"},
+                {"ref_type": "reads",    "code_node_id": n2,
+                 "description": "side effect"},
+            ],
+        )
+        assert result["success_count"] == 2
+        linked = result["linked"]
+        descs = {item["description"] for item in linked}
+        assert "core change" in descs
+        assert "side effect" in descs
+
+    def test_batch_partial_failure_continues(self):
+        """Invalid items are collected in errors; valid items are still linked."""
+        t = tasks.create_task(self.conn, "T")
+        n1 = self._node("fn_ok", "src/ok.py")
+
+        result = tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies",  "code_node_id": n1},          # valid
+                {"ref_type": "modifies",  "code_node_id": 99999},        # nonexistent node
+                {"ref_type": "INVALID",   "code_node_id": n1},           # bad ref_type
+                {"ref_type": "reads",     "qualified_name": "no::such"}, # not found
+            ],
+        )
+        assert result["success_count"] == 1
+        assert result["error_count"] == 3
+        assert result["total"] == 4
+        # The valid item was still linked
+        refs = tasks.get_task_code_refs(self.conn, t["id"])
+        assert len(refs) == 1
+
+    def test_batch_errors_contain_item_and_message(self):
+        """Error entries expose the original item and a readable message."""
+        t = tasks.create_task(self.conn, "T")
+
+        result = tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies", "code_node_id": 99999},
+            ],
+        )
+        assert len(result["errors"]) == 1
+        err = result["errors"][0]
+        assert "item" in err
+        assert "error" in err
+        assert isinstance(err["error"], str)
+
+    def test_batch_empty_list(self):
+        """Empty batch returns success with zero counts."""
+        t = tasks.create_task(self.conn, "T")
+        result = tasks.link_task_code(self.conn, t["id"], "modifies", batch=[])
+        assert result["success_count"] == 0
+        assert result["error_count"] == 0
+        assert result["total"] == 0
+
+    def test_batch_non_list_raises(self):
+        """Passing a non-list as batch raises ValueError."""
+        t = tasks.create_task(self.conn, "T")
+        with pytest.raises(ValueError, match="batch must be a list"):
+            tasks.link_task_code(self.conn, t["id"], "modifies", batch="not-a-list")
+
+    def test_batch_top_level_args_ignored(self):
+        """When batch is provided, top-level code_node_id/qualified_name/ref_type
+        are ignored — only batch items are processed."""
+        t = tasks.create_task(self.conn, "T")
+        n1 = self._node("fn_ignore", "src/i.py")
+        n2 = self._node("fn_use", "src/u.py")
+
+        result = tasks.link_task_code(
+            self.conn, t["id"],
+            ref_type="deletes",          # ignored in batch mode
+            code_node_id=n1,             # ignored in batch mode
+            batch=[
+                {"ref_type": "reads", "code_node_id": n2},
+            ],
+        )
+        assert result["success_count"] == 1
+        refs = tasks.get_task_code_refs(self.conn, t["id"])
+        assert len(refs) == 1
+        assert refs[0]["ref_type"] == "reads"   # batch ref_type, not "deletes"
+        assert refs[0]["code_node_id"] == n2     # batch node, not n1
+
+    def test_batch_idempotent_insert_or_replace(self):
+        """Linking the same (task, node, ref_type) twice replaces, not duplicates.
+        Different ref_types for the same node produce separate rows (by design)."""
+        t = tasks.create_task(self.conn, "T")
+        n1 = self._node("fn_idem", "src/idem.py")
+
+        # First batch: modifies + reads → 2 rows (different ref_type)
+        tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies", "code_node_id": n1},
+                {"ref_type": "reads",    "code_node_id": n1},
+            ],
+        )
+        refs = tasks.get_task_code_refs(self.conn, t["id"])
+        assert len(refs) == 2  # modifies + reads
+
+        # Second batch: link same ref_type again → INSERT OR REPLACE, still 2 rows
+        tasks.link_task_code(
+            self.conn, t["id"], "modifies",
+            batch=[
+                {"ref_type": "modifies", "code_node_id": n1},  # duplicate → replace
+            ],
+        )
+        refs2 = tasks.get_task_code_refs(self.conn, t["id"])
+        assert len(refs2) == 2  # no new row added, existing replaced
+        node_ids = {r["code_node_id"] for r in refs2}
+        assert node_ids == {n1}  # same node, two ref_types
