@@ -516,17 +516,19 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
                 (new_name, new_qname, new_fpath, __import__('time').time(), nid),
             )
 
-    # --- edges: source_qualified and target_qualified ---
+    # --- edges: source_qualified, target_qualified, and file_path ---
     edge_rows = conn.execute(
-        "SELECT id, source_qualified, target_qualified FROM edges"
+        "SELECT id, source_qualified, target_qualified, file_path FROM edges"
     ).fetchall()
-    for eid, src, tgt in edge_rows:
+    for eid, src, tgt, fpath in edge_rows:
         new_src = _relativise_qname(src) if src else src
         new_tgt = _relativise_qname(tgt) if tgt else tgt
-        if new_src != src or new_tgt != tgt:
+        new_fpath = _to_relative(fpath) if fpath else fpath
+        if new_src != src or new_tgt != tgt or new_fpath != fpath:
             conn.execute(
-                "UPDATE edges SET source_qualified=?, target_qualified=? WHERE id=?",
-                (new_src, new_tgt, eid),
+                "UPDATE edges SET source_qualified=?, target_qualified=?, "
+                "file_path=? WHERE id=?",
+                (new_src, new_tgt, new_fpath, eid),
             )
 
     # Rebuild FTS index after bulk qualified_name changes

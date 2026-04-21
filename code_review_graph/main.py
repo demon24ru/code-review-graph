@@ -1785,6 +1785,17 @@ def main(repo_root: str | None = None) -> None:
     """Run the MCP server via stdio."""
     global _default_repo_root
     _default_repo_root = repo_root
+    # Pre-warm heavy optional dependencies (igraph, matplotlib) in a background
+    # thread so the first build/update call is not delayed by cold imports.
+    import threading
+
+    def _preload() -> None:
+        try:
+            import code_review_graph.communities  # noqa: F401
+        except Exception:
+            pass
+
+    threading.Thread(target=_preload, daemon=True).start()
     mcp.run(transport="stdio")
 
 

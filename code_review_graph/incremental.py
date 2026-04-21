@@ -356,6 +356,7 @@ def run_post_build_hooks(store: GraphStore) -> dict:
 
 def full_build(repo_root: Path, store: GraphStore) -> dict:
     """Full rebuild of the entire graph."""
+    t0 = time.monotonic()
     parser = CodeParser()
     files = collect_all_files(repo_root)
 
@@ -399,10 +400,15 @@ def full_build(repo_root: Path, store: GraphStore) -> dict:
 
     hooks_result = run_post_build_hooks(store)
 
+    elapsed = time.monotonic() - t0
+    nodes_per_sec = round(total_nodes / elapsed, 1) if elapsed > 0 else 0.0
+
     return {
         "files_parsed": len(files),
         "total_nodes": total_nodes,
         "total_edges": total_edges,
+        "elapsed_sec": round(elapsed, 2),
+        "nodes_per_sec": nodes_per_sec,
         "errors": errors,
         **hooks_result,
     }

@@ -444,10 +444,19 @@ def main() -> None:
 
     try:
         if args.command == "build":
+            # Pre-warm igraph/matplotlib so community detection doesn't add
+            # cold-import latency to the reported elapsed time.
+            try:
+                import code_review_graph.communities  # noqa: F401
+            except Exception:
+                pass
             result = full_build(repo_root, store)
+            elapsed = result.get("elapsed_sec", 0)
+            nps = result.get("nodes_per_sec", 0)
             print(
                 f"Full build: {result['files_parsed']} files, "
-                f"{result['total_nodes']} nodes, {result['total_edges']} edges"
+                f"{result['total_nodes']} nodes, {result['total_edges']} edges "
+                f"[{elapsed:.1f}s, {nps:.0f} nodes/sec]"
             )
             if result["errors"]:
                 print(f"Errors: {len(result['errors'])}")

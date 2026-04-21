@@ -196,8 +196,28 @@ class GraphStore:
         if repo_root is not None:
             self.repo_root: Path | None = Path(repo_root).resolve()
         else:
-            inferred = self.db_path.parent.parent
-            self.repo_root = inferred if inferred.is_dir() else None
+            # Only infer repo_root when the DB lives in the standard layout:
+            #   <repo>/.code-review-graph/graph.db
+            # This avoids false inference when a temp file is used in tests
+            # (e.g. NamedTemporaryFile creates a flat .db in /tmp — its
+            # grandparent would be /tmp, making every path appear relative).
+            parent_dir = self.db_path.parent
+            if parent_dir.name == ".code-review-graph":
+                inferred = parent_dir.parent
+                self.repo_root = inferred if inferred.is_dir() else None
+            else:
+                self.repo_root = None
+
+        # Fast-path string prefix for hot-loop relativisation.
+        # Precomputed once: POSIX absolute path of repo_root with trailing slash
+        # so relativisation is a pure string op — no Path.resolve() in hot loops.
+        if self.repo_root is not None:
+            _rr = self.repo_root.as_posix()
+            self._repo_root_prefix: str | None = (
+                _rr if _rr.endswith("/") else _rr + "/"
+            )
+        else:
+            self._repo_root_prefix = None
         self._conn = sqlite3.connect(
             str(self.db_path), timeout=30, check_same_thread=False
         )
@@ -240,17 +260,25 @@ class GraphStore:
     def _relativise_path(self, file_path: str) -> str:
         """Convert an absolute file path to repo-relative POSIX form.
 
-        Mirrors the file-path logic in ``_make_qualified``.  Used to
-        normalise both ``file_path`` and ``name`` (for File nodes) stored
-        in the ``nodes`` table so that all three path-bearing columns
-        (``name``, ``qualified_name``, ``file_path``) are consistent.
+        Hot-path optimised: uses precomputed string prefix to avoid
+        ``Path.resolve()`` syscalls in the upsert_node/upsert_edge loops.
+        Falls back to Path-based resolution only when the fast path doesn't
+        match (e.g. symlinks, ``..`` components, or paths outside repo root).
         """
-        if self.repo_root is None:
+        if self._repo_root_prefix is None:
             return file_path
+        # Fast path: normalise separators only (no syscall)
+        posix_path = file_path.replace("\\", "/")
+        if posix_path.startswith(self._repo_root_prefix):
+            return posix_path[len(self._repo_root_prefix):]
+        # Slow path: resolve symlinks / relative components then retry
         try:
-            return Path(file_path).resolve().relative_to(self.repo_root).as_posix()
-        except ValueError:
-            return Path(file_path).as_posix()
+            resolved = Path(file_path).resolve().as_posix()
+            if resolved.startswith(self._repo_root_prefix):
+                return resolved[len(self._repo_root_prefix):]
+            return resolved
+        except (OSError, ValueError):
+            return posix_path
 
     def upsert_node(self, node: NodeInfo, file_hash: str = "") -> int:
         """Insert or update a node. Returns the node ID."""
@@ -298,17 +326,18 @@ class GraphStore:
         now = time.time()
         extra = json.dumps(edge.extra) if edge.extra else "{}"
 
-        # Normalise source/target to repo-relative POSIX paths so that
-        # edge qualified names are consistent with node qualified names.
+        # Normalise source/target qualified names and file_path to
+        # repo-relative POSIX so all path-bearing columns are consistent.
         src = self._relativise_qname(edge.source)
         tgt = self._relativise_qname(edge.target)
+        rel_fp = self._relativise_path(edge.file_path)
 
         # Check for existing edge (include line so multiple call sites are preserved)
         existing = self._conn.execute(
             """SELECT id FROM edges
                WHERE kind=? AND source_qualified=? AND target_qualified=?
                      AND file_path=? AND line=?""",
-            (edge.kind, src, tgt, edge.file_path, edge.line),
+            (edge.kind, src, tgt, rel_fp, edge.line),
         ).fetchone()
 
         if existing:
@@ -322,7 +351,7 @@ class GraphStore:
             """INSERT INTO edges
                (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (edge.kind, src, tgt, edge.file_path, edge.line, extra, now),
+            (edge.kind, src, tgt, rel_fp, edge.line, extra, now),
         )
         return self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -949,27 +978,37 @@ class GraphStore:
     def _relativise_qname(self, qname: str) -> str:
         """Convert an absolute qualified_name to repo-relative POSIX form.
 
-        Used by ``upsert_edge`` to keep ``source_qualified`` / ``target_qualified``
-        consistent with the relative names produced by ``_make_qualified``.
-
+        Hot-path optimised: string prefix check before any Path operations.
         Handles both ``/abs/path/file.py::fn`` and ``C:\\abs\\path\\file.py::fn``.
         Returns the input unchanged when ``repo_root`` is not set or the path
         is already relative.
         """
-        if self.repo_root is None:
+        if self._repo_root_prefix is None:
             return qname
         if "::" in qname:
             file_part, rest = qname.split("::", 1)
+            posix_fp = file_part.replace("\\", "/")
+            if posix_fp.startswith(self._repo_root_prefix):
+                return posix_fp[len(self._repo_root_prefix):] + "::" + rest
+            # Slow path: resolve then retry
             try:
-                rel = Path(file_part).resolve().relative_to(self.repo_root).as_posix()
-                return f"{rel}::{rest}"
-            except ValueError:
-                return Path(file_part).as_posix() + "::" + rest
-        # File node — the whole thing is the path
+                resolved = Path(file_part).resolve().as_posix()
+                if resolved.startswith(self._repo_root_prefix):
+                    return resolved[len(self._repo_root_prefix):] + "::" + rest
+                return resolved + "::" + rest
+            except (OSError, ValueError):
+                return posix_fp + "::" + rest
+        # File node — whole thing is the path
+        posix_q = qname.replace("\\", "/")
+        if posix_q.startswith(self._repo_root_prefix):
+            return posix_q[len(self._repo_root_prefix):]
         try:
-            return Path(qname).resolve().relative_to(self.repo_root).as_posix()
-        except ValueError:
-            return Path(qname).as_posix()
+            resolved = Path(qname).resolve().as_posix()
+            if resolved.startswith(self._repo_root_prefix):
+                return resolved[len(self._repo_root_prefix):]
+            return resolved
+        except (OSError, ValueError):
+            return posix_q
 
     def _make_qualified(self, node: NodeInfo) -> str:
         """Build a portable qualified name using a repo-relative file path.
@@ -980,17 +1019,28 @@ class GraphStore:
         different checkout locations — the only requirement is that each
         repository has its own isolated SQLite database (the default layout).
 
+        Hot-path optimised: uses precomputed string prefix — no Path.resolve()
+        syscall when the file path already starts with repo_root.
+
         Falls back to the raw ``file_path`` when relativisation fails (e.g.
         the file is outside the repo root, which can happen with generated or
         vendored code).
         """
         fp = node.file_path
-        if self.repo_root is not None:
-            try:
-                fp = Path(fp).resolve().relative_to(self.repo_root).as_posix()
-            except ValueError:
-                # File is outside repo_root — keep absolute path as fallback
-                fp = Path(fp).as_posix()
+        if self._repo_root_prefix is not None:
+            posix_fp = fp.replace("\\", "/")
+            if posix_fp.startswith(self._repo_root_prefix):
+                fp = posix_fp[len(self._repo_root_prefix):]
+            else:
+                # Slow path: resolve symlinks then retry
+                try:
+                    resolved = Path(fp).resolve().as_posix()
+                    if resolved.startswith(self._repo_root_prefix):
+                        fp = resolved[len(self._repo_root_prefix):]
+                    else:
+                        fp = resolved
+                except (OSError, ValueError):
+                    fp = posix_fp
         if node.kind == "File":
             return fp
         if node.parent_name:

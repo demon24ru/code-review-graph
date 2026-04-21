@@ -364,6 +364,216 @@ pip install code-review-graph[all]                 # All optional dependencies
 
 ---
 
+## Task DAG Workflow
+
+The Task DAG system enforces a strict **brainstorm-first, implement-second** discipline. The core insight: every ambiguity you resolve during brainstorming is a rewrite you avoid during implementation.
+
+### The Problem It Solves
+
+Without structured planning, a typical AI-assisted feature looks like this:
+
+```
+Ask AI to implement feature
+→ AI writes code
+→ "Wait, how should we handle auth?"
+→ AI rewrites auth layer
+→ "And what about error handling?"
+→ AI rewrites error handling
+→ "The schema changed, update the models"
+→ AI rewrites models
+→ ... repeat until everyone is frustrated
+```
+
+Each rewrite erases prior work. The root cause is always the same: implementation started before all constraints, design decisions, and architectural questions were resolved.
+
+### The Correct Workflow
+
+```
+1. BRAINSTORM  →  2. VALIDATE  →  3. IMPLEMENT  →  4. CLOSE
+```
+
+#### Phase 1: Brainstorm (Do NOT write code yet)
+
+Create the root task and decompose it until every leaf is small enough to implement without ambiguity:
+
+```
+task_create("Add OAuth 2.0 login")          # root task — single pipeline starts
+task_create("Google OAuth flow", parent=..) # L1 subtask
+task_create("Token storage", parent=..)     # L1 subtask
+task_create("Refresh rotation", parent=..)  # L2 subtask under Token storage
+```
+
+**For each leaf task, conduct a structured interview:**
+
+- What existing code does this touch? → `semantic_search_nodes_tool`, `task_link_code`
+- What new structures does this introduce? → `contract_add` (design entities)
+- What does this depend on? → `task_add_edge(type="depends_on")`
+- What are the acceptance criteria? → `task_update(acceptance_criteria=...)`
+- Are there open questions? → `note_add(type="question")`
+- Are there assumptions to verify? → `note_add(type="assumption")`
+- Are there constraints? → `note_add(type="constraint")`
+
+**Check coverage with cross-queries:**
+
+```
+task_find_for_impact(["src/auth.py"])   # What tasks cover files in blast radius?
+task_blast_radius(task_id)              # How many code nodes are uncovered?
+suggest_contracts(root_id)              # Hidden dependencies needing interfaces?
+check_isolation(task_id)               # Is isolation score acceptable?
+```
+
+Any `uncovered_nodes` in blast radius = a part of the codebase this task touches but no subtask addresses. Ask the user about it. Add a subtask or a note explaining why it is intentionally out of scope.
+
+**Resolve all open items before moving on:**
+
+```
+note_list(root_id, include_children=True, status="open")   # All unresolved notes
+task_roadmap()                                              # attention block
+task_validate()                                            # 9 algorithmic checks
+```
+
+Do not proceed to implementation while `task_validate` reports errors or `task_roadmap` has unresolved questions/assumptions.
+
+#### Phase 2: Validate (Gate check)
+
+Before writing a single line of code, run the gate check:
+
+```
+task_validate()
+```
+
+Expected clean output:
+```
+errors:   []
+warnings: []  (or only known/accepted warnings)
+ok:
+  - All leaf tasks have descriptions
+  - All leaf tasks have acceptance criteria
+  - All leaf tasks have code references
+  - No open questions
+  - No unverified assumptions
+  - All active contracts are agreed or better
+  - No dependency cycles
+  - All ready tasks have their deps done
+  - No parent tasks with direct code refs
+```
+
+If `errors` is non-empty — resolve them. If warnings exist — review each one and either fix it or add a `note(type="decision")` explaining why it is acceptable.
+
+#### Phase 3: Implement
+
+Only now hand off to the coder. Use `task_export` as the primary context document:
+
+```
+task_export(task_id, include_analysis=True)
+```
+
+This gives the coder:
+- The task spec and acceptance criteria
+- Parent chain (full decision history including ancestor notes)
+- Code nodes to modify with file + line ranges
+- Contracts (interfaces the implementation must satisfy)
+- Isolation score (how coupled is this to external code?)
+- Conflicts (which sibling tasks touch the same nodes?)
+- `pipeline_state.ready_for_coder: true`
+
+As each leaf is completed:
+
+```
+task_update(task_id, status="done")
+task_check_rollup(task_id)          # Can the parent close too?
+```
+
+`task_check_rollup` tells you whether all siblings are done and the parent can be closed — no manual tree traversal needed.
+
+#### Phase 4: Close
+
+When all subtasks are done:
+
+```
+task_roadmap()     # progress: 100%, all phases done
+task_update(root_id, status="done")
+```
+
+The pipeline is now idle. `task_get_active_root` returns `null`. A new root task can be created.
+
+### Design Entities (Contracts)
+
+When brainstorming introduces a new data structure or interface that does not yet exist in code, do not add a note — create a contract:
+
+```python
+# Wrong: loses the structure when the note is buried deep
+note_add(task_id, type="decision", content="OAuthToken = { access_token, refresh_token, expires_at }")
+
+# Right: a first-class design entity
+contract_add(
+    name="OAuthToken",
+    contract_type="schema",
+    definition="{ access_token: str, refresh_token: str, expires_at: datetime, provider: Literal['google','github'] }",
+    scope_task_id=root_id,
+)
+contract_link(contract_id, provider_task_id, role="provider")
+contract_link(contract_id, consumer_task_id_1, role="consumer")
+contract_link(contract_id, consumer_task_id_2, role="consumer")
+```
+
+One definition — many consumers. If the schema changes, update once, all consumers see it instantly. When the code is written, link the contract to the actual class:
+
+```python
+contract_update(contract_id, qualified_name="src/auth/token.py::OAuthToken")
+```
+
+Now `task_export` for any consumer shows the current definition side-by-side with the existing code — the coder sees exactly what to implement.
+
+### Key Rules
+
+| Rule | Rationale |
+|---|---|
+| One open root task at a time | Forces completion before the next feature starts |
+| Brainstorm fully before implementing | Every resolved ambiguity = one avoided rewrite |
+| Leaf tasks have code refs | Links planning to code — enables blast-radius cross-queries |
+| Contracts for shared structures | One source of truth for interfaces shared across subtasks |
+| `task_validate` must pass before coding | Algorithmic gate that catches gaps humans miss |
+| `task_check_rollup` after every completion | Keeps the tree status accurate without manual traversal |
+
+### Quick Reference
+
+```
+# Start
+task_get_active_root()                              # check if pipeline is idle
+task_create("Feature X")                            # create root
+
+# Decompose
+task_create("Subtask Y", parent_id=root_id)
+task_add_edge(child_id, blocker_id, "depends_on")
+
+# Interview each leaf
+semantic_search_nodes_tool("AuthService")           # find code nodes → get id + qualified_name
+task_link_code(task_id, qualified_name="src/auth.py::AuthService", ref_type="modifies")
+note_add(task_id, type="question", content="Should tokens be stored in httpOnly cookies?")
+contract_add(name="OAuthToken", ..., scope_task_id=root_id)
+
+# Check coverage
+task_find_for_impact(["src/auth.py"])               # what's covered?
+task_blast_radius(task_id)                          # what's uncovered?
+suggest_contracts(root_id)                          # hidden dependencies?
+note_list(root_id, include_children=True, status="open")  # unresolved items
+
+# Gate check
+task_validate()                                     # must be error-free
+
+# Implement
+task_export(leaf_task_id, include_analysis=True)    # full context for coder
+task_update(leaf_task_id, status="done")
+task_check_rollup(leaf_task_id)                     # can parent close?
+
+# Close
+task_update(root_id, status="done")
+task_get_active_root()                              # → null, pipeline idle
+```
+
+---
+
 ## Contributing
 
 ```bash
