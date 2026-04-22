@@ -211,18 +211,22 @@ def create_task(
     # Insert inline edges if provided.  Cycle checks run before any insert.
     created_edges: list[dict[str, Any]] = []
     if edge_specs:
-        # Build pending list for intra-batch cycle detection (same pattern as add_task_edge).
-        pending_cycle: list[tuple[str, str]] = [
-            (created_ids[fi], created_ids[ti])
-            for fi, ti, et, _ in edge_specs
-            if et in ("depends_on", "blocks")
-        ]
+        # Track ordering edges seen so far (type-aware) for intra-batch cycle detection.
+        # Same pattern as add_task_edge: only previously-resolved edges are passed as pending
+        # so each new edge is validated against already-accepted same-batch edges.
+        pending_ordering_local: list[tuple[str, str, str]] = []  # (src, tgt, type)
         try:
             for fi, ti, etype, desc in edge_specs:
                 src_id = created_ids[fi]
                 tgt_id = created_ids[ti]
                 if etype in ("depends_on", "blocks"):
-                    _assert_no_cycle_after_edge(conn, src_id, tgt_id, etype, pending=pending_cycle)
+                    same_type_pending = [(s, t) for s, t, et in pending_ordering_local if et == etype]
+                    _assert_no_cycle_after_edge(conn, src_id, tgt_id, etype, pending=same_type_pending)
+                    # Cross-type deadlock: same logic as add_task_edge.
+                    if etype == "blocks":
+                        depends_on_pending = [(s, t) for s, t, et in pending_ordering_local if et == "depends_on"]
+                        _assert_no_cycle_after_edge(conn, tgt_id, src_id, "depends_on", pending=depends_on_pending)
+                    pending_ordering_local.append((src_id, tgt_id, etype))
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO task_edges
@@ -830,14 +834,38 @@ def add_task_edge(
             _assert_no_cycle_after_edge(
                 conn, source_id, target_id, item_edge_type, pending=same_type_pending
             )
+            # Cross-type deadlock: blocks(A→B) + depends_on(A→B) = mutual wait (A waits for B
+            # via depends_on, B waits for A via blocks).  Detect by checking if target can reach
+            # source via depends_on — equivalent to "would adding depends_on(target→source)
+            # create a depends_on cycle?".
+            if item_edge_type == "blocks":
+                depends_on_pending = [(s, t) for s, t, et in pending_ordering if et == "depends_on"]
+                _assert_no_cycle_after_edge(
+                    conn, target_id, source_id, "depends_on", pending=depends_on_pending
+                )
             pending_ordering.append((source_id, target_id, item_edge_type))
 
     now = _now()
     created: list[dict[str, Any]] = []
     for source_id, target_id, item_edge_type, description in resolved:
+        existing = conn.execute(
+            "SELECT source_task_id, target_task_id, type, description, created_at "
+            "FROM task_edges WHERE source_task_id = ? AND target_task_id = ? AND type = ?",
+            (source_id, target_id, item_edge_type),
+        ).fetchone()
+        if existing:
+            created.append({
+                "source_task_id": source_id,
+                "target_task_id": target_id,
+                "type": item_edge_type,
+                "description": existing["description"],
+                "created_at": existing["created_at"],
+                "already_exists": True,
+            })
+            continue
         conn.execute(
             """
-            INSERT OR REPLACE INTO task_edges
+            INSERT INTO task_edges
                 (source_task_id, target_task_id, type, description, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
@@ -849,6 +877,7 @@ def add_task_edge(
             "type": item_edge_type,
             "description": description,
             "created_at": now,
+            "already_exists": False,
         })
 
     conn.commit()

@@ -1165,3 +1165,81 @@ class TestCommunityTools:
         assert "test_task_analysis.py::create_task" in result["sink_alternatives"][0]
         # Should find the path since we resolved to the correct node
         assert result["reaches_sink"] is True
+
+
+# ---------------------------------------------------------------------------
+# Contract error codes (B-09)
+# ---------------------------------------------------------------------------
+
+
+class TestContractErrorCodes:
+    """Tests for contract-specific error codes in tool responses."""
+
+    def setup_method(self):
+        """Set up a temporary database for testing."""
+        import tempfile
+        import shutil
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        # Create .code-review-graph directory to make it a valid project root
+        (self.root / ".code-review-graph").mkdir(parents=True, exist_ok=True)
+        self.db_path = self.root / ".code-review-graph" / "graph.db"
+
+    def teardown_method(self):
+        """Clean up the temporary directory."""
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_contract_update_not_found_returns_contract_error_code(self):
+        """contract_update_func with nonexistent contract_id returns CONTRACT_NOT_FOUND."""
+        from code_review_graph.tools.task_tools import contract_update_func
+
+        result = contract_update_func(
+            contract_id="nonexistent_contract_id",
+            repo_root=str(self.root),
+        )
+
+        assert result["status"] == "error"
+        assert result["code"] == "CONTRACT_NOT_FOUND"
+        assert result["next_action"] == "contract_list"
+        assert "contract_list" in result["recovery"].lower()
+
+    def test_contract_list_no_filters_returns_contract_error_code(self):
+        """contract_list_func with no filters raises ValueError → CONTRACT_INVALID_PARAMS."""
+        from code_review_graph.tools.task_tools import contract_list_func
+
+        result = contract_list_func(repo_root=str(self.root))
+
+        assert result["status"] == "error"
+        assert result["code"] == "CONTRACT_INVALID_PARAMS"
+        assert result["next_action"] == "contract_list"
+        assert "contract_type" in result["recovery"].lower() or "filter" in result["recovery"].lower()
+
+    def test_contract_link_not_found_returns_contract_error_code(self):
+        """contract_link_func with nonexistent contract_id returns CONTRACT_NOT_FOUND."""
+        from code_review_graph.tools.task_tools import contract_link_func
+
+        result = contract_link_func(
+            contract_id="nonexistent_contract_id",
+            task_id="some_task_id",
+            role="provider",
+            repo_root=str(self.root),
+        )
+
+        assert result["status"] == "error"
+        assert result["code"] == "CONTRACT_NOT_FOUND"
+        assert result["next_action"] == "contract_list"
+
+    def test_contract_unlink_not_found_returns_contract_error_code(self):
+        """contract_unlink_func with nonexistent contract_id returns CONTRACT_NOT_FOUND."""
+        from code_review_graph.tools.task_tools import contract_unlink_func
+
+        result = contract_unlink_func(
+            contract_id="nonexistent_contract_id",
+            task_id="some_task_id",
+            repo_root=str(self.root),
+        )
+
+        assert result["status"] == "error"
+        assert result["code"] == "CONTRACT_NOT_FOUND"
+        assert result["next_action"] == "contract_list"

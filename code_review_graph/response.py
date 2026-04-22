@@ -96,6 +96,10 @@ _ERROR_NEXT_ACTION: dict[str, str] = {
     "TASK_CYCLE": "task_get_dag",
     "TASK_HAS_CHILDREN": "task_delete",
     "TASK_PARSE_ERROR": "task_validate",
+    # Contract errors — route to contract-specific tools
+    "CONTRACT_NOT_FOUND": "contract_list",
+    "CONTRACT_INVALID_PARAMS": "contract_list",
+    "CONTRACT_ERROR": "contract_list",
 }
 
 _ERROR_RECOVERY: dict[str, str] = {
@@ -120,6 +124,14 @@ _ERROR_RECOVERY: dict[str, str] = {
     "TASK_CYCLE": "Use task_get_dag to visualise the dependency graph and identify the cycle.",
     "TASK_HAS_CHILDREN": "Pass cascade=True to delete the task and all its subtasks.",
     "TASK_PARSE_ERROR": "Verify task_id exists via task_get, then retry the operation.",
+    # Contract errors
+    "CONTRACT_NOT_FOUND": "Use contract_list(scope_task_id=...) to browse existing contracts.",
+    "CONTRACT_INVALID_PARAMS": (
+        "Check valid values: contract_type in (interface|api|schema|event|data_format), "
+        "status in (proposed|agreed|implemented|verified|void), "
+        "role in (provider|consumer)."
+    ),
+    "CONTRACT_ERROR": "Verify contract_id and parameters, then retry.",
 }
 
 

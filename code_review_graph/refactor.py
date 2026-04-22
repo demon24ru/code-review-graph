@@ -141,6 +141,28 @@ def rename_preview(
     for e in edits:
         stats[e["confidence"]] += 1
 
+    # --- Docstring / comment / string-literal scan (possible_misses) ---
+    # Scan files that already have edits (plus the definition file) for any
+    # remaining occurrences of old_name not covered by the edits above.
+    possible_misses: list[dict[str, Any]] = []
+    files_to_scan: set[str] = {node.file_path} | {e["file"] for e in edits if e.get("file")}
+    edit_positions = {(e["file"], e["line"]) for e in edits}
+
+    for fpath in files_to_scan:
+        try:
+            lines = Path(fpath).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for lineno, line_text in enumerate(lines, start=1):
+            if old_name in line_text and (fpath, lineno) not in edit_positions:
+                possible_misses.append({
+                    "file": fpath,
+                    "line": lineno,
+                    "text": line_text.strip()[:120],  # truncate long lines
+                    "confidence": "low",
+                    "reason": "docstring/comment/string literal — manual review required",
+                })
+
     refactor_id = uuid.uuid4().hex[:8]
     preview: dict[str, Any] = {
         "refactor_id": refactor_id,
@@ -149,6 +171,7 @@ def rename_preview(
         "new_name": _sanitize_name(new_name),
         "edits": edits,
         "stats": stats,
+        "possible_misses": possible_misses,
         "created_at": time.time(),
     }
 

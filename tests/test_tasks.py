@@ -430,6 +430,73 @@ class TestDAGEdges(TestTaskBase):
         edges = tasks.get_task_edges(self.conn, self.t1["id"])
         assert len(edges) == 2
 
+    def test_blocks_after_depends_on_same_pair_raises_cycle(self):
+        # B-07: depends_on(A→B) + blocks(A→B) = mutual wait deadlock.
+        # A waits for B (depends_on), B waits for A to unblock (blocks) = deadlock.
+        tasks.add_task_edge(
+            self.conn,
+            [{"source_id": self.t1["id"], "target_id": self.t2["id"]}],
+            edge_type="depends_on",
+        )
+        with pytest.raises(ValueError, match="cycle"):
+            tasks.add_task_edge(
+                self.conn,
+                [{"source_id": self.t1["id"], "target_id": self.t2["id"]}],
+                edge_type="blocks",
+            )
+
+    def test_blocks_opposite_direction_is_fine(self):
+        # depends_on(A→B) + blocks(B→C) has no deadlock — only a linear chain.
+        tasks.add_task_edge(
+            self.conn,
+            [{"source_id": self.t1["id"], "target_id": self.t2["id"]}],
+            edge_type="depends_on",
+        )
+        # blocks(B→C) should succeed: B must finish before C, no cycle with A→B depends_on.
+        tasks.add_task_edge(
+            self.conn,
+            [{"source_id": self.t2["id"], "target_id": self.t3["id"]}],
+            edge_type="blocks",
+        )
+        edges = tasks.get_task_edges(self.conn, self.t2["id"])
+        assert len(edges) == 2  # one incoming depends_on, one outgoing blocks
+
+    def test_add_edge_duplicate_returns_already_exists_true(self):
+        # B-08: Adding the same edge twice should be idempotent.
+        # First call creates the edge with description.
+        result1 = tasks.add_task_edge(
+            self.conn,
+            [{"source_id": self.t1["id"], "target_id": self.t2["id"], "description": "important context"}],
+            edge_type="informs",
+        )
+        edge1 = result1["edges"][0]
+        assert edge1["already_exists"] is False
+        assert edge1["description"] == "important context"
+        original_created_at = edge1["created_at"]
+
+        # Second call with same edge (no description) should return already_exists=True
+        # and preserve the original description and created_at.
+        result2 = tasks.add_task_edge(
+            self.conn,
+            [{"source_id": self.t1["id"], "target_id": self.t2["id"]}],
+            edge_type="informs",
+        )
+        edge2 = result2["edges"][0]
+        assert edge2["already_exists"] is True
+        assert edge2["description"] == "important context"  # original preserved
+        assert edge2["created_at"] == original_created_at  # timestamp unchanged
+
+    def test_add_edge_non_duplicate_returns_already_exists_false(self):
+        # B-08: New edges should return already_exists=False.
+        result = tasks.add_task_edge(
+            self.conn,
+            [{"source_id": self.t1["id"], "target_id": self.t2["id"], "description": "new edge"}],
+            edge_type="depends_on",
+        )
+        edge = result["edges"][0]
+        assert edge["already_exists"] is False
+        assert edge["description"] == "new edge"
+
     def test_remove_edge(self):
         tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")
         tasks.remove_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")

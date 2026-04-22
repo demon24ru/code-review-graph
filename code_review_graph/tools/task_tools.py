@@ -70,6 +70,28 @@ def _run(repo_root: Optional[str], fn, *args, **kwargs) -> dict[str, Any]:
         store.close()
 
 
+def _run_contract(repo_root: Optional[str], fn, *args, **kwargs) -> dict[str, Any]:
+    """Like _run() but uses contract-specific error codes for LLM routing.
+
+    Uses contract-specific error codes so LLM ``next_action`` routing is
+    meaningful for contract operations:
+      KeyError  → CONTRACT_NOT_FOUND  → next: contract_list
+      ValueError → CONTRACT_INVALID_PARAMS → next: contract_list
+      other     → CONTRACT_ERROR → next: contract_list
+    """
+    store, _ = _get_store(repo_root)
+    try:
+        return fn(store._conn, *args, **kwargs)
+    except KeyError as exc:
+        return graph_error("CONTRACT_NOT_FOUND", str(exc))
+    except ValueError as exc:
+        return graph_error("CONTRACT_INVALID_PARAMS", str(exc))
+    except Exception as exc:
+        return graph_error("CONTRACT_ERROR", str(exc))
+    finally:
+        store.close()
+
+
 # ===========================================================================
 # Group 0: Active root helper (1 tool)
 # ===========================================================================
@@ -1150,8 +1172,8 @@ def contract_add_func(
             f"{n_participants} participant(s))",
             contract=contract,
         )
-    return _run(repo_root, _fn, name, contract_type, definition, scope_task_id,
-                provider_task_id, consumer_task_ids, code_node_id, qualified_name)
+    return _run_contract(repo_root, _fn, name, contract_type, definition, scope_task_id,
+                         provider_task_id, consumer_task_ids, code_node_id, qualified_name)
 
 
 def contract_link_func(
@@ -1177,7 +1199,7 @@ def contract_link_func(
             f"Linked task {task_id[:8]} as {role} to contract {contract_id[:8]}",
             contract=contract,
         )
-    return _run(repo_root, _fn, contract_id, task_id, role)
+    return _run_contract(repo_root, _fn, contract_id, task_id, role)
 
 
 def contract_unlink_func(
@@ -1200,7 +1222,7 @@ def contract_unlink_func(
             f"Unlinked task {task_id[:8]} from contract {contract_id[:8]}",
             contract=contract,
         )
-    return _run(repo_root, _fn, contract_id, task_id)
+    return _run_contract(repo_root, _fn, contract_id, task_id)
 
 
 def contract_update_func(
@@ -1243,7 +1265,7 @@ def contract_update_func(
             f"Updated contract {contract_id[:8]} (status: {contract['status']})",
             contract=contract,
         )
-    return _run(repo_root, _fn, contract_id, name, definition, status, code_node_id, qualified_name)
+    return _run_contract(repo_root, _fn, contract_id, name, definition, status, code_node_id, qualified_name)
 
 
 def contract_list_func(
@@ -1279,7 +1301,7 @@ def contract_list_func(
             f"Found {len(contract_list)} contract(s)",
             contracts=contract_list,
         )
-    return _run(repo_root, _fn, scope_task_id, task_id, name)
+    return _run_contract(repo_root, _fn, scope_task_id, task_id, name)
 
 
 # ===========================================================================

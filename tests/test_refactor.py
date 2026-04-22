@@ -138,6 +138,100 @@ class TestRenamePreview:
         with _refactor_lock:
             assert rid in _pending_refactors
 
+    def test_rename_preview_includes_possible_misses_for_docstrings(self, tmp_path):
+        """Occurrences in docstrings/comments not in edits appear in possible_misses."""
+        # Create a real Python file with a function definition and a docstring mention.
+        src_file = tmp_path / "mymodule.py"
+        src_file.write_text(
+            'def helper():\n'
+            '    """Call helper to do work.\n'
+            '\n'
+            '    Example::\n'
+            '\n'
+            '        helper()  # docstring example\n'
+            '    """\n'
+            '    pass\n',
+            encoding="utf-8",
+        )
+        # Upsert a node pointing at the real temp file.
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="helper_doc",
+                file_path=str(src_file),
+                line_start=1,
+                line_end=8,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        result = rename_preview(self.store, "helper_doc", "new_helper_doc")
+        # The file doesn't actually contain "helper_doc" in the docstring body,
+        # so use a simpler approach: create a file with the exact old_name in a comment.
+        src_file2 = tmp_path / "mymodule2.py"
+        src_file2.write_text(
+            'def my_func():\n'
+            '    # Uses my_func internally\n'
+            '    pass\n',
+            encoding="utf-8",
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="my_func",
+                file_path=str(src_file2),
+                line_start=1,
+                line_end=3,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        result2 = rename_preview(self.store, "my_func", "renamed_func")
+        assert result2 is not None
+        assert "possible_misses" in result2
+        # Line 2 has "my_func" in a comment — not in edits (which cover line 1 only).
+        miss_lines = {m["line"] for m in result2["possible_misses"]}
+        assert 2 in miss_lines
+        # Each miss must have required fields.
+        for miss in result2["possible_misses"]:
+            assert "file" in miss
+            assert "line" in miss
+            assert "text" in miss
+            assert miss["confidence"] == "low"
+            assert "reason" in miss
+
+    def test_rename_preview_possible_misses_excludes_already_in_edits(self, tmp_path):
+        """Lines already present in edits must NOT appear in possible_misses."""
+        src_file = tmp_path / "fn.py"
+        src_file.write_text(
+            'def compute():\n'
+            '    # compute does the work\n'
+            '    pass\n',
+            encoding="utf-8",
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="compute",
+                file_path=str(src_file),
+                line_start=1,
+                line_end=3,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        result = rename_preview(self.store, "compute", "calculate")
+        assert result is not None
+
+        edit_positions = {(e["file"], e["line"]) for e in result["edits"]}
+        for miss in result["possible_misses"]:
+            assert (miss["file"], miss["line"]) not in edit_positions, (
+                f"possible_miss at {miss['file']}:{miss['line']} is already in edits"
+            )
+
 
 class TestFindDeadCode:
     """Tests for find_dead_code."""
