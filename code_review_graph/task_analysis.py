@@ -628,30 +628,16 @@ def validate_dag(
         ok.append("No unverified assumptions")
 
     # --- Check 6: Contracts in 'proposed' status where active tasks are participants ---
-    # Use contract_links for the new many-to-many schema; fall back gracefully
-    # if contract_links doesn't exist yet (pre-v7 DB).
-    try:
-        proposed_contract_ids = set(
-            r[0]
-            for r in conn.execute(  # noqa: S608
-                f"SELECT DISTINCT cl.contract_id "
-                f"FROM contract_links cl "
-                f"JOIN contracts c ON c.id = cl.contract_id "
-                f"WHERE cl.task_id IN ({ph}) AND c.status = 'proposed'",
-                subtree_ids,
-            ).fetchall()
-        )
-    except Exception:
-        # contract_links not yet migrated — use old columns
-        proposed_contract_ids = set(
-            r[0]
-            for r in conn.execute(  # noqa: S608
-                f"SELECT id FROM contracts "
-                f"WHERE (provider_task_id IN ({ph}) OR consumer_task_id IN ({ph})) "
-                f"AND status = 'proposed'",
-                (*subtree_ids, *subtree_ids),
-            ).fetchall()
-        )
+    proposed_contract_ids = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT cl.contract_id "
+            f"FROM contract_links cl "
+            f"JOIN contracts c ON c.id = cl.contract_id "
+            f"WHERE cl.task_id IN ({ph}) AND c.status = 'proposed'",
+            subtree_ids,
+        ).fetchall()
+    )
 
     active_proposed: list[str] = []
     for cid in proposed_contract_ids:
@@ -1030,27 +1016,19 @@ def roadmap(
     except ValueError:
         phases = []
 
-    # Contracts summary — use scope_task_id (v7) with fallback to old columns (v6)
-    try:
+    # Contracts summary — by scope_task_id; also include contracts
+    # linked to subtree tasks directly (in case scope was not set)
+    contract_rows = conn.execute(  # noqa: S608
+        f"SELECT DISTINCT c.* FROM contracts c "
+        f"WHERE c.scope_task_id IN ({ph})",
+        subtree_ids,
+    ).fetchall()
+    if not contract_rows:
         contract_rows = conn.execute(  # noqa: S608
             f"SELECT DISTINCT c.* FROM contracts c "
-            f"WHERE c.scope_task_id IN ({ph})",
+            f"JOIN contract_links cl ON cl.contract_id = c.id "
+            f"WHERE cl.task_id IN ({ph})",
             subtree_ids,
-        ).fetchall()
-        if not contract_rows:
-            # Fallback: may be pre-v7 DB or contracts added without scope
-            contract_rows = conn.execute(  # noqa: S608
-                f"SELECT DISTINCT c.* FROM contracts c "
-                f"JOIN contract_links cl ON cl.contract_id = c.id "
-                f"WHERE cl.task_id IN ({ph})",
-                subtree_ids,
-            ).fetchall()
-    except Exception:
-        # Pre-v7 fallback
-        contract_rows = conn.execute(  # noqa: S608
-            f"SELECT * FROM contracts "
-            f"WHERE provider_task_id IN ({ph}) OR consumer_task_id IN ({ph})",
-            (*subtree_ids, *subtree_ids),
         ).fetchall()
     contracts_list = [_row_to_dict(r) for r in contract_rows]
     pending_contracts = [c for c in contracts_list if c["status"] == "proposed"]
@@ -1339,9 +1317,10 @@ def roadmap_diff(
     # Contracts updated after since_timestamp
     changed_contracts = conn.execute(  # noqa: S608
         f"""
-        SELECT * FROM contracts
-        WHERE (provider_task_id IN ({ph}) OR consumer_task_id IN ({ph}))
-          AND updated_at > ?
+        SELECT DISTINCT c.* FROM contracts c
+        LEFT JOIN contract_links cl ON cl.contract_id = c.id
+        WHERE (c.scope_task_id IN ({ph}) OR cl.task_id IN ({ph}))
+          AND c.updated_at > ?
         """,
         (*subtree_ids, *subtree_ids, since_timestamp),
     ).fetchall()
@@ -1689,27 +1668,18 @@ def suggest_contracts(
         a, b = r[0], r[1]
         existing_pairs.add((min(a, b), max(a, b)))
 
-    # Contracts — use contract_links (v7) with fallback to old columns (v6)
-    try:
-        cl_rows = conn.execute(  # noqa: S608
-            f"SELECT cl1.task_id, cl2.task_id "
-            f"FROM contract_links cl1 "
-            f"JOIN contract_links cl2 ON cl1.contract_id = cl2.contract_id AND cl1.task_id != cl2.task_id "
-            f"WHERE cl1.task_id IN ({ph})",
-            leaf_ids,
-        ).fetchall()
-        for r in cl_rows:
-            a, b = r[0], r[1]
-            existing_pairs.add((min(a, b), max(a, b)))
-    except Exception:
-        contract_rows = conn.execute(  # noqa: S608
-            f"SELECT provider_task_id, consumer_task_id FROM contracts "
-            f"WHERE provider_task_id IN ({ph}) OR consumer_task_id IN ({ph})",
-            leaf_ids + leaf_ids,
-        ).fetchall()
-        for r in contract_rows:
-            a, b = r[0], r[1]
-            existing_pairs.add((min(a, b), max(a, b)))
+    # Contracts — find pairs of leaf tasks sharing the same contract
+    cl_rows = conn.execute(  # noqa: S608
+        f"SELECT cl1.task_id, cl2.task_id "
+        f"FROM contract_links cl1 "
+        f"JOIN contract_links cl2 "
+        f"  ON cl1.contract_id = cl2.contract_id AND cl1.task_id != cl2.task_id "
+        f"WHERE cl1.task_id IN ({ph})",
+        leaf_ids,
+    ).fetchall()
+    for r in cl_rows:
+        a, b = r[0], r[1]
+        existing_pairs.add((min(a, b), max(a, b)))
 
     # Fetch task titles
     task_rows = conn.execute(  # noqa: S608

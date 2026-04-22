@@ -392,30 +392,20 @@ def _delete_task_data(conn: sqlite3.Connection, task_id: str) -> None:
     conn.execute("DELETE FROM task_code_refs WHERE task_id = ?", (task_id,))
     conn.execute("DELETE FROM notes WHERE task_id = ?", (task_id,))
     # Remove task from contract_links; then delete contracts with no remaining links
-    # and whose scope_task_id is this task (fully orphaned contracts)
-    try:
-        # Get contracts that will lose their only remaining participant
-        orphan_contracts = set(
-            r[0]
-            for r in conn.execute(
-                "SELECT contract_id FROM contract_links WHERE task_id = ?",
-                (task_id,),
-            ).fetchall()
-            if conn.execute(
-                "SELECT COUNT(*) FROM contract_links WHERE contract_id = ?",
-                (r[0],),
-            ).fetchone()[0] == 1  # this task is the last participant
-        )
-        conn.execute("DELETE FROM contract_links WHERE task_id = ?", (task_id,))
-        # Delete now-orphaned contracts
-        for cid in orphan_contracts:
-            conn.execute("DELETE FROM contracts WHERE id = ?", (cid,))
-    except Exception:
-        # Fallback: old schema (v6) — delete by legacy FK columns
-        conn.execute(
-            "DELETE FROM contracts WHERE provider_task_id = ? OR consumer_task_id = ?",
-            (task_id, task_id),
-        )
+    orphan_contracts = set(
+        r[0]
+        for r in conn.execute(
+            "SELECT contract_id FROM contract_links WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+        if conn.execute(
+            "SELECT COUNT(*) FROM contract_links WHERE contract_id = ?",
+            (r[0],),
+        ).fetchone()[0] == 1  # this task is the last participant
+    )
+    conn.execute("DELETE FROM contract_links WHERE task_id = ?", (task_id,))
+    for cid in orphan_contracts:
+        conn.execute("DELETE FROM contracts WHERE id = ?", (cid,))
     # Also delete contracts scoped to this task (it was the scope root)
     conn.execute("DELETE FROM contracts WHERE scope_task_id = ?", (task_id,))
     conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -1449,7 +1439,7 @@ def add_contract(
 
     contract_id = _new_id()
     now = _now()
-    # After v7 migration, provider_task_id and consumer_task_id allow NULL.
+    # Participants are stored in contract_links (many-to-many), not in contracts table.
     # We use contract_links for participants; legacy columns kept for back-compat.
     conn.execute(
         """
@@ -1466,15 +1456,15 @@ def add_contract(
     # Insert contract_links rows
     if provider_task_id:
         conn.execute(
-            "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role, linked_at) "
-            "VALUES (?, ?, 'provider', ?)",
-            (contract_id, provider_task_id, now),
+            "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role) "
+            "VALUES (?, ?, 'provider')",
+            (contract_id, provider_task_id),
         )
     for cid in (consumer_task_ids or []):
         conn.execute(
-            "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role, linked_at) "
-            "VALUES (?, ?, 'consumer', ?)",
-            (contract_id, cid, now),
+            "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role) "
+            "VALUES (?, ?, 'consumer')",
+            (contract_id, cid),
         )
 
     conn.commit()
@@ -1503,9 +1493,9 @@ def link_contract(
         raise ValueError(f"role must be 'provider' or 'consumer', got {role!r}")
 
     conn.execute(
-        "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role, linked_at) "
-        "VALUES (?, ?, ?, ?)",
-        (contract_id, task_id, role, _now()),
+        "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role) "
+        "VALUES (?, ?, ?)",
+        (contract_id, task_id, role),
     )
     conn.commit()
     return _get_contract(conn, contract_id)
@@ -1533,7 +1523,7 @@ def _get_contract(conn: sqlite3.Connection, contract_id: str) -> dict[str, Any]:
     d = _row_to_dict(row)
     # Enrich with contract_links (participants)
     link_rows = conn.execute(
-        "SELECT task_id, role FROM contract_links WHERE contract_id = ? ORDER BY role, linked_at",
+        "SELECT task_id, role FROM contract_links WHERE contract_id = ? ORDER BY role, task_id",
         (contract_id,),
     ).fetchall()
     providers = [r[0] for r in link_rows if r[1] == "provider"]
@@ -1643,7 +1633,7 @@ def list_contracts(
     for row in rows:
         d = _row_to_dict(row)
         link_rows = conn.execute(
-            "SELECT task_id, role FROM contract_links WHERE contract_id = ? ORDER BY role, linked_at",
+            "SELECT task_id, role FROM contract_links WHERE contract_id = ? ORDER BY role, task_id",
             (d["id"],),
         ).fetchall()
         d["provider_task_ids"] = [r[0] for r in link_rows if r[1] == "provider"]

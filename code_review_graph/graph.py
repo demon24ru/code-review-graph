@@ -114,13 +114,21 @@ CREATE TABLE IF NOT EXISTS notes (
 
 CREATE TABLE IF NOT EXISTS contracts (
     id TEXT PRIMARY KEY,
-    provider_task_id TEXT NOT NULL REFERENCES tasks(id),
-    consumer_task_id TEXT NOT NULL REFERENCES tasks(id),
+    name TEXT NOT NULL DEFAULT '',
+    scope_task_id TEXT REFERENCES tasks(id),
     contract_type TEXT NOT NULL,
     definition TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'proposed',
+    code_node_id INTEGER REFERENCES nodes(id),
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contract_links (
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    PRIMARY KEY (contract_id, task_id, role)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
@@ -132,8 +140,9 @@ CREATE INDEX IF NOT EXISTS idx_task_code_refs_node ON task_code_refs(code_node_i
 CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task_id);
 CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(note_type);
 CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status);
-CREATE INDEX IF NOT EXISTS idx_contracts_provider ON contracts(provider_task_id);
-CREATE INDEX IF NOT EXISTS idx_contracts_consumer ON contracts(consumer_task_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_scope ON contracts(scope_task_id);
+CREATE INDEX IF NOT EXISTS idx_contract_links_contract ON contract_links(contract_id);
+CREATE INDEX IF NOT EXISTS idx_contract_links_task ON contract_links(task_id);
 """
 
 

@@ -207,14 +207,17 @@ class TestMigrationV6:
         assert required.issubset(set(cols)), f"Missing columns: {required - set(cols)}"
 
     def test_v6_contracts_columns(self):
-        """contracts table must have all required columns."""
-        cols = _get_columns(self.conn, "contracts")
+        """contracts table must have v9 schema (no legacy provider/consumer columns)."""
+        cols = set(_get_columns(self.conn, "contracts"))
         required = {
-            "id", "provider_task_id", "consumer_task_id",
-            "contract_type", "definition", "status",
+            "id", "name", "scope_task_id", "contract_type",
+            "definition", "status", "code_node_id",
             "created_at", "updated_at",
         }
-        assert required.issubset(set(cols)), f"Missing columns: {required - set(cols)}"
+        assert required.issubset(cols), f"Missing columns: {required - cols}"
+        # Legacy columns must be gone
+        assert "provider_task_id" not in cols, "Legacy provider_task_id still present"
+        assert "consumer_task_id" not in cols, "Legacy consumer_task_id still present"
 
     # --- Index existence ---
 
@@ -231,11 +234,12 @@ class TestMigrationV6:
             "idx_notes_task",
             "idx_notes_type",
             "idx_notes_status",
-            "idx_contracts_provider",
-            "idx_contracts_consumer",
+            "idx_contracts_scope",
+            "idx_contract_links_contract",
+            "idx_contract_links_task",
         }
         missing = expected - idx
-        assert not missing, f"Missing indexes after v6: {missing}"
+        assert not missing, f"Missing indexes after v6+v9: {missing}"
 
     # --- Idempotency of v6 specifically ---
 
@@ -286,3 +290,79 @@ class TestMigrationV6:
         self.conn.commit()
         row = self.conn.execute("SELECT content FROM notes WHERE id = ?", ("n1",)).fetchone()
         assert row is not None
+
+
+class TestMigrationV9:
+    """v9 migration: legacy provider_task_id/consumer_task_id removed from contracts."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+        self.conn = self.store._conn
+
+    def teardown_method(self):
+        self.store.close()
+        try:
+            Path(self.tmp.name).unlink()
+        except PermissionError:
+            pass
+
+    def test_legacy_columns_absent_after_migration(self):
+        """After v9, contracts must NOT have provider_task_id or consumer_task_id."""
+        cols = set(_get_columns(self.conn, "contracts"))
+        assert "provider_task_id" not in cols
+        assert "consumer_task_id" not in cols
+
+    def test_required_columns_present(self):
+        """All v9 columns must be present."""
+        cols = set(_get_columns(self.conn, "contracts"))
+        for col in ("id", "name", "scope_task_id", "contract_type",
+                    "definition", "status", "code_node_id",
+                    "created_at", "updated_at"):
+            assert col in cols, f"Missing column: {col}"
+
+    def test_contract_links_table_exists(self):
+        """contract_links many-to-many table must exist."""
+        assert _table_exists(self.conn, "contract_links")
+        cols = set(_get_columns(self.conn, "contract_links"))
+        assert {"contract_id", "task_id", "role"}.issubset(cols)
+
+    def test_idempotent_rerun(self):
+        """Running v9 migration again on an already-migrated DB is a no-op."""
+        from code_review_graph.migrations import _migrate_v9
+        _migrate_v9(self.conn)  # should not raise
+        cols = set(_get_columns(self.conn, "contracts"))
+        assert "provider_task_id" not in cols
+
+    def test_data_preserved_after_migration(self):
+        """Existing contract data must survive the table recreation."""
+        import time
+        now = time.time()
+        # Insert prerequisite tasks
+        for tid, title in [("t1", "Provider"), ("t2", "Consumer")]:
+            self.conn.execute(
+                "INSERT INTO tasks (id, title, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?)", (tid, title, "draft", now, now)
+            )
+        # Insert contract with new schema
+        self.conn.execute(
+            "INSERT INTO contracts (id, name, contract_type, definition, "
+            "status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            ("c1", "IFoo", "interface", "{ bar(): void }", "proposed", now, now),
+        )
+        self.conn.execute(
+            "INSERT INTO contract_links (contract_id, task_id, role) VALUES (?,?,?)",
+            ("c1", "t1", "provider"),
+        )
+        self.conn.commit()
+
+        # Re-run migration (idempotent)
+        from code_review_graph.migrations import _migrate_v9
+        _migrate_v9(self.conn)
+
+        row = self.conn.execute(
+            "SELECT name, definition FROM contracts WHERE id = ?", ("c1",)
+        ).fetchone()
+        assert row is not None
+        name = row[0] if isinstance(row, tuple) else row["name"]
+        assert name == "IFoo"

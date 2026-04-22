@@ -211,13 +211,22 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS contracts (
             id TEXT PRIMARY KEY,
-            provider_task_id TEXT NOT NULL REFERENCES tasks(id),
-            consumer_task_id TEXT NOT NULL REFERENCES tasks(id),
+            name TEXT NOT NULL DEFAULT '',
+            scope_task_id TEXT REFERENCES tasks(id),
             contract_type TEXT NOT NULL,
             definition TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'proposed',
+            code_node_id INTEGER REFERENCES nodes(id),
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS contract_links (
+            contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            PRIMARY KEY (contract_id, task_id, role)
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)")
@@ -238,10 +247,13 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(note_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_status ON notes(status)")
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contracts_provider ON contracts(provider_task_id)"
+        "CREATE INDEX IF NOT EXISTS idx_contracts_scope ON contracts(scope_task_id)"
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contracts_consumer ON contracts(consumer_task_id)"
+        "CREATE INDEX IF NOT EXISTS idx_contract_links_contract ON contract_links(contract_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_contract_links_task ON contract_links(task_id)"
     )
     # FTS5 virtual table for full-text search across task text fields
     conn.execute("""
@@ -283,158 +295,114 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
 # Migration registry
 # ---------------------------------------------------------------------------
 
-def _migrate_v7(conn: sqlite3.Connection) -> None:  # noqa: C901
-    """v7 — Extend contracts to first-class design entities.
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """v7 — Extend contracts to first-class design entities (many-to-many).
 
     Changes:
-    1. Add columns to contracts: name, scope_task_id, code_node_id
-    2. Create contract_links table (many-to-many: contract ↔ task, role)
-    3. Back-fill contract_links from existing (provider_task_id, consumer_task_id)
-    4. Add indexes on new tables/columns
+    1. Ensure contracts table has name, scope_task_id, code_node_id columns
+       (recreate without legacy NOT NULL provider/consumer columns if needed)
+    2. Create contract_links table (many-to-many: contract ↔ task + role)
+    3. Back-fill name for existing rows
+    4. Add indexes
     """
-    # --- 1. Recreate contracts table to drop NOT NULL on legacy columns ---
-    # SQLite does not support ALTER COLUMN DROP NOT NULL, so we rename + recreate.
     existing_cols = {
         row[1]
         for row in conn.execute("PRAGMA table_info(contracts)").fetchall()
     }
-    needs_recreate = (
-        "name" not in existing_cols
-        or "scope_task_id" not in existing_cols
-        or "code_node_id" not in existing_cols
-    )
-    # Also check if provider/consumer still have NOT NULL (notnull=1)
+
+    # If contracts table still has legacy NOT NULL provider/consumer or missing
+    # new columns, recreate it.
     col_constraints = {
         row[1]: row[3]
         for row in conn.execute("PRAGMA table_info(contracts)").fetchall()
     }
-    legacy_not_null = col_constraints.get("provider_task_id", 0) or col_constraints.get("consumer_task_id", 0)
+    legacy_not_null = (
+        col_constraints.get("provider_task_id", 0)
+        or col_constraints.get("consumer_task_id", 0)
+    )
+    needs_new_cols = not {"name", "scope_task_id", "code_node_id"}.issubset(existing_cols)
 
-    if needs_recreate or legacy_not_null:
-        conn.execute("ALTER TABLE contracts RENAME TO _contracts_old")
+    if needs_new_cols or legacy_not_null:
+        conn.execute("ALTER TABLE contracts RENAME TO _contracts_v6")
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS contracts (
+            CREATE TABLE contracts (
                 id               TEXT PRIMARY KEY,
                 name             TEXT NOT NULL DEFAULT '',
                 contract_type    TEXT NOT NULL,
                 definition       TEXT NOT NULL,
                 status           TEXT NOT NULL DEFAULT 'proposed',
-                scope_task_id    TEXT REFERENCES tasks(id) ON DELETE SET NULL,
-                code_node_id     INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
-                provider_task_id TEXT,
-                consumer_task_id TEXT,
+                scope_task_id    TEXT REFERENCES tasks(id),
+                code_node_id     INTEGER REFERENCES nodes(id),
                 created_at       REAL NOT NULL,
                 updated_at       REAL NOT NULL
             )
         """)
-        # Copy data from old table (with safe defaults for new columns)
-        old_cols = set(existing_cols)
-        select_parts = []
-        for col in ("id", "provider_task_id", "consumer_task_id", "contract_type",
-                    "definition", "status", "created_at", "updated_at"):
-            select_parts.append(col)
-        name_expr = "contract_type || '_' || substr(id,1,8)" if "name" not in old_cols else "name"
-        scope_expr = "NULL" if "scope_task_id" not in old_cols else "scope_task_id"
-        code_expr = "NULL" if "code_node_id" not in old_cols else "code_node_id"
+        # Copy common columns; derive name from contract_type if absent
+        name_expr = (
+            "contract_type || '_' || substr(id,1,8)"
+            if "name" not in existing_cols
+            else "COALESCE(name, '')"
+        )
+        scope_expr = "NULL" if "scope_task_id" not in existing_cols else "scope_task_id"
+        code_expr = "NULL" if "code_node_id" not in existing_cols else "code_node_id"
         conn.execute(f"""
             INSERT INTO contracts
                 (id, name, contract_type, definition, status,
-                 scope_task_id, code_node_id,
-                 provider_task_id, consumer_task_id,
-                 created_at, updated_at)
+                 scope_task_id, code_node_id, created_at, updated_at)
             SELECT id, {name_expr}, contract_type, definition, status,
-                   {scope_expr}, {code_expr},
-                   provider_task_id, consumer_task_id,
-                   created_at, updated_at
-            FROM _contracts_old
+                   {scope_expr}, {code_expr}, created_at, updated_at
+            FROM _contracts_v6
         """)  # noqa: S608
-        conn.execute("DROP TABLE _contracts_old")
-    else:
-        # Just add missing columns without recreating
-        pass
 
-    # --- 2. Create contract_links table ---
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS contract_links (
-            contract_id  TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-            task_id      TEXT NOT NULL REFERENCES tasks(id)     ON DELETE CASCADE,
-            role         TEXT NOT NULL CHECK(role IN ('provider', 'consumer')),
-            linked_at    REAL NOT NULL DEFAULT (unixepoch('now', 'subsec')),
-            PRIMARY KEY (contract_id, task_id, role)
-        )
-    """)
+        # Back-fill contract_links from legacy provider/consumer if they existed
+        if "provider_task_id" in existing_cols or "consumer_task_id" in existing_cols:
+            now = __import__("time").time()
+            legacy_rows = conn.execute(
+                "SELECT id, provider_task_id, consumer_task_id FROM _contracts_v6"
+            ).fetchall()
+            for contract_id, provider_id, consumer_id in legacy_rows:
+                if provider_id:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role) "
+                        "VALUES (?, ?, 'provider')",
+                        (contract_id, provider_id),
+                    )
+                if consumer_id:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role) "
+                        "VALUES (?, ?, 'consumer')",
+                        (contract_id, consumer_id),
+                    )
+        conn.execute("DROP TABLE _contracts_v6")
 
-    # --- 3. Back-fill contract_links from existing provider/consumer columns ---
-    rows = conn.execute(
-        "SELECT id, provider_task_id, consumer_task_id FROM contracts"
-    ).fetchall()
-    now = __import__("time").time()
-    for contract_id, provider_id, consumer_id in rows:
-        if provider_id:
-            conn.execute(
-                "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role, linked_at) "
-                "VALUES (?, ?, 'provider', ?)",
-                (contract_id, provider_id, now),
-            )
-        if consumer_id:
-            conn.execute(
-                "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role, linked_at) "
-                "VALUES (?, ?, 'consumer', ?)",
-                (contract_id, consumer_id, now),
-            )
-
-    # Back-fill scope_task_id: use provider's parent chain root if available,
-    # else consumer's parent — best-effort heuristic for existing data.
-    contracts_needing_scope = conn.execute(
-        "SELECT id, provider_task_id, consumer_task_id FROM contracts WHERE scope_task_id IS NULL"
-    ).fetchall()
-    for contract_id, provider_id, consumer_id in contracts_needing_scope:
-        seed_id = provider_id or consumer_id
-        if not seed_id:
-            continue
-        # Walk to root
-        current = seed_id
-        while True:
-            row = conn.execute("SELECT parent_id FROM tasks WHERE id=?", (current,)).fetchone()
-            if row is None or row[0] is None:
-                break
-            current = row[0]
-        conn.execute(
-            "UPDATE contracts SET scope_task_id=? WHERE id=?", (current, contract_id)
-        )
-
-    # Back-fill name from contract_type + contract_id prefix for existing rows
+    # Back-fill name for any unnamed rows
     conn.execute(
         "UPDATE contracts SET name = contract_type || '_' || substr(id,1,8) "
         "WHERE name = '' OR name IS NULL"
     )
 
-    # --- 4. Indexes ---
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contract_links_contract ON contract_links(contract_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contract_links_task ON contract_links(task_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contracts_scope ON contracts(scope_task_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contracts_name ON contracts(name)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contracts_code_node ON contracts(code_node_id)"
-    )
-    # Re-create v6 indexes that may have been dropped during table recreation
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contracts_provider ON contracts(provider_task_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_contracts_consumer ON contracts(consumer_task_id)"
-    )
+    # Ensure contract_links exists (safe on fresh DB — v6 already creates it)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS contract_links (
+            contract_id  TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+            task_id      TEXT NOT NULL REFERENCES tasks(id)     ON DELETE CASCADE,
+            role         TEXT NOT NULL,
+            PRIMARY KEY (contract_id, task_id, role)
+        )
+    """)
+
+    # Indexes
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_contract_links_contract ON contract_links(contract_id)",
+        "CREATE INDEX IF NOT EXISTS idx_contract_links_task ON contract_links(task_id)",
+        "CREATE INDEX IF NOT EXISTS idx_contracts_scope ON contracts(scope_task_id)",
+        "CREATE INDEX IF NOT EXISTS idx_contracts_name ON contracts(name)",
+        "CREATE INDEX IF NOT EXISTS idx_contracts_code_node ON contracts(code_node_id)",
+    ):
+        conn.execute(stmt)
 
     logger.info(
-        "Migration v7: extended contracts (name, scope_task_id, code_node_id) + contract_links"
+        "Migration v7: contracts extended (name/scope_task_id/code_node_id) + contract_links"
     )
 
 
@@ -542,6 +510,65 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v9(conn: sqlite3.Connection) -> None:
+    """v9: Drop legacy provider_task_id / consumer_task_id columns from contracts.
+
+    These columns were kept as nullable stubs in v7 for backward compatibility
+    during the migration to many-to-many contract_links.  All code now reads
+    participants exclusively from contract_links, so the legacy columns are safe
+    to remove.
+
+    SQLite does not support DROP COLUMN before 3.35.0, so we recreate the table
+    via the standard rename-create-copy-drop pattern which works on all versions.
+    """
+    # Check if legacy columns still exist
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(contracts)").fetchall()}
+    if "provider_task_id" not in cols and "consumer_task_id" not in cols:
+        logger.info("v9 migration: legacy columns already absent, nothing to do")
+        return
+
+    conn.executescript("""
+        PRAGMA foreign_keys = OFF;
+
+        ALTER TABLE contracts RENAME TO _contracts_v8;
+
+        CREATE TABLE contracts (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL DEFAULT '',
+            scope_task_id   TEXT REFERENCES tasks(id),
+            contract_type   TEXT NOT NULL,
+            definition      TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'proposed',
+            code_node_id    INTEGER REFERENCES nodes(id),
+            created_at      REAL NOT NULL,
+            updated_at      REAL NOT NULL
+        );
+
+        INSERT INTO contracts
+            (id, name, scope_task_id, contract_type, definition,
+             status, code_node_id, created_at, updated_at)
+        SELECT
+            id,
+            COALESCE(name, ''),
+            scope_task_id,
+            contract_type,
+            definition,
+            status,
+            code_node_id,
+            created_at,
+            updated_at
+        FROM _contracts_v8;
+
+        DROP TABLE _contracts_v8;
+
+        CREATE INDEX IF NOT EXISTS idx_contracts_scope
+            ON contracts(scope_task_id);
+
+        PRAGMA foreign_keys = ON;
+    """)
+    logger.info("v9 migration: dropped legacy provider_task_id/consumer_task_id from contracts")
+
+
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_v2,
     3: _migrate_v3,
@@ -550,6 +577,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     6: _migrate_v6,
     7: _migrate_v7,
     8: _migrate_v8,
+    9: _migrate_v9,
 }
 
 LATEST_VERSION = max(MIGRATIONS.keys())

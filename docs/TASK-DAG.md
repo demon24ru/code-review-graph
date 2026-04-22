@@ -302,9 +302,14 @@ task_code_refs   task_id, code_node_id (→ nodes.id), ref_type,
 notes            id, task_id, note_type, content, status,
                  resolution, rationale, alternatives (JSON), created_at, updated_at
 
-contracts        id, provider_task_id, consumer_task_id,
-                 contract_type, definition, status, created_at, updated_at
+contracts        id, name, scope_task_id (→ tasks.id),
+                 contract_type, definition, status,
+                 code_node_id (→ nodes.id), created_at, updated_at
+
+contract_links   contract_id (→ contracts.id), task_id (→ tasks.id),
+                 role ('provider'|'consumer')
+                 PRIMARY KEY (contract_id, task_id, role)
 ```
 
 All tables live in `.code-review-graph/graph.db` alongside the code graph.
-Migration v6 creates them automatically on first open.
+Migrations v6–v9 create and update them automatically on first open.

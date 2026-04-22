@@ -226,12 +226,14 @@ def _render_task(
         lines.append("")
         for c in as_provider:
             cstatus = c.get("status", "proposed")
-            ctype = c.get("interface_type", "")
-            lines.append(f"- 📤 Provider `{ctype}` → consumer `{c.get('consumer_task_id')}` `{cstatus}`")
+            ctype = c.get("contract_type", c.get("interface_type", ""))
+            cons = ", ".join(f"`{p}`" for p in c.get("consumer_task_ids", [])) or "?"
+            lines.append(f"- 📤 Provider `{ctype}` → consumer {cons} `{cstatus}`")
         for c in as_consumer:
             cstatus = c.get("status", "proposed")
-            ctype = c.get("interface_type", "")
-            lines.append(f"- 📥 Consumer `{ctype}` ← provider `{c.get('provider_task_id')}` `{cstatus}`")
+            ctype = c.get("contract_type", c.get("interface_type", ""))
+            prov = ", ".join(f"`{p}`" for p in c.get("provider_task_ids", [])) or "?"
+            lines.append(f"- 📥 Consumer `{ctype}` ← provider {prov} `{cstatus}`")
         lines.append("")
 
     # Conflicts
@@ -313,13 +315,8 @@ def _render_header(conn: sqlite3.Connection, root_task_id: str) -> list[str]:
                 for c in pending_list:
                     cid = c.get("id", "?")
                     cname = c.get("name") or c.get("contract_type", "?")
-                    # Support both new (provider_task_ids list) and legacy columns
-                    prov_ids = c.get("provider_task_ids") or (
-                        [c["provider_task_id"]] if c.get("provider_task_id") else []
-                    )
-                    cons_ids = c.get("consumer_task_ids") or (
-                        [c["consumer_task_id"]] if c.get("consumer_task_id") else []
-                    )
+                    prov_ids = c.get("provider_task_ids", [])
+                    cons_ids = c.get("consumer_task_ids", [])
                     prov = ", ".join(f"`{p}`" for p in prov_ids) or "?"
                     cons = ", ".join(f"`{p}`" for p in cons_ids) or "?"
                     lines.append(f"- `{cid}` **{cname}** — {prov} → {cons}")
@@ -360,9 +357,11 @@ def _render_header(conn: sqlite3.Connection, root_task_id: str) -> list[str]:
             if pending_c:
                 lines.append(f"**Pending contracts ({len(pending_c)}):**")
                 for c in pending_c[:5]:
+                    prov = ", ".join(f"`{p}`" for p in c.get("provider_task_ids", [])) or "?"
+                    cons = ", ".join(f"`{p}`" for p in c.get("consumer_task_ids", [])) or "?"
                     lines.append(
-                        f"- `{c.get('provider_task_id')}` → `{c.get('consumer_task_id')}` "
-                        f"({c.get('interface_type', '?')})"
+                        f"- {prov} → {cons} "
+                        f"({c.get('contract_type', c.get('interface_type', '?'))})"
                     )
                 lines.append("")
 
