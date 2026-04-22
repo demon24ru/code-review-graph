@@ -75,7 +75,6 @@ Lifecycle: `proposed → agreed → implemented → verified`
 |------|-------------|
 | `task_add_edge` | Add a directed edge. Cycle check enforced for depends_on/blocks. |
 | `task_remove_edge` | Remove an edge by source + target + type. |
-| `task_get_edges` | Get edges for a task: incoming \| outgoing \| both. |
 | `task_get_dag` | Full DAG for a subtree: nodes + task_edges + hierarchy edges. |
 | `task_topological_sort` | Topological order of leaf tasks by depends_on. |
 

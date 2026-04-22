@@ -101,6 +101,7 @@ def create_task(
     conn: sqlite3.Connection,
     tasks: list[dict[str, Any]],
     parent_id: Optional[str] = None,
+    edges: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Create one or more tasks sharing a common parent.
 
@@ -115,12 +116,32 @@ def create_task(
 
     Each item must have ``title`` (required) and may include ``description``.
 
+    **Inline edges** — pass ``edges`` to create relationships between the new
+    tasks in the same atomic transaction.  Use zero-based indices into ``tasks``
+    instead of task IDs (which are not known yet at call time):
+
+        create_task(conn, parent_id="t1", tasks=[
+            {"title": "OAuth interface"},   # index 0
+            {"title": "Google OAuth"},      # index 1
+            {"title": "JWT service"},       # index 2
+            {"title": "Login endpoint"},    # index 3
+        ], edges=[
+            {"from": 1, "to": 0, "type": "depends_on"},
+            {"from": 3, "to": 0, "type": "depends_on"},
+            {"from": 3, "to": 2, "type": "depends_on"},
+        ])
+
+    Edge items: ``from`` and ``to`` are required (0-based task indices).
+    ``type`` is optional (default ``"depends_on"``).
+    ``description`` is optional.
+
     **Single-pipeline discipline**: a new *root* task (``parent_id=None``)
     can only be created when there is no other open root task.  Close or
     archive the current root before starting a new one.  This check is
     performed once, before any task is inserted.
 
-    Returns ``{"tasks": [...]}``.
+    Returns ``{"tasks": [...], "edges": [...]}``.  ``edges`` is omitted when
+    no inline edges were requested.
     """
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("tasks must be a non-empty list of dicts")
@@ -132,6 +153,30 @@ def create_task(
         if not isinstance(item, dict):
             raise ValueError("Each task item must be a dict with at least 'title'")
         _require(item.get("title"), "title")
+
+    # Validate inline edge specs early (index bounds, required fields).
+    n = len(tasks)
+    edge_specs: list[tuple[int, int, str, Optional[str]]] = []
+    if edges:
+        for i, espec in enumerate(edges):
+            if not isinstance(espec, dict):
+                raise ValueError(f"edges[{i}] must be a dict with 'from' and 'to'")
+            from_idx = espec.get("from")
+            to_idx = espec.get("to")
+            if from_idx is None or to_idx is None:
+                raise ValueError(f"edges[{i}] must have 'from' and 'to' (0-based task indices)")
+            if not isinstance(from_idx, int) or not isinstance(to_idx, int):
+                raise ValueError(f"edges[{i}] 'from' and 'to' must be integers")
+            if not (0 <= from_idx < n) or not (0 <= to_idx < n):
+                raise ValueError(
+                    f"edges[{i}] indices out of range: from={from_idx}, to={to_idx}, "
+                    f"tasks has {n} items (0-{n - 1})"
+                )
+            if from_idx == to_idx:
+                raise ValueError(f"edges[{i}] self-referencing edge (from={from_idx})")
+            etype: str = espec.get("type") or "depends_on"
+            _check_enum(etype, TASK_EDGE_TYPES, "edge type")
+            edge_specs.append((from_idx, to_idx, etype, espec.get("description")))
 
     if parent_id is not None:
         row = conn.execute("SELECT id FROM tasks WHERE id = ?", (parent_id,)).fetchone()
@@ -163,8 +208,47 @@ def create_task(
         created_ids.append(task_id)
         logger.debug("Created task %s: %r", task_id, title)
 
+    # Insert inline edges if provided.  Cycle checks run before any insert.
+    created_edges: list[dict[str, Any]] = []
+    if edge_specs:
+        # Build pending list for intra-batch cycle detection (same pattern as add_task_edge).
+        pending_cycle: list[tuple[str, str]] = [
+            (created_ids[fi], created_ids[ti])
+            for fi, ti, et, _ in edge_specs
+            if et in ("depends_on", "blocks")
+        ]
+        try:
+            for fi, ti, etype, desc in edge_specs:
+                src_id = created_ids[fi]
+                tgt_id = created_ids[ti]
+                if etype in ("depends_on", "blocks"):
+                    _assert_no_cycle_after_edge(conn, src_id, tgt_id, etype, pending=pending_cycle)
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO task_edges
+                        (source_task_id, target_task_id, type, description, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (src_id, tgt_id, etype, desc, now),
+                )
+                created_edges.append(
+                    {
+                        "source_id": src_id,
+                        "target_id": tgt_id,
+                        "edge_type": etype,
+                        "description": desc,
+                    }
+                )
+                logger.debug("Created inline edge %s → %s (%s)", src_id, tgt_id, etype)
+        except Exception:
+            conn.rollback()
+            raise
+
     conn.commit()
-    return {"tasks": [get_task(conn, tid) for tid in created_ids]}
+    result: dict[str, Any] = {"tasks": [get_task(conn, tid) for tid in created_ids]}
+    if created_edges:
+        result["edges"] = created_edges
+    return result
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:

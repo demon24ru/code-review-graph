@@ -415,6 +415,137 @@ class TestDAGEdges(TestTaskBase):
 
 
 # ---------------------------------------------------------------------------
+# 5.1.7b — task_create with inline edges
+# ---------------------------------------------------------------------------
+
+class TestCreateTaskWithInlineEdges(TestTaskBase):
+    """Tests for the edges= parameter of create_task."""
+
+    def setup_method(self):
+        super().setup_method()
+        self.root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+
+    def test_inline_edges_creates_tasks_and_edges(self):
+        result = tasks.create_task(
+            self.conn,
+            parent_id=self.root["id"],
+            tasks=[
+                {"title": "Interface"},    # 0
+                {"title": "Impl"},         # 1
+            ],
+            edges=[{"from": 1, "to": 0, "type": "depends_on"}],
+        )
+        assert len(result["tasks"]) == 2
+        assert len(result["edges"]) == 1
+        e = result["edges"][0]
+        assert e["source_id"] == result["tasks"][1]["id"]
+        assert e["target_id"] == result["tasks"][0]["id"]
+        assert e["edge_type"] == "depends_on"
+
+    def test_inline_edges_default_type_is_depends_on(self):
+        result = tasks.create_task(
+            self.conn,
+            parent_id=self.root["id"],
+            tasks=[{"title": "A"}, {"title": "B"}],
+            edges=[{"from": 1, "to": 0}],  # no "type"
+        )
+        assert result["edges"][0]["edge_type"] == "depends_on"
+
+    def test_inline_edges_non_ordering_type(self):
+        result = tasks.create_task(
+            self.conn,
+            parent_id=self.root["id"],
+            tasks=[{"title": "A"}, {"title": "B"}],
+            edges=[{"from": 0, "to": 1, "type": "shares_context"}],
+        )
+        assert result["edges"][0]["edge_type"] == "shares_context"
+
+    def test_inline_edges_persisted_in_db(self):
+        """Edges created inline must be queryable afterwards."""
+        result = tasks.create_task(
+            self.conn,
+            parent_id=self.root["id"],
+            tasks=[{"title": "A"}, {"title": "B"}],
+            edges=[{"from": 1, "to": 0, "type": "depends_on"}],
+        )
+        t0, t1 = result["tasks"][0]["id"], result["tasks"][1]["id"]
+        outgoing = tasks.get_task_edges(self.conn, t1, direction="outgoing")
+        assert len(outgoing) == 1
+        assert outgoing[0]["target_task_id"] == t0
+
+    def test_inline_edges_no_edges_key_when_none(self):
+        """When edges= is omitted, result must not contain 'edges' key."""
+        result = tasks.create_task(
+            self.conn,
+            parent_id=self.root["id"],
+            tasks=[{"title": "Solo"}],
+        )
+        assert "edges" not in result
+
+    def test_inline_edges_cycle_raises_atomically(self):
+        """A→B + B→A inline must raise and leave no tasks in DB."""
+        before = self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        with pytest.raises(ValueError, match="cycle"):
+            tasks.create_task(
+                self.conn,
+                parent_id=self.root["id"],
+                tasks=[{"title": "A"}, {"title": "B"}],
+                edges=[
+                    {"from": 0, "to": 1, "type": "depends_on"},
+                    {"from": 1, "to": 0, "type": "depends_on"},
+                ],
+            )
+        after = self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        assert after == before, "Tasks must not be committed when cycle is detected"
+
+    def test_inline_edges_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="out of range"):
+            tasks.create_task(
+                self.conn,
+                parent_id=self.root["id"],
+                tasks=[{"title": "A"}, {"title": "B"}],
+                edges=[{"from": 0, "to": 5}],
+            )
+
+    def test_inline_edges_self_reference_raises(self):
+        with pytest.raises(ValueError, match="self-referencing"):
+            tasks.create_task(
+                self.conn,
+                parent_id=self.root["id"],
+                tasks=[{"title": "A"}, {"title": "B"}],
+                edges=[{"from": 0, "to": 0}],
+            )
+
+    def test_inline_edges_invalid_type_raises(self):
+        with pytest.raises(ValueError, match="Invalid edge type"):
+            tasks.create_task(
+                self.conn,
+                parent_id=self.root["id"],
+                tasks=[{"title": "A"}, {"title": "B"}],
+                edges=[{"from": 0, "to": 1, "type": "not_a_valid_type"}],
+            )
+
+    def test_inline_edges_diamond_dependency(self):
+        """A→C and B→C and A→B — valid DAG, no cycle."""
+        result = tasks.create_task(
+            self.conn,
+            parent_id=self.root["id"],
+            tasks=[
+                {"title": "A"},   # 0
+                {"title": "B"},   # 1
+                {"title": "C"},   # 2
+            ],
+            edges=[
+                {"from": 0, "to": 2, "type": "depends_on"},
+                {"from": 1, "to": 2, "type": "depends_on"},
+                {"from": 0, "to": 1, "type": "depends_on"},
+            ],
+        )
+        assert len(result["tasks"]) == 3
+        assert len(result["edges"]) == 3
+
+
+# ---------------------------------------------------------------------------
 # 5.1.8 — topological_sort: linear, diamond, cycle
 # ---------------------------------------------------------------------------
 

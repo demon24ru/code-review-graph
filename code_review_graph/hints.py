@@ -55,7 +55,6 @@ _INTENT_TOOLS: dict[str, set[str]] = {
         "task_archive",
         "task_add_edge",
         "task_remove_edge",
-        "task_get_edges",
         "task_get_dag",
         "task_topological_sort",
         "task_link_code",
@@ -180,8 +179,7 @@ _WORKFLOW: dict[str, list[dict[str, str]]] = {
     "task_get": [
         {"tool": "task_get_code_refs", "suggestion": "See code nodes linked to this task"},
         {"tool": "note_list", "suggestion": "Browse decisions and open questions"},
-        {"tool": "task_get_edges", "suggestion": "See dependencies and related tasks"},
-        {"tool": "task_export", "suggestion": "Get full aggregated context (include_analysis=True)"},
+        {"tool": "task_export", "suggestion": "Get full aggregated context incl. edges (include_analysis=True)"},
     ],
     "task_list": [
         {"tool": "task_get", "suggestion": "Inspect a specific task in detail"},
@@ -209,12 +207,8 @@ _WORKFLOW: dict[str, list[dict[str, str]]] = {
         {"tool": "task_validate", "suggestion": "Check for cycles or blocked tasks"},
     ],
     "task_remove_edge": [
-        {"tool": "task_get_edges", "suggestion": "Verify remaining edges"},
+        {"tool": "task_export", "suggestion": "Verify remaining edges via task_export(edges field)"},
         {"tool": "task_execution_order", "suggestion": "Re-check execution grouping"},
-    ],
-    "task_get_edges": [
-        {"tool": "task_add_edge", "suggestion": "Add a missing dependency"},
-        {"tool": "task_get_dag", "suggestion": "See the full DAG structure"},
     ],
     "task_get_dag": [
         {"tool": "task_validate", "suggestion": "Run validation on the DAG"},
@@ -645,7 +639,6 @@ _TOOL_META: dict[str, dict[str, str]] = {
     "task_archive": {"confidence": "exact", "reason": "task_cascade_archive"},
     "task_add_edge": {"confidence": "exact", "reason": "task_dag_edge_insert"},
     "task_remove_edge": {"confidence": "exact", "reason": "task_dag_edge_delete"},
-    "task_get_edges": {"confidence": "exact", "reason": "task_dag_edge_query"},
     "task_get_dag": {"confidence": "exact", "reason": "task_dag_full_query"},
     "task_topological_sort": {"confidence": "exact", "reason": "task_kahn_sort"},
     "task_link_code": {"confidence": "exact", "reason": "task_code_ref_insert"},

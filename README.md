@@ -290,7 +290,7 @@ Your AI assistant uses these automatically once the graph is built.
 | Tool | Description |
 |------|-------------|
 | `task_get_active_root` | Return the single open root task (or null if idle) |
-| `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]` |
+| `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]`; optional `edges=[{from, to, type?}]` for atomic decomposition + wiring |
 | `task_update` | Update title, description, status, spec, acceptance_criteria |
 | `task_edit` | Surgically edit a text field: search/replace or line-range |
 | `task_delete` | Delete a task (cascade deletes subtree) |
@@ -301,7 +301,6 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_archive` | Archive tasks with shared reason — batch list API: `task_ids=[...]` |
 | `task_add_edge` | Add edges between tasks — batch list API: `edges=[{source_id, target_id, edge_type?}]` |
 | `task_remove_edge` | Remove an edge between tasks |
-| `task_get_edges` | Get incoming/outgoing/both edges for a task |
 | `task_get_dag` | Full DAG for a subtree (nodes + all edges) |
 | `task_topological_sort` | Topological order of leaf tasks by depends_on |
 | `task_link_code` | Link a task to code nodes — batch list API: `links=[{ref_type, code_node_id\|qualified_name}]` |

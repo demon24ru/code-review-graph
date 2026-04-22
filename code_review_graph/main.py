@@ -70,7 +70,6 @@ from .tools.task_tools import (
     task_find_by_code_node_func,
     task_find_conflicts_func,
     task_get_dag_func,
-    task_get_edges_func,
     task_get_func,
     task_get_code_refs_func,
     task_link_code_func,
@@ -881,6 +880,7 @@ def task_get_active_root(
 def task_create(
     tasks: list,
     parent_id: Optional[str] = None,
+    edges: Optional[list] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Create one or more tasks under a common parent.
@@ -898,12 +898,27 @@ def task_create(
             {"title": "JWT service"},
         ])
 
+    With inline edges — atomic decomposition + dependency wiring in one call:
+        task_create(parent_id="t1", tasks=[
+            {"title": "OAuth interface"},   # index 0
+            {"title": "Google OAuth"},      # index 1
+            {"title": "JWT service"},       # index 2
+            {"title": "Login endpoint"},    # index 3
+        ], edges=[
+            {"from": 1, "to": 0, "type": "depends_on"},
+            {"from": 3, "to": 0, "type": "depends_on"},
+            {"from": 3, "to": 2, "type": "depends_on"},
+        ])
+
     Args:
         tasks: List of task dicts — each with title (required), description (optional).
         parent_id: Shared parent task ID. Omit to create root task(s).
+        edges: Optional inline edge list — each item: {from, to, type?, description?}.
+               ``from`` and ``to`` are 0-based indices into ``tasks``.
+               ``type`` defaults to ``"depends_on"``. Cycle detection runs atomically.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_create_func(tasks_list=tasks, parent_id=parent_id, repo_root=repo_root)
+    return task_create_func(tasks_list=tasks, parent_id=parent_id, edges_list=edges, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1164,24 +1179,6 @@ def task_remove_edge(
     """
     return task_remove_edge_func(source_id=source_id, target_id=target_id,
                                  edge_type=edge_type, repo_root=repo_root)
-
-
-@mcp.tool()
-def task_get_edges(
-    task_id: str,
-    direction: str = "both",
-    repo_root: Optional[str] = None,
-) -> dict:
-    """Get all edges for a task.
-
-    [BRAINSTORM] Returns dependency and relationship edges.
-
-    Args:
-        task_id: Task ID.
-        direction: incoming | outgoing | both (default).
-        repo_root: Repository root path. Auto-detected if omitted.
-    """
-    return task_get_edges_func(task_id=task_id, direction=direction, repo_root=repo_root)
 
 
 @mcp.tool()

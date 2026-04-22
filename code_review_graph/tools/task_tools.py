@@ -7,7 +7,7 @@ and returns a structured dict with ``status``, ``summary``, and data fields.
 Groups:
   CRUD (9):           task_create, task_update, task_edit, task_delete,
                       task_get, task_list, task_move, task_search, task_archive
-  DAG Edges (5):      task_add_edge, task_remove_edge, task_get_edges,
+  DAG Edges (4):      task_add_edge, task_remove_edge,
                       task_get_dag, task_topological_sort
   Code Links (5):     task_link_code, task_unlink_code, task_get_code_refs,
                       task_find_by_code_node, task_suggest_code_links
@@ -102,6 +102,7 @@ def task_get_active_root_func(
 def task_create_func(
     tasks_list: list[dict],
     parent_id: Optional[str] = None,
+    edges_list: Optional[list[dict]] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create one or more tasks sharing a common parent.
@@ -118,7 +119,21 @@ def task_create_func(
             {"title": "JWT service"},
         ])
 
+    With inline edges (atomic decomposition + wiring in one call):
+        task_create(parent_id="t1", tasks=[
+            {"title": "OAuth interface"},   # index 0
+            {"title": "Google OAuth"},      # index 1
+            {"title": "JWT service"},       # index 2
+            {"title": "Login endpoint"},    # index 3
+        ], edges=[
+            {"from": 1, "to": 0, "type": "depends_on"},
+            {"from": 3, "to": 0, "type": "depends_on"},
+            {"from": 3, "to": 2, "type": "depends_on"},
+        ])
+
     Each item requires ``title`` and may include ``description``.
+    Edge items use 0-based indices into ``tasks``; ``type`` defaults to
+    ``"depends_on"``; ``description`` is optional.
 
     **Single-pipeline discipline**: creating a root task (no parent_id) is
     blocked while another open root task exists.
@@ -126,20 +141,29 @@ def task_create_func(
     Args:
         tasks: List of task dicts — each with title (required), description (optional).
         parent_id: Shared parent task ID. Omit to create root task(s).
+        edges: Optional list of inline edge dicts — {from, to, type?, description?}.
+               ``from`` and ``to`` are 0-based indices into ``tasks``.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
         ``{"tasks": [...]}`` — list of created task dicts.
+        ``{"tasks": [...], "edges": [...]}`` — when inline edges were provided.
     """
-    def _fn(conn, tasks_list, parent_id):
-        result = tasks.create_task(conn, tasks_list, parent_id=parent_id)
+    def _fn(conn, tasks_list, parent_id, edges_list):
+        result = tasks.create_task(conn, tasks_list, parent_id=parent_id, edges=edges_list)
         created = result["tasks"]
+        edge_count = len(result.get("edges", []))
         if len(created) == 1:
             msg = f"Created task '{created[0]['title']}' ({created[0]['id'][:8]})"
         else:
-            msg = f"Created {len(created)} task(s) under parent {parent_id[:8] if parent_id else 'root'}"
+            msg = (
+                f"Created {len(created)} task(s) under parent "
+                f"{parent_id[:8] if parent_id else 'root'}"
+            )
+            if edge_count:
+                msg += f" with {edge_count} inline edge(s)"
         return _ok(msg, **result)
-    return _run(repo_root, _fn, tasks_list, parent_id)
+    return _run(repo_root, _fn, tasks_list, parent_id, edges_list)
 
 
 def task_update_func(
@@ -487,29 +511,6 @@ def task_remove_edge_func(
         edge = tasks.remove_task_edge(conn, source_id, target_id, edge_type)
         return _ok(f"Removed {source_id[:8]} --{edge_type}--> {target_id[:8]}", edge=edge)
     return _run(repo_root, _fn, source_id, target_id, edge_type)
-
-
-def task_get_edges_func(
-    task_id: str,
-    direction: str = "both",
-    repo_root: Optional[str] = None,
-) -> dict[str, Any]:
-    """Get all edges for a task.
-
-    [BRAINSTORM] Returns the task's dependency and relationship edges.
-
-    Args:
-        task_id: Task ID.
-        direction: "incoming", "outgoing", or "both" (default).
-        repo_root: Repository root path. Auto-detected if omitted.
-
-    Returns:
-        List of edge dicts.
-    """
-    def _fn(conn, task_id, direction):
-        edge_list = tasks.get_task_edges(conn, task_id, direction=direction)
-        return _ok(f"Found {len(edge_list)} edge(s)", edges=edge_list)
-    return _run(repo_root, _fn, task_id, direction)
 
 
 def task_get_dag_func(

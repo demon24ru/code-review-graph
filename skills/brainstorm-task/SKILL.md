@@ -35,11 +35,18 @@ task_create(parent_id=root_id, tasks=[
     {"title": "Login endpoint"},
 ])
 
-# Deeper nesting — same pattern
-task_create(parent_id=auth_id, tasks=[
-    {"title": "OAuth interface"},
-    {"title": "Google OAuth impl"},
+# Decompose + wire dependencies atomically — edges use 0-based task indices
+task_create(parent_id=root_id, tasks=[
+    {"title": "OAuth interface"},    # index 0
+    {"title": "Google OAuth impl"},  # index 1
+    {"title": "JWT service"},        # index 2
+    {"title": "Login endpoint"},     # index 3
+], edges=[
+    {"from": 1, "to": 0, "type": "depends_on"},   # Google OAuth needs interface
+    {"from": 3, "to": 0, "type": "depends_on"},   # Login needs interface
+    {"from": 3, "to": 2, "type": "depends_on"},   # Login needs JWT
 ])
+# → tasks + edges created atomically; "edges" key in response shows created edges
 ```
 
 Rules:
@@ -199,10 +206,14 @@ contract_list(name="OAuthToken")               # find by name
 
 ## Phase 5: Add DAG Edges
 
-Always pass a list, even for one edge. A default `edge_type` applies to all items that lack their own.
+**When to use inline edges vs task_add_edge:**
+- **Inline `edges=` in `task_create`** — use at decomposition time (60% of cases). Atomic: tasks + edges in one call.
+- **`task_add_edge`** — use post-factum when tasks already exist ("turns out t7 depends on t4").
+- **`task_remove_edge`** — use when a dependency changes ("t5 no longer needs t3 after design change").
+- **Viewing edges** — use `task_export(task_id)` which returns the `edges` field; `task_get_dag` for the full subtree.
 
 ```
-# Single edge
+# Post-factum edge (tasks already exist) — always a list, even for one edge
 task_add_edge(edges=[{"source_id": child_id, "target_id": blocker_id}],
               edge_type="depends_on")
 
