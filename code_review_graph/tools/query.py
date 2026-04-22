@@ -163,45 +163,41 @@ def query_graph(
         if not node:
             abs_target = str(root / target)
             node = store.get_node(abs_target)
+
+        # Track whether the resolution was ambiguous so we can attach a note to the result.
+        ambiguous_meta: dict | None = None
+
         if not node:
             # Search by name
             candidates = store.search_nodes(target, limit=10)
 
-            # Additional heuristic: check if any candidate matches the target name exactly
+            # Prefer exact name matches over partial ones.
             exact_match_candidates = [c for c in candidates if c.name == target]
+            pool = exact_match_candidates if exact_match_candidates else candidates
 
-            if exact_match_candidates:
-                if len(exact_match_candidates) == 1:
-                    node = exact_match_candidates[0]
-                    target = node.qualified_name
-                else:
-                    disambiguation_hints = [
-                        f"Try '{c.qualified_name}'" for c in exact_match_candidates
-                    ]
-                    return {
-                        "status": "ambiguous",
-                        "summary": (
-                            f"Multiple EXACT matches found for '{target}'. "
-                            "Please specify the exact node you want by using its fully qualified name."
-                        ),
-                        "disambiguation_hints": disambiguation_hints,
-                        "candidates": [node_to_dict(c) for c in exact_match_candidates],
-                        "next_actions": ["query_graph", "semantic_search_nodes_tool"],
-                    }
-            elif len(candidates) == 1:
-                node = candidates[0]
+            if len(pool) == 1:
+                # Unambiguous — resolve silently.
+                node = pool[0]
                 target = node.qualified_name
-            elif len(candidates) > 1:
-                disambiguation_hints = [f"Try '{c.qualified_name}'" for c in candidates]
-                return {
-                    "status": "ambiguous",
-                    "summary": (
-                        f"Multiple partial matches found for '{target}'. "
-                        "Please specify the exact node you want by using its fully qualified name."
+            elif len(pool) > 1:
+                # Multiple candidates: pick the best one and carry on, but signal
+                # the ambiguity so the caller can verify.
+                # Priority: non-test nodes first, then highest BM25 score (pool is
+                # already score-sorted by store.search_nodes).
+                non_test = [c for c in pool if not c.is_test]
+                best = (non_test if non_test else pool)[0]
+                node = best
+                target = node.qualified_name
+                ambiguous_meta = {
+                    "resolved_as": node.qualified_name,
+                    "note": (
+                        f"Multiple nodes named '{node.name}' exist. "
+                        "Used the best match (non-test, highest score). "
+                        "Pass the exact qualified_name to override."
                     ),
-                    "disambiguation_hints": disambiguation_hints,
-                    "candidates": [node_to_dict(c) for c in candidates],
-                    "next_actions": ["query_graph", "semantic_search_nodes_tool"],
+                    "alternatives": [
+                        c.qualified_name for c in pool if c.qualified_name != node.qualified_name
+                    ],
                 }
 
         if not node and pattern != "file_summary":
@@ -295,8 +291,9 @@ def query_graph(
             for n in file_nodes:
                 results.append(node_to_dict(n))
 
+        status = "ambiguous" if ambiguous_meta else "ok"
         result = {
-            "status": "ok",
+            "status": status,
             "pattern": pattern,
             "target": target,
             "description": _QUERY_PATTERNS[pattern],
@@ -304,6 +301,10 @@ def query_graph(
             "results": results,
             "edges": edges_out,
         }
+        if ambiguous_meta:
+            result["resolved_as"] = ambiguous_meta["resolved_as"]
+            result["disambiguation_note"] = ambiguous_meta["note"]
+            result["alternatives"] = ambiguous_meta["alternatives"]
         result["_hints"] = generate_hints("query_graph", result, get_session())
         return result
     finally:

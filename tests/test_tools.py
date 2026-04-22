@@ -14,6 +14,7 @@ from code_review_graph.tools import (
     list_communities_func,
     list_flows,
 )
+from code_review_graph.tools.query import query_graph
 
 
 class TestTools:
@@ -202,6 +203,177 @@ class TestTools:
         edges = self.store.search_edges_by_target_name("helper")
         assert len(edges) == 1
         assert edges[0].source_qualified == "/repo/main.py::process"
+
+
+class TestQueryGraphDisambiguation:
+    """Tests for query_graph target resolution with duplicate names."""
+
+    def setup_method(self):
+        import tempfile as _tf
+
+        # _get_store requires repo_root to contain .git or .code-review-graph.
+        # Create a proper temp project dir with the CRG sub-directory so that
+        # _validate_repo_root passes, then place graph.db inside it.
+        self.tmpdir = Path(_tf.mkdtemp())
+        crg_dir = self.tmpdir / ".code-review-graph"
+        crg_dir.mkdir()
+        db_path = crg_dir / "graph.db"
+        self.store = GraphStore(str(db_path), repo_root=self.tmpdir)
+        self._seed_data()
+
+    def teardown_method(self):
+        self.store.close()
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _seed_data(self):
+        """Seed two nodes with the same short name: one production, one test."""
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="do_work",
+                file_path=str(self.tmpdir / "worker.py"),
+                line_start=10,
+                line_end=30,
+                language="python",
+                is_test=False,
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Test",
+                name="do_work",
+                file_path=str(self.tmpdir / "tests" / "test_worker.py"),
+                line_start=5,
+                line_end=15,
+                language="python",
+                is_test=True,
+            )
+        )
+        # A second non-test duplicate exercises the multi-non-test path.
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="do_work",
+                file_path=str(self.tmpdir / "other.py"),
+                line_start=1,
+                line_end=5,
+                language="python",
+                is_test=False,
+            )
+        )
+        # Unique name — used to verify status='ok' on unambiguous resolution.
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="run",
+                file_path=str(self.tmpdir / "main.py"),
+                line_start=1,
+                line_end=10,
+                language="python",
+            )
+        )
+        # Edge: run → do_work (production version)
+        worker_qn = str(self.tmpdir / "worker.py") + "::do_work"
+        run_qn = str(self.tmpdir / "main.py") + "::run"
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source=run_qn,
+                target=worker_qn,
+                file_path=str(self.tmpdir / "main.py"),
+            )
+        )
+        self.store.commit()
+
+    def test_ambiguous_returns_results_key(self):
+        """Duplicate short name must return results, not an empty ambiguous error."""
+        result = query_graph(
+            pattern="callers_of",
+            target="do_work",
+            repo_root=str(self.tmpdir),
+        )
+        assert "results" in result
+
+    def test_ambiguous_status_is_ambiguous(self):
+        """status must be 'ambiguous' (not 'ok') when multiple candidates exist."""
+        result = query_graph(
+            pattern="callers_of",
+            target="do_work",
+            repo_root=str(self.tmpdir),
+        )
+        assert result["status"] == "ambiguous"
+
+    def test_ambiguous_includes_resolved_as(self):
+        """resolved_as tells the caller which node was used."""
+        result = query_graph(
+            pattern="callers_of",
+            target="do_work",
+            repo_root=str(self.tmpdir),
+        )
+        assert "resolved_as" in result
+        assert "do_work" in result["resolved_as"]
+
+    def test_ambiguous_prefers_non_test(self):
+        """When mix of test/non-test, resolved_as must point to a non-test node."""
+        result = query_graph(
+            pattern="callers_of",
+            target="do_work",
+            repo_root=str(self.tmpdir),
+        )
+        assert "test_worker" not in result.get("resolved_as", "")
+
+    def test_ambiguous_includes_alternatives(self):
+        """alternatives must list the nodes that were NOT chosen."""
+        result = query_graph(
+            pattern="callers_of",
+            target="do_work",
+            repo_root=str(self.tmpdir),
+        )
+        assert "alternatives" in result
+        alts = result["alternatives"]
+        assert isinstance(alts, list)
+        assert len(alts) >= 1
+        assert result.get("resolved_as") not in alts
+
+    def test_ambiguous_includes_disambiguation_note(self):
+        """disambiguation_note must explain the automatic choice."""
+        result = query_graph(
+            pattern="callers_of",
+            target="do_work",
+            repo_root=str(self.tmpdir),
+        )
+        assert "disambiguation_note" in result
+        assert len(result["disambiguation_note"]) > 0
+
+    def test_unambiguous_short_name_returns_ok(self):
+        """Unique short name must resolve to status='ok' with no ambiguous fields."""
+        result = query_graph(
+            pattern="callers_of",
+            target="run",
+            repo_root=str(self.tmpdir),
+        )
+        assert result["status"] == "ok"
+        assert "resolved_as" not in result
+        assert "alternatives" not in result
+
+    def test_qualified_name_returns_ok(self):
+        """Fully qualified name must always resolve to status='ok'."""
+        # Retrieve the actual qualified_name as stored (may be relative after
+        # migration v8 relativisation when repo_root is known).
+        candidates = self.store.search_nodes("do_work", limit=10)
+        non_test = [c for c in candidates if not c.is_test]
+        assert non_test, "seed data must contain at least one non-test do_work node"
+        qn = non_test[0].qualified_name
+
+        result = query_graph(
+            pattern="callers_of",
+            target=qn,
+            repo_root=str(self.tmpdir),
+        )
+        assert result["status"] == "ok"
+        assert "resolved_as" not in result
 
 
 class TestGetDocsSection:

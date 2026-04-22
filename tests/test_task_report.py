@@ -29,11 +29,17 @@ class TestTaskReportBase:
         self.store.close()
         Path(self.tmp.name).unlink(missing_ok=True)
 
-    def _task(self, title: str, **kwargs) -> dict:
-        return tasks.create_task(self.conn, title, **kwargs)
+    def _task(self, title: str, parent_id: str | None = None, **kwargs) -> dict:
+        result = tasks.create_task(
+            self.conn, tasks=[{"title": title, **kwargs}], parent_id=parent_id
+        )
+        return result["tasks"][0]
 
     def _note(self, task_id: str, note_type: str, content: str, **kwargs) -> dict:
-        return tasks.add_note(self.conn, task_id, note_type, content, **kwargs)
+        result = tasks.add_note(
+            self.conn, task_id, notes=[{"note_type": note_type, "content": content, **kwargs}]
+        )
+        return result["notes"][0]
 
     def _contract(self, provider_id: str, consumer_id: str,
                   scope_task_id: str = "", **kwargs) -> dict:
@@ -144,7 +150,7 @@ class TestGenerateTaskReport(TestTaskReportBase):
         root = self._task("Root")
         t1 = self._task("T1", parent_id=root["id"])
         t2 = self._task("T2", parent_id=root["id"])
-        tasks.add_task_edge(self.conn, t2["id"], t1["id"], "depends_on")
+        tasks.add_task_edge(self.conn, edges=[{"source_id": t2["id"], "target_id": t1["id"]}], edge_type="depends_on")
         generate_task_report(self.conn, root["id"], tmp_path)
         content = (tmp_path / "task-report.md").read_text(encoding="utf-8")
         assert "Phase" in content or "phase" in content
@@ -205,7 +211,7 @@ class TestRenderHeader(TestTaskReportBase):
     def test_attention_block_shows_open_questions(self):
         root = self._task("Root")
         child = self._task("Child", parent_id=root["id"])
-        tasks.add_note(self.conn, child["id"], "question", "What DB to use?")
+        tasks.add_note(self.conn, child["id"], notes=[{"note_type": "question", "content": "What DB to use?"}])
         lines = _render_header(self.conn, root["id"])
         text = "\n".join(lines)
         assert "What DB to use?" in text or "question" in text.lower()
@@ -260,7 +266,7 @@ class TestRenderTask(TestTaskReportBase):
 
     def test_notes_rendered(self):
         root = self._task("Task")
-        tasks.add_note(self.conn, root["id"], "risk", "Might break prod")
+        tasks.add_note(self.conn, root["id"], notes=[{"note_type": "risk", "content": "Might break prod"}])
         lines = _render_task(self.conn, root["id"], level=2)
         text = "\n".join(lines)
         assert "Might break prod" in text
@@ -270,7 +276,7 @@ class TestRenderTask(TestTaskReportBase):
         root = self._task("Root")
         t1 = self._task("Blocker", parent_id=root["id"])
         t2 = self._task("Dependent", parent_id=root["id"])
-        tasks.add_task_edge(self.conn, t2["id"], t1["id"], "depends_on")
+        tasks.add_task_edge(self.conn, edges=[{"source_id": t2["id"], "target_id": t1["id"]}], edge_type="depends_on")
         lines = _render_task(self.conn, t2["id"], level=2)
         text = "\n".join(lines)
         assert "depends_on" in text
@@ -290,7 +296,7 @@ class TestRenderTask(TestTaskReportBase):
         node_id = self.conn.execute(
             "SELECT id FROM nodes WHERE qualified_name = 'auth.py::auth_fn'"
         ).fetchone()[0]
-        tasks.link_task_code(self.conn, root["id"], "modifies", code_node_id=node_id)
+        tasks.link_task_code(self.conn, root["id"], links=[{"ref_type": "modifies", "code_node_id": node_id}])
         lines = _render_task(self.conn, root["id"], level=2)
         text = "\n".join(lines)
         assert "auth_fn" in text
