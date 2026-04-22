@@ -468,6 +468,15 @@ def delete_task(
     """
     get_task(conn, task_id)  # raises KeyError if not found
 
+    if not cascade:
+        child = conn.execute(
+            "SELECT id FROM tasks WHERE parent_id = ? LIMIT 1", (task_id,)
+        ).fetchone()
+        if child:
+            raise ValueError(
+                f"Task '{task_id}' has children. Use cascade=True to delete recursively."
+            )
+
     if cascade:
         ids_to_delete = _collect_subtree_ids(conn, task_id)
     else:
@@ -689,7 +698,10 @@ def archive_task(
     archived tasks remain in the database for historical reference.
     *cascade* applies to each task individually.
 
-    Returns ``{"archived_ids": [...]}``.
+    **Idempotent**: Re-archiving an already-archived task does NOT overwrite
+    the original archive_reason. Already-archived tasks are returned separately.
+
+    Returns ``{"archived": [...], "already_archived": [...], "archived_ids": [...]}``.
     """
     if not isinstance(task_ids, list) or not task_ids:
         raise ValueError("task_ids must be a non-empty list of task IDs")
@@ -714,7 +726,23 @@ def archive_task(
             unique_ids.append(tid)
 
     now = _now()
+    
+    # Query current status of each task to detect already-archived ones
+    to_archive: list[str] = []
+    already_archived: list[str] = []
+    
     for tid in unique_ids:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        if row and row[0] == "archived":
+            already_archived.append(tid)
+        else:
+            to_archive.append(tid)
+    
+    # Only update tasks that are not yet archived
+    for tid in to_archive:
         conn.execute(
             "UPDATE tasks SET status = 'archived', archive_reason = ?, updated_at = ? WHERE id = ?",
             (reason, now, tid),
@@ -722,8 +750,9 @@ def archive_task(
 
     conn.commit()
     return {
-        "archived": [get_task(conn, tid) for tid in unique_ids],
-        "archived_ids": unique_ids,  # kept for backward compat
+        "archived": [get_task(conn, tid) for tid in to_archive],
+        "already_archived": [get_task(conn, tid) for tid in already_archived],
+        "archived_ids": to_archive,  # kept for backward compat: only newly archived
     }
 
 

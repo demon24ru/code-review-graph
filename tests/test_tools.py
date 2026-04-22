@@ -15,6 +15,7 @@ from code_review_graph.tools import (
     list_flows,
 )
 from code_review_graph.tools.query import query_graph
+from code_review_graph.tools.review import trace_dataflow
 
 
 class TestTools:
@@ -1040,3 +1041,127 @@ class TestCommunityTools:
         assert "Architecture:" in result["summary"]
         assert "communities" in result["summary"]
         assert "cross-community edges" in result["summary"]
+
+    def test_trace_dataflow_ambiguous_source_prefers_non_test(self):
+        """Test that ambiguous source names prefer non-test nodes."""
+        # Add two nodes with same name: one test, one production
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="create_task",
+                file_path="/repo/tasks.py",
+                line_start=100,
+                line_end=120,
+                language="python",
+                is_test=False,
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="create_task",
+                file_path="/repo/test_task_analysis.py",
+                line_start=50,
+                line_end=60,
+                language="python",
+                is_test=True,
+            )
+        )
+        # Create a target node
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="hybrid_search",
+                file_path="/repo/search.py",
+                line_start=10,
+                line_end=30,
+                language="python",
+                is_test=False,
+            )
+        )
+        # Add a CALLS edge from hybrid_search to production create_task
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source="/repo/search.py::hybrid_search",
+                target="/repo/tasks.py::create_task",
+                file_path="/repo/search.py",
+            )
+        )
+        self.store.commit()
+        
+        # Now call trace_dataflow with ambiguous source
+        result = trace_dataflow(source="create_task", sink=None, repo_root=str(self.root))
+        
+        # Should resolve to production node, not test
+        assert result["status"] == "ambiguous"
+        assert "tasks.py::create_task" in result["source_resolved_as"]
+        assert "source_disambiguation_note" in result
+        assert "source_alternatives" in result
+        assert len(result["source_alternatives"]) == 1
+        assert "test_task_analysis.py::create_task" in result["source_alternatives"][0]
+
+    def test_trace_dataflow_ambiguous_sink_prefers_non_test(self):
+        """Test that ambiguous sink names prefer non-test nodes."""
+        # Create source node
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="hybrid_search",
+                file_path="/repo/search.py",
+                line_start=10,
+                line_end=30,
+                language="python",
+                is_test=False,
+            )
+        )
+        # Create two nodes with same name: one test, one production
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="create_task",
+                file_path="/repo/tasks.py",
+                line_start=100,
+                line_end=120,
+                language="python",
+                is_test=False,
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="create_task",
+                file_path="/repo/test_task_analysis.py",
+                line_start=50,
+                line_end=60,
+                language="python",
+                is_test=True,
+            )
+        )
+        # Add a CALLS edge from hybrid_search to production create_task
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source="/repo/search.py::hybrid_search",
+                target="/repo/tasks.py::create_task",
+                file_path="/repo/search.py",
+            )
+        )
+        self.store.commit()
+        
+        # Now call trace_dataflow with ambiguous sink
+        result = trace_dataflow(
+            source="hybrid_search",
+            sink="create_task",
+            repo_root=str(self.root)
+        )
+        
+        # Should resolve sink to production node, not test
+        assert result["status"] == "ambiguous"
+        assert "tasks.py::create_task" in result["sink_resolved_as"]
+        assert "sink_disambiguation_note" in result
+        assert "sink_alternatives" in result
+        assert len(result["sink_alternatives"]) == 1
+        assert "test_task_analysis.py::create_task" in result["sink_alternatives"][0]
+        # Should find the path since we resolved to the correct node
+        assert result["reaches_sink"] is True

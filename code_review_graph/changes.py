@@ -225,9 +225,17 @@ def analyze_changes(
     if changed_ranges is None and repo_root is not None:
         changed_ranges = parse_git_diff_ranges(repo_root, base)
 
-    # Map changes to nodes.
+    # Map changes to nodes — restrict to files listed in changed_files so that
+    # callers who explicitly pass a subset of files get results only for those files.
     if changed_ranges:
-        changed_nodes = map_changes_to_nodes(store, changed_ranges)
+        cf_set = set(changed_files)
+        filtered_ranges = {
+            k: v for k, v in changed_ranges.items()
+            if k in cf_set
+            or any(k.endswith("/" + f) or k.endswith(os.sep + f) for f in cf_set)
+            or any(f.endswith("/" + k) or f.endswith(os.sep + k) for f in cf_set)
+        }
+        changed_nodes = map_changes_to_nodes(store, filtered_ranges)
     else:
         # Fallback: all nodes in changed files.
         changed_nodes = []

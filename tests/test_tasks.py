@@ -254,6 +254,53 @@ class TestArchiveTask(TestTaskBase):
         with pytest.raises(ValueError):
             tasks.archive_task(self.conn, [t["id"]], reason="")
 
+    def test_archive_already_archived_task_does_not_overwrite_reason(self):
+        """Re-archiving an already-archived task preserves the original reason."""
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        
+        # First archive with reason A
+        result1 = tasks.archive_task(self.conn, [t["id"]], reason="No longer needed", cascade=False)
+        assert t["id"] in result1["archived_ids"]
+        assert len(result1["already_archived"]) == 0
+        archived1 = tasks.get_task(self.conn, t["id"])
+        assert archived1["archive_reason"] == "No longer needed"
+        
+        # Re-archive with reason B — should NOT overwrite
+        result2 = tasks.archive_task(self.conn, [t["id"]], reason="duplicate archive attempt", cascade=False)
+        # already_archived contains task objects, check by ID
+        already_archived_ids = [task["id"] for task in result2["already_archived"]]
+        assert t["id"] in already_archived_ids
+        assert len(result2["archived_ids"]) == 0  # not newly archived
+        archived2 = tasks.get_task(self.conn, t["id"])
+        assert archived2["archive_reason"] == "No longer needed"  # original preserved
+
+    def test_archive_mixed_new_and_existing_only_updates_new(self):
+        """Batch archive with one new + one already archived only updates the new one."""
+        # Create root and two children to avoid single-root-task violation
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=root["id"])["tasks"][0]
+        t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=root["id"])["tasks"][0]
+        
+        # Archive t1 first
+        tasks.archive_task(self.conn, [t1["id"]], reason="First reason", cascade=False)
+        
+        # Batch archive both t1 and t2 with a different reason
+        result = tasks.archive_task(
+            self.conn, [t1["id"], t2["id"]], reason="Second reason", cascade=False
+        )
+        
+        # t2 should be in archived (newly archived)
+        assert t2["id"] in result["archived_ids"]
+        # t1 should be in already_archived (not newly archived)
+        already_archived_ids = [task["id"] for task in result["already_archived"]]
+        assert t1["id"] in already_archived_ids
+        
+        # Verify reasons
+        archived_t1 = tasks.get_task(self.conn, t1["id"])
+        archived_t2 = tasks.get_task(self.conn, t2["id"])
+        assert archived_t1["archive_reason"] == "First reason"  # original preserved
+        assert archived_t2["archive_reason"] == "Second reason"  # newly archived
+
 
 # ---------------------------------------------------------------------------
 # 5.1.6 — delete_task cascade (edges, code_refs, notes, contracts)
@@ -984,16 +1031,40 @@ class TestEdgeCases(TestTaskBase):
         assert len(result) == 1
         assert result[0]["id"] == root["id"]
 
-    def test_delete_no_cascade_leaves_children(self):
-        """delete_task(cascade=False) should not delete children."""
+    def test_delete_no_cascade_raises_when_children_exist(self):
+        """delete_task(cascade=False) raises ValueError when task has children."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])
+        with pytest.raises(ValueError, match="has children"):
+            tasks.delete_task(self.conn, root["id"], cascade=False)
+        # Parent should still exist (deletion was blocked)
+        still_exists = tasks.get_task(self.conn, root["id"])
+        assert still_exists["id"] == root["id"]
+
+    def test_delete_cascade_true_removes_parent_and_children(self):
+        """delete_task(cascade=True) removes parent + all descendants."""
         root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
         child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
-        tasks.delete_task(self.conn, root["id"], cascade=False)
+        result = tasks.delete_task(self.conn, root["id"], cascade=True)
+        assert root["id"] in result["deleted_ids"]
+        assert child["id"] in result["deleted_ids"]
         with pytest.raises(KeyError):
             tasks.get_task(self.conn, root["id"])
-        # Child remains (parent_id points to deleted task — SQLite no FK enforcement by default)
-        remaining = tasks.get_task(self.conn, child["id"])
-        assert remaining["id"] == child["id"]
+        with pytest.raises(KeyError):
+            tasks.get_task(self.conn, child["id"])
+
+    def test_delete_leaf_no_cascade_still_works(self):
+        """delete_task(cascade=False) works fine on a leaf task (no children)."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        leaf = tasks.create_task(self.conn, [{"title": "Leaf"}], parent_id=root["id"])["tasks"][0]
+        # Delete the leaf (no children) — should succeed without error
+        result = tasks.delete_task(self.conn, leaf["id"], cascade=False)
+        assert leaf["id"] in result["deleted_ids"]
+        with pytest.raises(KeyError):
+            tasks.get_task(self.conn, leaf["id"])
+        # Root still intact
+        still_exists = tasks.get_task(self.conn, root["id"])
+        assert still_exists["id"] == root["id"]
 
     def test_edit_task_field_on_empty_field(self):
         """search/replace on empty field should raise ValueError."""

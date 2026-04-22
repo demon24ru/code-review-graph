@@ -379,6 +379,73 @@ class TestChanges:
         # Should still find functions even without ranges.
         assert len(result["changed_functions"]) >= 1
 
+    def test_analyze_changes_filters_changed_ranges_by_changed_files(self):
+        """changed_functions must only contain nodes from files in changed_files.
+
+        This is the B-01 regression test: if changed_ranges contains extra files
+        that are NOT in changed_files, those extra files must be excluded.
+        """
+        self._add_func("search_func", path="search.py", line_start=1, line_end=10)
+        self._add_func("other_func", path="other.py", line_start=1, line_end=10)
+
+        # changed_ranges has BOTH files, but changed_files only names search.py.
+        result = analyze_changes(
+            self.store,
+            changed_files=["search.py"],
+            changed_ranges={
+                "search.py": [(1, 10)],
+                "other.py": [(1, 10)],  # must be ignored
+            },
+        )
+        names = {f["name"] for f in result["changed_functions"]}
+        assert "search_func" in names
+        assert "other_func" not in names
+
+    def test_analyze_changes_file_not_in_diff_returns_empty(self):
+        """If changed_files contains a file absent from changed_ranges, 0 changed funcs."""
+        self._add_func("some_func", path="app.py", line_start=1, line_end=10)
+
+        result = analyze_changes(
+            self.store,
+            changed_files=["nonexistent.py"],
+            changed_ranges={"app.py": [(1, 10)]},
+        )
+        assert result["changed_functions"] == []
+
+    def test_analyze_changes_multiple_filtered_files(self):
+        """When changed_files lists two files, both are included but not a third."""
+        self._add_func("fn_a", path="a.py", line_start=1, line_end=10)
+        self._add_func("fn_b", path="b.py", line_start=1, line_end=10)
+        self._add_func("fn_c", path="c.py", line_start=1, line_end=10)
+
+        result = analyze_changes(
+            self.store,
+            changed_files=["a.py", "b.py"],
+            changed_ranges={
+                "a.py": [(1, 10)],
+                "b.py": [(1, 10)],
+                "c.py": [(1, 10)],  # must be ignored
+            },
+        )
+        names = {f["name"] for f in result["changed_functions"]}
+        assert "fn_a" in names
+        assert "fn_b" in names
+        assert "fn_c" not in names
+
+    def test_analyze_changes_full_diff_unchanged_when_no_filter(self):
+        """When changed_files matches all keys in changed_ranges, nothing is filtered out."""
+        self._add_func("fn_x", path="x.py", line_start=1, line_end=10)
+        self._add_func("fn_y", path="y.py", line_start=1, line_end=10)
+
+        result = analyze_changes(
+            self.store,
+            changed_files=["x.py", "y.py"],
+            changed_ranges={"x.py": [(1, 10)], "y.py": [(1, 10)]},
+        )
+        names = {f["name"] for f in result["changed_functions"]}
+        assert "fn_x" in names
+        assert "fn_y" in names
+
     # ---------------------------------------------------------------
     # detect_changes_func (integration)
     # ---------------------------------------------------------------

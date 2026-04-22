@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from ..hints import generate_hints, get_session
 from ..incremental import find_project_root
 from ..refactor import (
+    _pending_refactors,
     apply_refactor,
     find_dead_code,
     rename_preview,
     suggest_refactorings,
 )
 from ._common import _get_store, _validate_repo_root, graph_error
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tool 17: refactor_tool  [REFACTOR]
@@ -122,6 +126,7 @@ def apply_refactor_func(
 
     [REFACTOR] Validates the refactor_id, checks expiry, ensures all edit
     paths are within the repo root, then performs exact string replacements.
+    After successful application, updates the graph DB node names.
 
     Args:
         refactor_id: ID returned by a prior ``refactor_tool(mode="rename")``
@@ -136,5 +141,32 @@ def apply_refactor_func(
     except (RuntimeError, ValueError) as exc:
         return graph_error("PATH_NOT_FOUND", str(exc))
 
+    # Grab old/new names BEFORE apply_refactor pops the preview from _pending_refactors
+    preview = _pending_refactors.get(refactor_id)
+    old_name = preview.get("old_name") if preview else None
+    new_name = preview.get("new_name") if preview else None
+
     result = apply_refactor(refactor_id, root)
+
+    # After successful apply, sync the graph DB node names
+    if result.get("status") == "ok" and old_name and new_name and result.get("applied", 0) > 0:
+        try:
+            store, _ = _get_store(str(root))
+            store._conn.execute(
+                "UPDATE nodes SET name = ? WHERE name = ?",
+                (new_name, old_name),
+            )
+            store._conn.commit()
+            result["graph_updated"] = True
+            logger.info(
+                "apply_refactor_func: updated graph DB nodes from %r to %r",
+                old_name,
+                new_name,
+            )
+            store.close()
+        except Exception as exc:
+            logger.warning("apply_refactor_func: graph DB update failed: %s", exc)
+            result["graph_updated"] = False
+            result["graph_update_warning"] = str(exc)
+
     return result

@@ -448,6 +448,128 @@ class TestApplyRefactor:
             tmp_dir.rmdir()
 
 
+class TestApplyRefactorGraphDBUpdate:
+    """Tests for graph DB updates after apply_refactor_func (MCP tool)."""
+
+    def setup_method(self):
+        """Set up test database and temp directory."""
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp_db.name)
+        self.tmp_dir = Path(tempfile.mkdtemp())
+        (self.tmp_dir / ".git").mkdir()
+        (self.tmp_dir / ".code-review-graph").mkdir()
+        # Copy the test DB to the .code-review-graph directory so _get_store finds it
+        import shutil
+        self.graph_db = self.tmp_dir / ".code-review-graph" / "graph.db"
+        shutil.copy(self.tmp_db.name, str(self.graph_db))
+        self._seed()
+
+    def teardown_method(self):
+        """Clean up database and temp directory."""
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        # Try to delete temp DB file, ignore if locked
+        try:
+            Path(self.tmp_db.name).unlink(missing_ok=True)
+        except (PermissionError, OSError):
+            pass
+        # Clean up temp files
+        for f in self.tmp_dir.glob("*.py"):
+            try:
+                f.unlink(missing_ok=True)
+            except (PermissionError, OSError):
+                pass
+        import shutil
+        try:
+            shutil.rmtree(self.tmp_dir / ".code-review-graph", ignore_errors=True)
+        except Exception:
+            pass
+        try:
+            (self.tmp_dir / ".git").rmdir()
+        except (PermissionError, OSError):
+            pass
+        try:
+            self.tmp_dir.rmdir()
+        except (PermissionError, OSError):
+            pass
+        # Clean up pending refactors
+        with _refactor_lock:
+            _pending_refactors.clear()
+
+    def _seed(self):
+        """Seed the store with a function node to rename."""
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File",
+                name=str(self.tmp_dir / "example.py"),
+                file_path=str(self.tmp_dir / "example.py"),
+                line_start=1,
+                line_end=10,
+                language="python",
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="old_func",
+                file_path=str(self.tmp_dir / "example.py"),
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        self.store.commit()
+        # Sync to the .code-review-graph copy
+        import shutil
+        shutil.copy(self.tmp_db.name, str(self.graph_db))
+
+    def test_apply_refactor_updates_graph_db_node_name(self):
+        """After apply_refactor_func, graph DB node names are updated."""
+        from code_review_graph.tools.refactor_tools import apply_refactor_func
+
+        # Create a real file to rename
+        target_file = self.tmp_dir / "example.py"
+        target_file.write_text("def old_func():\n    pass\n", encoding="utf-8")
+
+        # Create a refactor preview
+        rid = "test_graph_update"
+        with _refactor_lock:
+            _pending_refactors[rid] = {
+                "refactor_id": rid,
+                "type": "rename",
+                "old_name": "old_func",
+                "new_name": "new_func",
+                "edits": [
+                    {
+                        "file": str(target_file),
+                        "line": 1,
+                        "old": "old_func",
+                        "new": "new_func",
+                        "confidence": "high",
+                    }
+                ],
+                "stats": {"high": 1, "medium": 0, "low": 0},
+                "created_at": time.time(),
+            }
+
+        # Apply the refactor using the MCP tool function
+        result = apply_refactor_func(rid, str(self.tmp_dir))
+        assert result["status"] == "ok"
+        assert result["applied"] == 1
+        # Verify graph_updated flag is set (indicates DB was updated)
+        assert result.get("graph_updated") is True, (
+            f"Expected graph_updated=True, got {result}. "
+            "This indicates the graph DB update after apply_refactor succeeded."
+        )
+
+        # Verify file was updated
+        content = target_file.read_text(encoding="utf-8")
+        assert "new_func" in content
+        assert "old_func" not in content
+
+
 class TestPendingRefactorsThreadSafe:
     """Tests for thread-safety of the pending refactors storage."""
 

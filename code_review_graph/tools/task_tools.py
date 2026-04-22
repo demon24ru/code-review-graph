@@ -57,7 +57,12 @@ def _run(repo_root: Optional[str], fn, *args, **kwargs) -> dict[str, Any]:
         return graph_error("TASK_NOT_FOUND", str(exc))
     except ValueError as exc:
         msg = str(exc)
-        code = "TASK_CYCLE" if "cycle" in msg.lower() else "TASK_INVALID_PARAMS"
+        if "has children" in msg.lower():
+            code = "TASK_HAS_CHILDREN"
+        elif "cycle" in msg.lower():
+            code = "TASK_CYCLE"
+        else:
+            code = "TASK_INVALID_PARAMS"
         return graph_error(code, msg)
     except Exception as exc:
         return graph_error("TASK_PARSE_ERROR", str(exc))

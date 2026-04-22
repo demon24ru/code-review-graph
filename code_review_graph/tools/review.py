@@ -812,21 +812,58 @@ def trace_dataflow(
                 "summary": f"Source node '{source}' not found in graph.",
                 "next_actions": ["semantic_search_nodes_tool", "query_graph_tool"],
             }
+        
         # Prefer exact name match
-        source_node = next(
-            (n for n in source_candidates if n.name == source or n.qualified_name == source),
-            source_candidates[0],
-        )
+        exact_source = [c for c in source_candidates if c.name == source]
+        pool = exact_source if exact_source else source_candidates
+        
+        source_ambiguous_meta = None
+        source_node = pool[0]  # Default to first candidate
+        if len(pool) == 1:
+            source_node = pool[0]
+        elif len(pool) > 1:
+            # Multiple candidates: prefer non-test nodes
+            non_test = [c for c in pool if not c.is_test]
+            source_node = (non_test if non_test else pool)[0]
+            source_ambiguous_meta = {
+                "resolved_as": source_node.qualified_name,
+                "note": (
+                    f"Multiple nodes named '{source_node.name}' exist. "
+                    "Used the best match (non-test, highest score). "
+                    "Pass the exact qualified_name to override."
+                ),
+                "alternatives": [
+                    c.qualified_name for c in pool if c.qualified_name != source_node.qualified_name
+                ],
+            }
 
         # --- Resolve sink node (optional) ---
         sink_node = None
+        sink_ambiguous_meta = None
         if sink:
             sink_candidates = store.search_nodes(sink, limit=5)
             if sink_candidates:
-                sink_node = next(
-                    (n for n in sink_candidates if n.name == sink or n.qualified_name == sink),
-                    sink_candidates[0],
-                )
+                # Prefer exact name match
+                exact_sink = [c for c in sink_candidates if c.name == sink]
+                pool = exact_sink if exact_sink else sink_candidates
+                
+                if len(pool) == 1:
+                    sink_node = pool[0]
+                elif len(pool) > 1:
+                    # Multiple candidates: prefer non-test nodes
+                    non_test = [c for c in pool if not c.is_test]
+                    sink_node = (non_test if non_test else pool)[0]
+                    sink_ambiguous_meta = {
+                        "resolved_as": sink_node.qualified_name,
+                        "note": (
+                            f"Multiple nodes named '{sink_node.name}' exist. "
+                            "Used the best match (non-test, highest score). "
+                            "Pass the exact qualified_name to override."
+                        ),
+                        "alternatives": [
+                            c.qualified_name for c in pool if c.qualified_name != sink_node.qualified_name
+                        ],
+                    }
 
         # --- Forward BFS along CALLS edges ---
         # Build a lightweight adjacency list from CALLS edges only
@@ -897,8 +934,11 @@ def trace_dataflow(
                 f"reachable within {max_depth} CALLS hop(s)."
             )
 
+        # Determine overall status: "ambiguous" if either source or sink was ambiguous
+        overall_status = "ambiguous" if (source_ambiguous_meta or sink_ambiguous_meta) else "ok"
+
         result: dict[str, Any] = {
-            "status": "ok",
+            "status": overall_status,
             "summary": summary,
             "source_node": node_to_dict(source_node),
             "sink_node": node_to_dict(sink_node) if sink_node else None,
@@ -907,6 +947,17 @@ def trace_dataflow(
             "reachable": reachable_nodes,
             "paths": paths_to_sink,
         }
+        
+        # Add ambiguity metadata if present
+        if source_ambiguous_meta:
+            result["source_resolved_as"] = source_ambiguous_meta["resolved_as"]
+            result["source_disambiguation_note"] = source_ambiguous_meta["note"]
+            result["source_alternatives"] = source_ambiguous_meta["alternatives"]
+        
+        if sink_ambiguous_meta:
+            result["sink_resolved_as"] = sink_ambiguous_meta["resolved_as"]
+            result["sink_disambiguation_note"] = sink_ambiguous_meta["note"]
+            result["sink_alternatives"] = sink_ambiguous_meta["alternatives"]
         result["_hints"] = generate_hints("trace_dataflow", result, get_session())
         return result
     except Exception as exc:
