@@ -290,21 +290,21 @@ Your AI assistant uses these automatically once the graph is built.
 | Tool | Description |
 |------|-------------|
 | `task_get_active_root` | Return the single open root task (or null if idle) |
-| `task_create` | Create a task (root blocked if another open root exists) |
+| `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]` |
 | `task_update` | Update title, description, status, spec, acceptance_criteria |
 | `task_edit` | Surgically edit a text field: search/replace or line-range |
 | `task_delete` | Delete a task (cascade deletes subtree) |
 | `task_get` | Get a task by ID |
 | `task_list` | List tasks with filters: parent_id, status, root_only |
-| `task_move` | Move task to a new parent (cycle detection enforced) |
+| `task_move` | Move tasks to a shared new parent — batch list API: `task_ids=[...]` |
 | `task_search` | Keyword search within a task subtree |
-| `task_archive` | Archive a task with reason (preserves history) |
-| `task_add_edge` | Add depends_on \| blocks \| shares_context \| conflicts_with \| informs edge |
+| `task_archive` | Archive tasks with shared reason — batch list API: `task_ids=[...]` |
+| `task_add_edge` | Add edges between tasks — batch list API: `edges=[{source_id, target_id, edge_type?}]` |
 | `task_remove_edge` | Remove an edge between tasks |
 | `task_get_edges` | Get incoming/outgoing/both edges for a task |
 | `task_get_dag` | Full DAG for a subtree (nodes + all edges) |
 | `task_topological_sort` | Topological order of leaf tasks by depends_on |
-| `task_link_code` | Link a task to a code node (modifies\|creates\|deletes\|reads\|tests) |
+| `task_link_code` | Link a task to code nodes — batch list API: `links=[{ref_type, code_node_id\|qualified_name}]` |
 | `task_unlink_code` | Remove code node association |
 | `task_get_code_refs` | Get code nodes linked to a task |
 | `task_find_by_code_node` | Find all tasks referencing a code node |
@@ -316,7 +316,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_validate` | Gate-check: 8 algorithmic checks before coder handoff |
 | `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts |
 | `task_export` | Flat handoff structure for design/coder workflows |
-| `note_add` | Add a brainstorm note (decision\|question\|assumption\|constraint\|risk) |
+| `note_add` | Add notes to a task — batch list API: `notes=[{note_type, content, status?, resolution?}]` |
 | `note_update` | Resolve or update a note |
 | `note_list` | List notes (with optional ancestor chain) |
 | `note_delete` | Delete a note |
@@ -577,31 +577,48 @@ Now `task_export` for any consumer shows the current definition side-by-side wit
 
 ### Quick Reference
 
+All bulk operations use **list-based batch mode** — always pass a list, even for one item.
+
 ```
 # Start
 task_get_active_root()                              # check if pipeline is idle
-task_create("Feature X")                            # create root
+task_create(tasks=[{"title": "Feature X"}])         # create root
 
-# Decompose
-task_create("Subtask Y", parent_id=root_id)
-task_add_edge(child_id, blocker_id, "depends_on")
+# Decompose — all subtasks in one call
+task_create(parent_id=root_id, tasks=[
+    {"title": "Subtask Y"},
+    {"title": "Subtask Z", "description": "..."},
+])
+
+# Add dependencies — one call for all edges
+task_add_edge(edge_type="depends_on", edges=[
+    {"source_id": child_id, "target_id": blocker_id},
+])
 
 # Interview each leaf (link 3-8 code nodes per leaf task — sweet spot)
 semantic_search_nodes_tool("AuthService")           # find nodes → returns id + qualified_name
 
-# Single link
-task_link_code(task_id, qualified_name="src/auth.py::AuthService", ref_type="modifies")
-
-# Batch link — one call for all nodes of a leaf task
-task_link_code(task_id, batch=[
+# Link code nodes — one call for all nodes of a leaf task
+task_link_code(task_id=task_id, links=[
     {"ref_type": "modifies", "qualified_name": "src/auth.py::AuthService"},
     {"ref_type": "modifies", "qualified_name": "src/auth.py::TokenModel"},
     {"ref_type": "reads",    "qualified_name": "src/config.py::JWTConfig"},
     {"ref_type": "creates",  "qualified_name": "src/auth.py::TokenResponse"},
 ])
 
-note_add(task_id, type="question", content="Should tokens be stored in httpOnly cookies?")
+# Add brainstorm notes — one call for all notes on a task
+note_add(task_id=task_id, notes=[
+    {"note_type": "question", "content": "Should tokens be stored in httpOnly cookies?"},
+    {"note_type": "assumption", "content": "User model already exists"},
+])
+
 contract_add(name="OAuthToken", ..., scope_task_id=root_id)
+
+# Restructure the tree — move multiple tasks in one call
+task_move(new_parent_id=group_id, task_ids=["t2", "t3", "t4"])
+
+# Selective archiving when changing approach
+task_archive(reason="Switching to in-app only", task_ids=["t5", "t6"])
 
 # Check coverage
 task_find_for_impact(["src/auth.py"])               # what's covered?

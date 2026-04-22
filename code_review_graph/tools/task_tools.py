@@ -100,29 +100,46 @@ def task_get_active_root_func(
 
 
 def task_create_func(
-    title: str,
-    description: Optional[str] = None,
+    tasks_list: list[dict],
     parent_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Create a new task.
+    """Create one or more tasks sharing a common parent.
 
-    [BRAINSTORM] Creates a task. If *parent_id* is given the task becomes a
-    subtask of the specified parent.
+    [BRAINSTORM] Always pass a list — even for a single task.
+
+    Single task:
+        task_create(tasks=[{"title": "Root task"}])
+
+    Multiple tasks (batch decomposition):
+        task_create(parent_id="t1", tasks=[
+            {"title": "OAuth interface"},
+            {"title": "Google OAuth", "description": "impl Google provider"},
+            {"title": "JWT service"},
+        ])
+
+    Each item requires ``title`` and may include ``description``.
+
+    **Single-pipeline discipline**: creating a root task (no parent_id) is
+    blocked while another open root task exists.
 
     Args:
-        title: Task title (required).
-        description: Optional free-text description.
-        parent_id: Parent task ID. Omit to create a root task.
+        tasks: List of task dicts — each with title (required), description (optional).
+        parent_id: Shared parent task ID. Omit to create root task(s).
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        The newly created task dict.
+        ``{"tasks": [...]}`` — list of created task dicts.
     """
-    def _fn(conn, title, description, parent_id):
-        task = tasks.create_task(conn, title, description=description, parent_id=parent_id)
-        return _ok(f"Created task '{task['title']}' ({task['id'][:8]})", task=task)
-    return _run(repo_root, _fn, title, description, parent_id)
+    def _fn(conn, tasks_list, parent_id):
+        result = tasks.create_task(conn, tasks_list, parent_id=parent_id)
+        created = result["tasks"]
+        if len(created) == 1:
+            msg = f"Created task '{created[0]['title']}' ({created[0]['id'][:8]})"
+        else:
+            msg = f"Created {len(created)} task(s) under parent {parent_id[:8] if parent_id else 'root'}"
+        return _ok(msg, **result)
+    return _run(repo_root, _fn, tasks_list, parent_id)
 
 
 def task_update_func(
@@ -282,27 +299,42 @@ def task_list_func(
 
 
 def task_move_func(
-    task_id: str,
+    task_ids: list[str],
     new_parent_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Move a task to a new parent (or promote it to root).
+    """Move one or more tasks to a shared new parent (or promote them to root).
 
-    [BRAINSTORM] Fails if the move would create a hierarchy cycle.
+    [BRAINSTORM] Always pass a list — even for a single task.
+    Fails if any move would create a hierarchy cycle (checked atomically).
+
+    Single move:
+        task_move(task_ids=["t5"], new_parent_id="t11")
+
+    Batch restructuring (common during brainstorm refinement):
+        task_move(new_parent_id="t11", task_ids=["t2", "t3", "t4"])
+
+    Promote to root:
+        task_move(task_ids=["t5"])   # new_parent_id defaults to None
 
     Args:
-        task_id: Task to move.
-        new_parent_id: New parent task ID. Pass null/None to make it a root task.
+        task_ids: List of task IDs to move.
+        new_parent_id: Shared new parent task ID. Omit to promote to root.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        Updated task dict.
+        ``{"tasks": [...]}`` — list of updated task dicts.
     """
-    def _fn(conn, task_id, new_parent_id):
-        task = tasks.move_task(conn, task_id, new_parent_id=new_parent_id)
+    def _fn(conn, task_ids, new_parent_id):
+        result = tasks.move_task(conn, task_ids, new_parent_id=new_parent_id)
+        moved = result["tasks"]
         parent_label = f"under '{new_parent_id[:8]}'" if new_parent_id else "to root"
-        return _ok(f"Moved task '{task['title']}' {parent_label}", task=task)
-    return _run(repo_root, _fn, task_id, new_parent_id)
+        if len(moved) == 1:
+            msg = f"Moved task '{moved[0]['title']}' {parent_label}"
+        else:
+            msg = f"Moved {len(moved)} task(s) {parent_label}"
+        return _ok(msg, **result)
+    return _run(repo_root, _fn, task_ids, new_parent_id)
 
 
 def task_search_func(
@@ -330,31 +362,39 @@ def task_search_func(
 
 
 def task_archive_func(
-    task_id: str,
+    task_ids: list[str],
     reason: str,
     cascade: bool = True,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Archive a task (and optionally its subtree).
+    """Archive one or more tasks (and optionally their subtrees).
 
-    [BRAINSTORM] Sets status to 'archived' and records the reason. Unlike
-    task_delete, the data is preserved for historical reference.
-    Use this when the direction has changed fundamentally.
+    [BRAINSTORM] Always pass a list — even for a single task.
+    Sets status to 'archived' and records the reason. Unlike task_delete,
+    the data is preserved for historical reference.
+
+    Single archive:
+        task_archive(task_ids=["t5"], reason="No longer needed")
+
+    Selective archiving (common when changing approach mid-brainstorm):
+        task_archive(reason="Switching to in-app only", task_ids=["t2", "t3", "t6"])
+
+    *cascade* applies to each task individually (default: True).
 
     Args:
-        task_id: Task to archive.
-        reason: Why this task is being archived (required).
-        cascade: If True (default), archive all subtasks too.
+        task_ids: List of task IDs to archive.
+        reason: Why these tasks are being archived (required).
+        cascade: If True (default), archive all subtasks of each task too.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        List of archived task IDs.
+        ``{"archived_ids": [...]}`` — all archived task IDs (including cascaded).
     """
-    def _fn(conn, task_id, reason, cascade):
-        result = tasks.archive_task(conn, task_id, reason=reason, cascade=cascade)
+    def _fn(conn, task_ids, reason, cascade):
+        result = tasks.archive_task(conn, task_ids, reason=reason, cascade=cascade)
         count = len(result["archived_ids"])
         return _ok(f"Archived {count} task(s): {reason}", **result)
-    return _run(repo_root, _fn, task_id, reason, cascade)
+    return _run(repo_root, _fn, task_ids, reason, cascade)
 
 
 # ===========================================================================
@@ -363,37 +403,65 @@ def task_archive_func(
 
 
 def task_add_edge_func(
-    source_id: str,
-    target_id: str,
-    edge_type: str,
-    description: Optional[str] = None,
+    edges: list[dict],
+    edge_type: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Add a directed edge between two tasks.
+    """Add one or more directed edges between tasks.
 
-    [BRAINSTORM] Valid edge types:
+    [BRAINSTORM] Always pass a list — even for a single edge.
+
+    Valid edge types: depends_on | blocks | shares_context | conflicts_with | informs
     - **depends_on** — source cannot start until target is done
     - **blocks** — source blocks target from starting
     - **shares_context** — both tasks share architectural decisions
     - **conflicts_with** — tasks may conflict and need coordination
     - **informs** — source decision influences target approach
 
-    Cycle detection is enforced for depends_on and blocks.
+    Cycle detection is enforced for depends_on and blocks (checked atomically).
+
+    Single edge:
+        task_add_edge(edges=[{"source_id": "t8", "target_id": "t5"}],
+                      edge_type="depends_on")
+
+    Pattern A — one source, many targets:
+        task_add_edge(edge_type="depends_on", edges=[
+            {"source_id": "t8", "target_id": "t5"},
+            {"source_id": "t8", "target_id": "t6"},
+            {"source_id": "t8", "target_id": "t7"},
+        ])
+
+    Pattern B — many sources, one target:
+        task_add_edge(edge_type="depends_on", edges=[
+            {"source_id": "t5", "target_id": "t2"},
+            {"source_id": "t6", "target_id": "t2"},
+        ])
+
+    Pattern C — mixed (per-item edge_type overrides default):
+        task_add_edge(edge_type="depends_on", edges=[
+            {"source_id": "t5", "target_id": "t2"},
+            {"source_id": "t6", "target_id": "t7", "edge_type": "shares_context"},
+        ])
 
     Args:
-        source_id: Source task ID.
-        target_id: Target task ID.
-        edge_type: Type of relationship (see above).
-        description: Optional human-readable description of the relationship.
+        edges: List of edge dicts — each with source_id, target_id, and optional
+               edge_type (overrides top-level default) and description.
+        edge_type: Default edge type for all items lacking their own edge_type.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        The created edge dict.
+        ``{"edges": [...]}`` — list of created edge dicts.
     """
-    def _fn(conn, source_id, target_id, edge_type, description):
-        edge = tasks.add_task_edge(conn, source_id, target_id, edge_type, description=description)
-        return _ok(f"Added {source_id[:8]} --{edge_type}--> {target_id[:8]}", edge=edge)
-    return _run(repo_root, _fn, source_id, target_id, edge_type, description)
+    def _fn(conn, edges, edge_type):
+        result = tasks.add_task_edge(conn, edges, edge_type=edge_type)
+        created = result["edges"]
+        if len(created) == 1:
+            e = created[0]
+            msg = f"Added {e['source_task_id'][:8]} --{e['type']}--> {e['target_task_id'][:8]}"
+        else:
+            msg = f"Added {len(created)} edge(s)"
+        return _ok(msg, **result)
+    return _run(repo_root, _fn, edges, edge_type)
 
 
 def task_remove_edge_func(
@@ -498,66 +566,54 @@ def task_topological_sort_func(
 
 def task_link_code_func(
     task_id: str,
-    ref_type: str = "modifies",
-    code_node_id: Optional[int] = None,
-    qualified_name: Optional[str] = None,
-    description: Optional[str] = None,
-    batch: Optional[list] = None,
+    links: list[dict],
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Link a task to one or many code graph nodes.
 
-    [BRAINSTORM] Associates a task with code entities (functions, classes, files).
+    [BRAINSTORM] Always pass a list — even for a single node.
+    Associates a task with code entities (functions, classes, files).
 
-    **Single mode** — link one node:
-        task_link_code(task_id, ref_type="modifies", code_node_id=1786)
-        task_link_code(task_id, ref_type="modifies",
-                       qualified_name="src/auth.py::login")
+    Single node:
+        task_link_code(task_id="t5", links=[
+            {"ref_type": "modifies", "code_node_id": 1786}
+        ])
 
-    **Batch mode** — link many nodes in one call:
-        task_link_code(task_id, batch=[
+    Multiple nodes (typical leaf task — 3-8 code refs is normal):
+        task_link_code(task_id="t5", links=[
             {"ref_type": "modifies", "code_node_id": 101},
             {"ref_type": "modifies", "code_node_id": 102},
             {"ref_type": "reads",    "qualified_name": "src/auth.py::TokenService"},
             {"ref_type": "creates",  "qualified_name": "src/models.py::OAuthToken",
-             "description": "new model"},
+             "description": "new model class"},
         ])
-        When batch is provided, top-level ref_type/code_node_id/qualified_name are ignored.
-        Failed items are collected in ``errors`` — does not abort the whole batch.
 
-    Both ``id`` and ``qualified_name`` are returned by semantic_search_nodes_tool,
-    so no extra lookup step is needed.
+    Both ``code_node_id`` (int) and ``qualified_name`` (string) are returned by
+    semantic_search_nodes_tool — no extra lookup needed.
 
     ref_type values: modifies | creates | deletes | reads | tests
 
+    Failed items are collected in ``errors`` — does not abort the whole batch.
+
     Args:
         task_id: Task ID.
-        ref_type: Default ref type for single mode (modifies|creates|deletes|reads|tests).
-        code_node_id: Integer node ID from semantic_search_nodes_tool results.
-        qualified_name: Qualified name string from search results or task_export code_refs.
-        description: Optional description of the relationship (single mode).
-        batch: List of {ref_type, code_node_id|qualified_name, description?} dicts.
+        links: List of dicts — each with ref_type and one of code_node_id /
+               qualified_name. Optional per-item: description.
         repo_root: Repository root path. Auto-detected if omitted.
+
+    Returns:
+        ``{"task_id": ..., "linked": [...], "errors": [...], "total": N,
+           "success_count": N, "error_count": N}``
     """
-    def _fn(conn, task_id, ref_type, code_node_id, qualified_name, description, batch):
-        ref = tasks.link_task_code(
-            conn, task_id, ref_type,
-            code_node_id=code_node_id,
-            qualified_name=qualified_name,
-            description=description,
-            batch=batch,
-        )
-        if batch is not None:
-            sc = ref["success_count"]
-            ec = ref["error_count"]
-            msg = f"Batch linked {sc}/{ref['total']} nodes to task {task_id[:8]}"
-            if ec:
-                msg += f" ({ec} errors)"
-            return _ok(msg, ref=ref)
-        node_ref = ref.get("code_node_id", code_node_id or qualified_name)
-        return _ok(f"Linked task {task_id[:8]} --{ref_type}--> node {node_ref}", ref=ref)
-    return _run(repo_root, _fn, task_id, ref_type, code_node_id, qualified_name,
-                description, batch)
+    def _fn(conn, task_id, links):
+        ref = tasks.link_task_code(conn, task_id, links)
+        sc = ref["success_count"]
+        ec = ref["error_count"]
+        msg = f"Linked {sc}/{ref['total']} node(s) to task {task_id[:8]}"
+        if ec:
+            msg += f" ({ec} error(s))"
+        return _ok(msg, **ref)
+    return _run(repo_root, _fn, task_id, links)
 
 
 def task_unlink_code_func(
@@ -878,17 +934,14 @@ def task_build_context_func(
 
 def note_add_func(
     task_id: str,
-    note_type: str,
-    content: str,
-    status: str = "open",
-    resolution: Optional[str] = None,
-    rationale: Optional[str] = None,
-    alternatives: Optional[list[str]] = None,
+    notes: list[dict],
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Add a brainstorm note to a task.
+    """Add one or more brainstorm notes to a task.
 
-    [BRAINSTORM] Records any piece of context from the brainstorm session.
+    [BRAINSTORM] Always pass a list — even for a single note.
+    Records context from the brainstorm session.
+
     Note types:
     - **decision** — a resolved design choice (set status='resolved')
     - **question** — an open question to answer before coding
@@ -896,27 +949,41 @@ def note_add_func(
     - **constraint** — a hard constraint from the user/context
     - **risk** — a potential problem to monitor
 
+    Single note:
+        note_add(task_id="t1", notes=[
+            {"note_type": "constraint", "content": "self-hosted only"}
+        ])
+
+    Multiple notes (typical after structured brainstorm interview):
+        note_add(task_id="t1", notes=[
+            {"note_type": "decision", "content": "Use JWT tokens",
+             "status": "resolved", "resolution": "JWT", "rationale": "stateless"},
+            {"note_type": "constraint", "content": "self-hosted only"},
+            {"note_type": "question", "content": "WebSocket or polling?"},
+            {"note_type": "assumption", "content": "User model already exists"},
+        ])
+
+    Each item requires ``note_type`` and ``content``.
+    Optional per-item: ``status`` (default "open"), ``resolution``,
+    ``rationale``, ``alternatives``.
+
     Args:
-        task_id: Task to attach the note to.
-        note_type: Type (decision|question|assumption|constraint|risk).
-        content: The note text (required).
-        status: open|resolved|rejected|deferred (default: open).
-        resolution: The answer or decision (for resolved notes).
-        rationale: Why this decision was made.
-        alternatives: List of considered alternatives that were rejected.
+        task_id: Task to attach the notes to.
+        notes: List of note dicts.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        The created note dict.
+        ``{"notes": [...]}`` — list of created note dicts.
     """
-    def _fn(conn, task_id, note_type, content, status, resolution, rationale, alternatives):
-        note = tasks.add_note(
-            conn, task_id, note_type, content,
-            status=status, resolution=resolution,
-            rationale=rationale, alternatives=alternatives,
-        )
-        return _ok(f"Added {note_type} note to task {task_id[:8]}", note=note)
-    return _run(repo_root, _fn, task_id, note_type, content, status, resolution, rationale, alternatives)
+    def _fn(conn, task_id, notes):
+        result = tasks.add_note(conn, task_id, notes)
+        created = result["notes"]
+        if len(created) == 1:
+            msg = f"Added {created[0]['note_type']} note to task {task_id[:8]}"
+        else:
+            msg = f"Added {len(created)} note(s) to task {task_id[:8]}"
+        return _ok(msg, **result)
+    return _run(repo_root, _fn, task_id, notes)
 
 
 def note_update_func(
@@ -1216,6 +1283,7 @@ def contract_list_func(
 
 def task_roadmap_func(
     root_task_id: Optional[str] = None,
+    include_archived: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Get an aggregated progress snapshot for the entire task tree.
@@ -1227,26 +1295,35 @@ def task_roadmap_func(
     Returns:
     - **progress**: total/done/in_progress/ready/blocked/draft counts + percent
     - **phases**: execution levels with task statuses and blocked_by info
+      (archived tasks hidden by default; use include_archived=True to show them)
+    - **archived**: list of archived tasks (only when include_archived=True)
     - **contracts**: summary of contract statuses
     - **attention**: what needs action right now (ready_to_start, open questions,
       unverified assumptions, low-isolation tasks, pending contracts)
 
     Args:
         root_task_id: Root task ID. Auto-detected if omitted.
+        include_archived: If True, include archived tasks in phases and add
+            an ``archived`` section. Default False.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
         Full roadmap snapshot.
     """
-    def _fn(conn, root_task_id):
-        rm = task_analysis.roadmap(conn, root_task_id)
+    def _fn(conn, root_task_id, include_archived):
+        rm = task_analysis.roadmap(conn, root_task_id, include_archived=include_archived)
         p = rm["progress"]
+        archived_hint = (
+            f", {p['archived']} archived (hidden — use include_archived=True to show)"
+            if p["archived"] and not include_archived
+            else ""
+        )
         return _ok(
             f"Roadmap: {p['total']} tasks, {p['done']} done ({p['percent']}%), "
-            f"{p['blocked']} blocked",
+            f"{p['blocked']} blocked{archived_hint}",
             **rm,
         )
-    return _run(repo_root, _fn, root_task_id)
+    return _run(repo_root, _fn, root_task_id, include_archived)
 
 
 def task_roadmap_diff_func(
@@ -1291,6 +1368,7 @@ def task_find_for_impact_func(
     root_task_id: Optional[str] = None,
     max_depth: int = 2,
     open_only: bool = True,
+    include_node_details: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Find tasks whose code refs fall within the blast radius of changed files.
@@ -1307,32 +1385,38 @@ def task_find_for_impact_func(
         root_task_id: If given, restrict results to tasks in this subtree.
         max_depth: BFS hops into the code graph. Default 2.
         open_only: If True (default), only return non-done/archived tasks.
+        include_node_details: If True, include full ``impacted_nodes`` and
+            ``uncovered_nodes`` lists. Default False — only counts are returned
+            to keep the response compact.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
         Dict with:
-          ``impacted_nodes``  — code nodes in the blast radius
-          ``tasks``           — matching open tasks with ``matched_nodes`` field
-          ``uncovered_nodes`` — impacted nodes with no task refs
-          ``coverage_ratio``  — fraction of impacted nodes covered by tasks
+          ``impacted_nodes_count``  — total nodes in blast radius
+          ``impacted_nodes``        — node detail list (only if include_node_details=True)
+          ``tasks``                 — matching open tasks with ``matched_nodes`` field
+          ``uncovered_nodes_count`` — nodes with no task refs
+          ``uncovered_nodes``       — node detail list (only if include_node_details=True)
+          ``coverage_ratio``        — fraction of impacted nodes covered by tasks
     """
-    def _fn(conn, file_paths, root_task_id, max_depth, open_only):
+    def _fn(conn, file_paths, root_task_id, max_depth, open_only, include_node_details):
         result = task_analysis.find_tasks_for_impact(
             conn,
             file_paths,
             root_task_id=root_task_id,
             max_depth=max_depth,
             open_only=open_only,
+            include_node_details=include_node_details,
         )
         n_tasks = len(result["tasks"])
-        n_nodes = len(result["impacted_nodes"])
+        n_nodes = result["impacted_nodes_count"]
         coverage = result["coverage_ratio"]
         return _ok(
             f"Impact radius: {n_nodes} node(s), {n_tasks} open task(s), "
             f"coverage {coverage:.0%}",
             **result,
         )
-    return _run(repo_root, _fn, file_paths, root_task_id, max_depth, open_only)
+    return _run(repo_root, _fn, file_paths, root_task_id, max_depth, open_only, include_node_details)
 
 
 def task_check_rollup_func(

@@ -30,15 +30,27 @@ Communities are detected automatically via the Leiden algorithm. Each community 
 ## Step 3: Find Code by Keyword or Structure
 
 ```
-# Semantic / keyword search
+# Semantic / keyword search — multi-word query = FTS5 OR (one round-trip)
 semantic_search_nodes_tool(query="authentication", kind="Function", limit=10)
 semantic_search_nodes_tool(query="GraphStore",     kind="Class")
 semantic_search_nodes_tool(query="migrations",     kind="File")
 
+# Bulk multi-symbol lookup in one call:
+semantic_search_nodes_tool(query="create_task add_task_edge move_task archive_task")
+
+# Filter to a specific file:
+semantic_search_nodes_tool(query="create", file_path="tasks.py")
+
 # Returns: id, name, qualified_name, file_path, line_start, line_end, params, signature
 ```
 
-Use `id` or `qualified_name` from results directly in `task_link_code` or `contract_add`.
+**`line_end` is critical for large codebases.** It tells you the exact boundary of a
+function without reading the file. Use it to do a targeted `Read(offset=line_start,
+limit=line_end-line_start+1)` only when you actually need the body — never read
+the whole file just to find where a function ends. Reading large functions bloats
+input context significantly while output context stays the same.
+
+Use `id` or `qualified_name` from results directly in `task_link_code(task_id, links=[{ref_type, code_node_id|qualified_name}])` or `contract_add`.
 
 ```
 # File and pattern search
@@ -125,6 +137,24 @@ audit_workspace_tool()    # comprehensive: dead code, large functions, import cy
 → get_architecture_overview_tool()   # coupling between communities
 ```
 
+## Tool Selection: MCP vs Direct Tools
+
+**Do NOT use MCP for everything.** Use the right tool for each job:
+
+| Need | Best tool | Why |
+|---|---|---|
+| Find function declarations + signatures | `semantic_search_nodes_tool` | Returns params, line_end, id in one call |
+| Find 3+ symbols at once | `semantic_search_nodes_tool(query="a b c")` | Single FTS5 OR query |
+| Find all callers/usages of a symbol | `query_graph_tool(callers_of)` | Graph edge traversal |
+| Search inside function bodies | **Grep / ripgrep** | MCP only indexes declarations, not bodies |
+| Find a specific pattern/string in code | **Grep** | MCP cannot search body content |
+| Find all places variable X is used | **LSP find_references** | Semantic, not text-based |
+| Find where a value flows | `trace_dataflow_tool` | Graph traversal |
+| Read a specific function body | `Read(offset=line_start, limit=line_end-line_start+1)` | Use line_end from MCP search first |
+
+**MCP semantic_search ≈ `grep "^def "` + auto-read of signature lines.**
+It does NOT replace grep for searching inside function bodies.
+
 ## Tips
 
 - `list_graph_stats_tool` shows `last_updated` — if stale, run `build_or_update_graph_tool()`
@@ -132,3 +162,4 @@ audit_workspace_tool()    # comprehensive: dead code, large functions, import cy
 - `find_files_by_pattern_tool` supports glob patterns: `**/*.py`, `!tests/**`
 - Communities are automatically named by dominant file paths — search by partial name
 - For new codebases, run `embed_graph_tool` once for much better semantic search quality
+- Always use `line_end` from search results to scope `Read` calls — never read whole files to find function boundaries

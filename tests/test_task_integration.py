@@ -25,8 +25,90 @@ class TestIntegrationBase:
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         self.store = GraphStore(self.tmp.name)
         self.conn = self.store._conn
+        # Compatibility wrappers similar to TestTaskBase to adapt old API calls
+        self._orig_create_task = tasks.create_task
+        def create_task(conn, title, description=None, parent_id=None):
+            res = self._orig_create_task(conn, [{"title": title, "description": description}], parent_id=parent_id)
+            return res["tasks"][0]
+        tasks.create_task = create_task
+        self._orig_move_task = tasks.move_task
+        def move_task(conn, task_ids, new_parent_id=None):
+            if not isinstance(task_ids, list):
+                task_ids = [task_ids]
+            res = self._orig_move_task(conn, task_ids, new_parent_id=new_parent_id)
+            return res["tasks"][0]
+        tasks.move_task = move_task
+        self._orig_archive_task = tasks.archive_task
+        def archive_task(conn, task_ids, reason, cascade=True):
+            if not isinstance(task_ids, list):
+                task_ids = [task_ids]
+            return self._orig_archive_task(conn, task_ids, reason=reason, cascade=cascade)
+        tasks.archive_task = archive_task
+        self._orig_add_task_edge = tasks.add_task_edge
+        def add_task_edge(conn, *args, **kwargs):
+            if len(args) >= 1 and isinstance(args[0], list):
+                edges = args[0]
+                edge_type = kwargs.get("edge_type", None)
+                res = self._orig_add_task_edge(conn, edges, edge_type=edge_type)
+                return res.get("edges", [])[0] if isinstance(res, dict) and "edges" in res else res
+            if len(args) >= 3:
+                source_id, target_id, edge_type = args[0], args[1], args[2]
+                res = self._orig_add_task_edge(conn, [{"source_id": source_id, "target_id": target_id}], edge_type=edge_type)
+                return res["edges"][0]
+            return self._orig_add_task_edge(conn, *args, **kwargs)
+        tasks.add_task_edge = add_task_edge
+        self._orig_link_task_code = tasks.link_task_code
+        def link_task_code(conn, task_id, *args, **kwargs):
+            if len(args) == 1 and isinstance(args[0], list):
+                batch = args[0]
+                return self._orig_link_task_code(conn, task_id, batch)
+            if len(args) >= 1 and isinstance(args[0], str):
+                ref_type = args[0]
+                code_node_id = kwargs.get("code_node_id", None)
+                qualified_name = kwargs.get("qualified_name", None)
+                description = kwargs.get("description", None)
+                links = []
+                if code_node_id is not None or qualified_name is not None:
+                    item = {"ref_type": ref_type}
+                    if code_node_id is not None:
+                        item["code_node_id"] = code_node_id
+                    if qualified_name is not None:
+                        item["qualified_name"] = qualified_name
+                    if description is not None:
+                        item["description"] = description
+                    links.append(item)
+                res = self._orig_link_task_code(conn, task_id, links)
+                linked = res.get("linked", [])
+                if linked:
+                    l = linked[0]
+                    return {"task_id": task_id, "code_node_id": l.get("code_node_id"), "ref_type": l.get("ref_type")}
+                return res
+            if "batch" in kwargs:
+                batch = kwargs["batch"]
+                return self._orig_link_task_code(conn, task_id, batch)
+            return self._orig_link_task_code(conn, task_id, [])
+        tasks.link_task_code = link_task_code
+        self._orig_add_note = tasks.add_note
+        def add_note(conn, task_id, note_type, content, status="open", resolution=None, rationale=None, alternatives=None):
+            notes = [{"note_type": note_type, "content": content, "status": status, "resolution": resolution, "rationale": rationale, "alternatives": alternatives}]
+            res = self._orig_add_note(conn, task_id, notes)
+            return res["notes"][0]
+        tasks.add_note = add_note
 
     def teardown_method(self):
+        # Restore originals
+        if hasattr(self, "_orig_create_task"):
+            tasks.create_task = self._orig_create_task
+        if hasattr(self, "_orig_move_task"):
+            tasks.move_task = self._orig_move_task
+        if hasattr(self, "_orig_archive_task"):
+            tasks.archive_task = self._orig_archive_task
+        if hasattr(self, "_orig_add_task_edge"):
+            tasks.add_task_edge = self._orig_add_task_edge
+        if hasattr(self, "_orig_link_task_code"):
+            tasks.link_task_code = self._orig_link_task_code
+        if hasattr(self, "_orig_add_note"):
+            tasks.add_note = self._orig_add_note
         self.store.close()
         Path(self.tmp.name).unlink(missing_ok=True)
 

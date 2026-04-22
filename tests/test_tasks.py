@@ -40,7 +40,7 @@ class TestTaskBase:
 class TestTaskCRUD(TestTaskBase):
 
     def test_create_root_task(self):
-        task = tasks.create_task(self.conn, "My task", description="desc")
+        task = tasks.create_task(self.conn, [{"title": "My task", "description": "desc"}])["tasks"][0]
         assert task["id"]
         assert task["title"] == "My task"
         assert task["description"] == "desc"
@@ -48,16 +48,16 @@ class TestTaskCRUD(TestTaskBase):
         assert task["parent_id"] is None
 
     def test_create_subtask(self):
-        root = tasks.create_task(self.conn, "Root")
-        child = tasks.create_task(self.conn, "Child", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
         assert child["parent_id"] == root["id"]
 
     def test_create_with_invalid_parent_raises(self):
         with pytest.raises(ValueError, match="does not exist"):
-            tasks.create_task(self.conn, "Bad", parent_id="nonexistent")
+            tasks.create_task(self.conn, [{"title": "Bad"}], parent_id="nonexistent")
 
     def test_get_task(self):
-        t = tasks.create_task(self.conn, "X")
+        t = tasks.create_task(self.conn, [{"title": "X"}])["tasks"][0]
         fetched = tasks.get_task(self.conn, t["id"])
         assert fetched["id"] == t["id"]
 
@@ -66,53 +66,53 @@ class TestTaskCRUD(TestTaskBase):
             tasks.get_task(self.conn, "no-such-id")
 
     def test_update_task_title(self):
-        t = tasks.create_task(self.conn, "Old")
+        t = tasks.create_task(self.conn, [{"title": "Old"}])["tasks"][0]
         updated = tasks.update_task(self.conn, t["id"], title="New")
         assert updated["title"] == "New"
 
     def test_update_task_status(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         updated = tasks.update_task(self.conn, t["id"], status="ready")
         assert updated["status"] == "ready"
 
     def test_update_invalid_status_raises(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         with pytest.raises(ValueError, match="Invalid status"):
             tasks.update_task(self.conn, t["id"], status="flying")
 
     def test_update_no_fields_is_noop(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         updated = tasks.update_task(self.conn, t["id"])
         assert updated["title"] == "T"
 
     def test_list_tasks_all(self):
-        root = tasks.create_task(self.conn, "A")
-        tasks.create_task(self.conn, "B", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "A"}])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "B"}], parent_id=root["id"])
         result = tasks.list_tasks(self.conn)
         assert len(result) == 2
 
     def test_list_tasks_root_only(self):
-        root = tasks.create_task(self.conn, "Root")
-        tasks.create_task(self.conn, "Child", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])
         result = tasks.list_tasks(self.conn, root_only=True)
         assert len(result) == 1
         assert result[0]["id"] == root["id"]
 
     def test_list_tasks_by_parent(self):
-        root = tasks.create_task(self.conn, "Root")
-        tasks.create_task(self.conn, "C1", parent_id=root["id"])
-        tasks.create_task(self.conn, "C2", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "C1"}], parent_id=root["id"])
+        tasks.create_task(self.conn, [{"title": "C2"}], parent_id=root["id"])
         result = tasks.list_tasks(self.conn, parent_id=root["id"])
         assert len(result) == 2
 
     def test_list_tasks_by_status(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         tasks.update_task(self.conn, t["id"], status="ready")
         result = tasks.list_tasks(self.conn, status="ready")
         assert len(result) == 1
 
     def test_delete_task(self):
-        t = tasks.create_task(self.conn, "Del")
+        t = tasks.create_task(self.conn, [{"title": "Del"}])["tasks"][0]
         result = tasks.delete_task(self.conn, t["id"])
         assert t["id"] in result["deleted_ids"]
         with pytest.raises(KeyError):
@@ -202,24 +202,24 @@ class TestEditTaskField(TestTaskBase):
 class TestMoveTask(TestTaskBase):
 
     def test_move_to_new_parent(self):
-        root = tasks.create_task(self.conn, "Root")
-        t1 = tasks.create_task(self.conn, "T1", parent_id=root["id"])
-        t2 = tasks.create_task(self.conn, "T2", parent_id=root["id"])
-        tasks.move_task(self.conn, t2["id"], new_parent_id=t1["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=root["id"])["tasks"][0]
+        t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=root["id"])["tasks"][0]
+        tasks.move_task(self.conn, [t2["id"]], new_parent_id=t1["id"])
         assert tasks.get_task(self.conn, t2["id"])["parent_id"] == t1["id"]
 
     def test_move_to_root(self):
-        root = tasks.create_task(self.conn, "Root")
-        child = tasks.create_task(self.conn, "Child", parent_id=root["id"])
-        tasks.move_task(self.conn, child["id"], new_parent_id=None)
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
+        tasks.move_task(self.conn, [child["id"]], new_parent_id=None)
         assert tasks.get_task(self.conn, child["id"])["parent_id"] is None
 
     def test_move_creates_cycle_raises(self):
-        root = tasks.create_task(self.conn, "Root")
-        child = tasks.create_task(self.conn, "Child", parent_id=root["id"])
-        grandchild = tasks.create_task(self.conn, "GC", parent_id=child["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
+        grandchild = tasks.create_task(self.conn, [{"title": "GC"}], parent_id=child["id"])["tasks"][0]
         with pytest.raises(ValueError, match="cycle"):
-            tasks.move_task(self.conn, root["id"], new_parent_id=grandchild["id"])
+            tasks.move_task(self.conn, [root["id"]], new_parent_id=grandchild["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -229,30 +229,30 @@ class TestMoveTask(TestTaskBase):
 class TestArchiveTask(TestTaskBase):
 
     def test_archive_single(self):
-        t = tasks.create_task(self.conn, "T")
-        result = tasks.archive_task(self.conn, t["id"], reason="Not needed", cascade=False)
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        result = tasks.archive_task(self.conn, [t["id"]], reason="Not needed", cascade=False)
         assert t["id"] in result["archived_ids"]
         assert tasks.get_task(self.conn, t["id"])["status"] == "archived"
 
     def test_archive_cascade(self):
-        root = tasks.create_task(self.conn, "Root")
-        c1 = tasks.create_task(self.conn, "C1", parent_id=root["id"])
-        c2 = tasks.create_task(self.conn, "C2", parent_id=root["id"])
-        result = tasks.archive_task(self.conn, root["id"], reason="Pivot", cascade=True)
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        c1 = tasks.create_task(self.conn, [{"title": "C1"}], parent_id=root["id"])["tasks"][0]
+        c2 = tasks.create_task(self.conn, [{"title": "C2"}], parent_id=root["id"])["tasks"][0]
+        result = tasks.archive_task(self.conn, [root["id"]], reason="Pivot", cascade=True)
         assert len(result["archived_ids"]) == 3
         for tid in [root["id"], c1["id"], c2["id"]]:
             assert tasks.get_task(self.conn, tid)["status"] == "archived"
 
     def test_archive_preserves_data(self):
-        t = tasks.create_task(self.conn, "T")
-        tasks.archive_task(self.conn, t["id"], reason="Changed direction")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        tasks.archive_task(self.conn, [t["id"]], reason="Changed direction")
         archived = tasks.get_task(self.conn, t["id"])
         assert archived["archive_reason"] == "Changed direction"
 
     def test_archive_requires_reason(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         with pytest.raises(ValueError):
-            tasks.archive_task(self.conn, t["id"], reason="")
+            tasks.archive_task(self.conn, [t["id"]], reason="")
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +262,9 @@ class TestArchiveTask(TestTaskBase):
 class TestDeleteCascade(TestTaskBase):
 
     def test_delete_cascade_removes_subtasks(self):
-        root = tasks.create_task(self.conn, "Root")
-        c1 = tasks.create_task(self.conn, "C1", parent_id=root["id"])
-        c2 = tasks.create_task(self.conn, "C2", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        c1 = tasks.create_task(self.conn, [{"title": "C1"}], parent_id=root["id"])["tasks"][0]
+        c2 = tasks.create_task(self.conn, [{"title": "C2"}], parent_id=root["id"])["tasks"][0]
         result = tasks.delete_task(self.conn, root["id"], cascade=True)
         assert len(result["deleted_ids"]) == 3
         for tid in [root["id"], c1["id"], c2["id"]]:
@@ -272,26 +272,26 @@ class TestDeleteCascade(TestTaskBase):
                 tasks.get_task(self.conn, tid)
 
     def test_delete_cascade_removes_edges(self):
-        root = tasks.create_task(self.conn, "Root")
-        t1 = tasks.create_task(self.conn, "T1", parent_id=root["id"])
-        t2 = tasks.create_task(self.conn, "T2", parent_id=root["id"])
-        tasks.add_task_edge(self.conn, t1["id"], t2["id"], "depends_on")
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=root["id"])["tasks"][0]
+        t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=root["id"])["tasks"][0]
+        tasks.add_task_edge(self.conn, [{"source_id": t1["id"], "target_id": t2["id"]}], edge_type="depends_on")
         tasks.delete_task(self.conn, root["id"], cascade=True)
         # edges table should be clean
         rows = self.conn.execute("SELECT * FROM task_edges").fetchall()
         assert len(rows) == 0
 
     def test_delete_cascade_removes_notes(self):
-        root = tasks.create_task(self.conn, "Root")
-        tasks.add_note(self.conn, root["id"], "decision", "Use X")
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        tasks.add_note(self.conn, root["id"], [{"note_type": "decision", "content": "Use X"}])
         tasks.delete_task(self.conn, root["id"], cascade=True)
         rows = self.conn.execute("SELECT * FROM notes").fetchall()
         assert len(rows) == 0
 
     def test_delete_last_participant_removes_contract(self):
         """Deleting the LAST participant removes the contract entirely."""
-        scope = tasks.create_task(self.conn, "Scope")
-        t1 = tasks.create_task(self.conn, "T1", parent_id=scope["id"])
+        scope = tasks.create_task(self.conn, [{"title": "Scope"}])["tasks"][0]
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=scope["id"])["tasks"][0]
         tasks.add_contract(self.conn, contract_type="interface", definition="X",
                            name="IFoo", scope_task_id=scope["id"],
                            provider_task_id=t1["id"])  # only one participant
@@ -301,9 +301,9 @@ class TestDeleteCascade(TestTaskBase):
 
     def test_delete_participant_keeps_contract_for_others(self):
         """Deleting ONE of two participants keeps the contract alive."""
-        scope = tasks.create_task(self.conn, "Scope")
-        t1 = tasks.create_task(self.conn, "T1", parent_id=scope["id"])
-        t2 = tasks.create_task(self.conn, "T2", parent_id=scope["id"])
+        scope = tasks.create_task(self.conn, [{"title": "Scope"}])["tasks"][0]
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=scope["id"])["tasks"][0]
+        t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=scope["id"])["tasks"][0]
         tasks.add_contract(self.conn, contract_type="interface", definition="X",
                            name="IFoo", scope_task_id=scope["id"],
                            provider_task_id=t1["id"], consumer_task_ids=[t2["id"]])
@@ -319,8 +319,8 @@ class TestDeleteCascade(TestTaskBase):
 
     def test_delete_scope_removes_contract(self):
         """Deleting the scope task removes its contract."""
-        scope = tasks.create_task(self.conn, "Scope")
-        t1 = tasks.create_task(self.conn, "T1", parent_id=scope["id"])
+        scope = tasks.create_task(self.conn, [{"title": "Scope"}])["tasks"][0]
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=scope["id"])["tasks"][0]
         tasks.add_contract(self.conn, contract_type="schema", definition="Y",
                            name="Schema", scope_task_id=scope["id"],
                            provider_task_id=t1["id"])
@@ -337,38 +337,54 @@ class TestDAGEdges(TestTaskBase):
 
     def setup_method(self):
         super().setup_method()
-        self.root = tasks.create_task(self.conn, "Root")
-        self.t1 = tasks.create_task(self.conn, "T1", parent_id=self.root["id"])
-        self.t2 = tasks.create_task(self.conn, "T2", parent_id=self.root["id"])
-        self.t3 = tasks.create_task(self.conn, "T3", parent_id=self.root["id"])
+        self.root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        self.t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=self.root["id"])["tasks"][0]
+        self.t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=self.root["id"])["tasks"][0]
+        self.t3 = tasks.create_task(self.conn, [{"title": "T3"}], parent_id=self.root["id"])["tasks"][0]
 
     def test_add_edge(self):
-        e = tasks.add_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
+        e = tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")["edges"][0]
         assert e["type"] == "depends_on"
 
     def test_add_edge_invalid_type(self):
         with pytest.raises(ValueError, match="Invalid edge_type"):
-            tasks.add_task_edge(self.conn, self.t1["id"], self.t2["id"], "unknown")
+            tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="unknown")
 
     def test_add_self_loop_raises(self):
         with pytest.raises(ValueError, match="self-referencing"):
-            tasks.add_task_edge(self.conn, self.t1["id"], self.t1["id"], "depends_on")
+            tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t1["id"]}], edge_type="depends_on")
 
     def test_cycle_detection_depends_on(self):
-        tasks.add_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
-        tasks.add_task_edge(self.conn, self.t2["id"], self.t3["id"], "depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t2["id"], "target_id": self.t3["id"]}], edge_type="depends_on")
         with pytest.raises(ValueError, match="cycle"):
-            tasks.add_task_edge(self.conn, self.t3["id"], self.t1["id"], "depends_on")
+            tasks.add_task_edge(self.conn, [{"source_id": self.t3["id"], "target_id": self.t1["id"]}], edge_type="depends_on")
+
+    def test_intra_batch_cycle_detected(self):
+        # A→B and B→A in the same batch call must raise, even though neither
+        # edge exists in the DB yet when the check runs.
+        with pytest.raises(ValueError, match="cycle"):
+            tasks.add_task_edge(
+                self.conn,
+                [
+                    {"source_id": self.t1["id"], "target_id": self.t2["id"]},
+                    {"source_id": self.t2["id"], "target_id": self.t1["id"]},
+                ],
+                edge_type="depends_on",
+            )
+        # Neither edge should have been inserted (atomic)
+        edges = tasks.get_task_edges(self.conn, self.t1["id"])
+        assert len(edges) == 0
 
     def test_no_cycle_check_for_informs(self):
         # informs edges don't require cycle check
-        tasks.add_task_edge(self.conn, self.t1["id"], self.t2["id"], "informs")
-        tasks.add_task_edge(self.conn, self.t2["id"], self.t1["id"], "informs")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="informs")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t2["id"], "target_id": self.t1["id"]}], edge_type="informs")
         edges = tasks.get_task_edges(self.conn, self.t1["id"])
         assert len(edges) == 2
 
     def test_remove_edge(self):
-        tasks.add_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")
         tasks.remove_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
         edges = tasks.get_task_edges(self.conn, self.t1["id"], direction="outgoing")
         assert len(edges) == 0
@@ -378,7 +394,7 @@ class TestDAGEdges(TestTaskBase):
             tasks.remove_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
 
     def test_get_edges_direction(self):
-        tasks.add_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")
         outgoing = tasks.get_task_edges(self.conn, self.t1["id"], direction="outgoing")
         incoming = tasks.get_task_edges(self.conn, self.t2["id"], direction="incoming")
         both = tasks.get_task_edges(self.conn, self.t1["id"], direction="both")
@@ -391,7 +407,7 @@ class TestDAGEdges(TestTaskBase):
             tasks.get_task_edges(self.conn, self.t1["id"], direction="sideways")
 
     def test_get_task_dag(self):
-        tasks.add_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")
         dag = tasks.get_task_dag(self.conn, self.root["id"])
         assert len(dag["nodes"]) == 4  # root + 3 children
         node_ids = {n["id"] for n in dag["nodes"]}
@@ -405,28 +421,28 @@ class TestDAGEdges(TestTaskBase):
 class TestTopologicalSort(TestTaskBase):
 
     def test_linear_chain(self):
-        root = tasks.create_task(self.conn, "Root")
-        a = tasks.create_task(self.conn, "A", parent_id=root["id"])
-        b = tasks.create_task(self.conn, "B", parent_id=root["id"])
-        c = tasks.create_task(self.conn, "C", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        a = tasks.create_task(self.conn, [{"title": "A"}], parent_id=root["id"])["tasks"][0]
+        b = tasks.create_task(self.conn, [{"title": "B"}], parent_id=root["id"])["tasks"][0]
+        c = tasks.create_task(self.conn, [{"title": "C"}], parent_id=root["id"])["tasks"][0]
         # c depends_on b depends_on a
-        tasks.add_task_edge(self.conn, b["id"], a["id"], "depends_on")
-        tasks.add_task_edge(self.conn, c["id"], b["id"], "depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": b["id"], "target_id": a["id"]}], edge_type="depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": c["id"], "target_id": b["id"]}], edge_type="depends_on")
         sorted_tasks = tasks.topological_sort_tasks(self.conn, root["id"])
         ids = [t["id"] for t in sorted_tasks]
         assert ids.index(a["id"]) < ids.index(b["id"])
         assert ids.index(b["id"]) < ids.index(c["id"])
 
     def test_diamond_dependency(self):
-        root = tasks.create_task(self.conn, "Root")
-        base = tasks.create_task(self.conn, "Base", parent_id=root["id"])
-        left = tasks.create_task(self.conn, "Left", parent_id=root["id"])
-        right = tasks.create_task(self.conn, "Right", parent_id=root["id"])
-        top = tasks.create_task(self.conn, "Top", parent_id=root["id"])
-        tasks.add_task_edge(self.conn, left["id"], base["id"], "depends_on")
-        tasks.add_task_edge(self.conn, right["id"], base["id"], "depends_on")
-        tasks.add_task_edge(self.conn, top["id"], left["id"], "depends_on")
-        tasks.add_task_edge(self.conn, top["id"], right["id"], "depends_on")
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        base = tasks.create_task(self.conn, [{"title": "Base"}], parent_id=root["id"])["tasks"][0]
+        left = tasks.create_task(self.conn, [{"title": "Left"}], parent_id=root["id"])["tasks"][0]
+        right = tasks.create_task(self.conn, [{"title": "Right"}], parent_id=root["id"])["tasks"][0]
+        top = tasks.create_task(self.conn, [{"title": "Top"}], parent_id=root["id"])["tasks"][0]
+        tasks.add_task_edge(self.conn, [{"source_id": left["id"], "target_id": base["id"]}], edge_type="depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": right["id"], "target_id": base["id"]}], edge_type="depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": top["id"], "target_id": left["id"]}], edge_type="depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": top["id"], "target_id": right["id"]}], edge_type="depends_on")
         sorted_tasks = tasks.topological_sort_tasks(self.conn, root["id"])
         ids = [t["id"] for t in sorted_tasks]
         assert ids.index(base["id"]) < ids.index(left["id"])
@@ -435,9 +451,9 @@ class TestTopologicalSort(TestTaskBase):
         assert ids.index(right["id"]) < ids.index(top["id"])
 
     def test_cycle_raises(self):
-        root = tasks.create_task(self.conn, "Root")
-        a = tasks.create_task(self.conn, "A", parent_id=root["id"])
-        b = tasks.create_task(self.conn, "B", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        a = tasks.create_task(self.conn, [{"title": "A"}], parent_id=root["id"])["tasks"][0]
+        b = tasks.create_task(self.conn, [{"title": "B"}], parent_id=root["id"])["tasks"][0]
         # Force a cycle directly in DB to bypass add_task_edge cycle check
         import time
         self.conn.execute(
@@ -460,46 +476,48 @@ class TestTopologicalSort(TestTaskBase):
 class TestCodeRefs(TestTaskBase):
 
     def test_link_code(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         nid = self._node("auth")
-        ref = tasks.link_task_code(self.conn, t["id"], "modifies", code_node_id=nid)
-        assert ref["task_id"] == t["id"]
-        assert ref["code_node_id"] == nid
+        result = tasks.link_task_code(self.conn, t["id"], [{"ref_type": "modifies", "code_node_id": nid}])
+        assert result["task_id"] == t["id"]
+        assert result["success_count"] == 1
+        assert result["linked"][0]["code_node_id"] == nid
 
     def test_link_nonexistent_node_raises(self):
-        t = tasks.create_task(self.conn, "T")
-        with pytest.raises(ValueError, match="does not exist"):
-            tasks.link_task_code(self.conn, t["id"], "modifies", code_node_id=99999)
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        result = tasks.link_task_code(self.conn, t["id"], [{"ref_type": "modifies", "code_node_id": 99999}])
+        assert result["error_count"] == 1
+        assert "does not exist" in result["errors"][0]["error"]
 
     def test_unlink_code(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         nid = self._node("func")
-        tasks.link_task_code(self.conn, t["id"], "modifies", code_node_id=nid)
+        tasks.link_task_code(self.conn, t["id"], [{"ref_type": "modifies", "code_node_id": nid}])
         tasks.unlink_task_code(self.conn, t["id"], nid)
         refs = tasks.get_task_code_refs(self.conn, t["id"])
         assert len(refs) == 0
 
     def test_unlink_nonexistent_raises(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         nid = self._node("func")
         with pytest.raises(KeyError):
             tasks.unlink_task_code(self.conn, t["id"], nid)
 
     def test_get_code_refs_includes_node_metadata(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         nid = self._node("my_function", "src/app.py")
-        tasks.link_task_code(self.conn, t["id"], "reads", code_node_id=nid)
+        tasks.link_task_code(self.conn, t["id"], [{"ref_type": "reads", "code_node_id": nid}])
         refs = tasks.get_task_code_refs(self.conn, t["id"])
         assert len(refs) == 1
         assert refs[0]["name"] == "my_function"
         assert refs[0]["file_path"] == "src/app.py"
 
     def test_find_tasks_by_code_node(self):
-        t1 = tasks.create_task(self.conn, "T1")
-        t2 = tasks.create_task(self.conn, "T2", parent_id=t1["id"])
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}])["tasks"][0]
+        t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=t1["id"])["tasks"][0]
         nid = self._node("shared_func")
-        tasks.link_task_code(self.conn, t1["id"], "modifies", code_node_id=nid)
-        tasks.link_task_code(self.conn, t2["id"], "reads", code_node_id=nid)
+        tasks.link_task_code(self.conn, t1["id"], [{"ref_type": "modifies", "code_node_id": nid}])
+        tasks.link_task_code(self.conn, t2["id"], [{"ref_type": "reads", "code_node_id": nid}])
         result = tasks.find_tasks_by_code_node(self.conn, nid)
         assert len(result) == 2
 
@@ -508,8 +526,7 @@ class TestCodeRefs(TestTaskBase):
         # "authentication" keyword matches "authentication_handler"
         self._node("authentication_handler", "auth.py")
         self._node("token_generator", "jwt.py")
-        t = tasks.create_task(self.conn, "Implement authentication flow",
-                              description="Build authentication handler")
+        t = tasks.create_task(self.conn, [{"title": "Implement authentication flow", "description": "Build authentication handler"}])["tasks"][0]
         suggestions = tasks.suggest_code_links(self.conn, t["id"])
         names = [s["name"] for s in suggestions]
         assert any("authentication" in n.lower() for n in names)
@@ -522,70 +539,68 @@ class TestCodeRefs(TestTaskBase):
 class TestNotes(TestTaskBase):
 
     def test_add_note(self):
-        t = tasks.create_task(self.conn, "T")
-        note = tasks.add_note(self.conn, t["id"], "decision", "Use JWT",
-                              status="resolved", resolution="stateless")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        note = tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "Use JWT", "status": "resolved", "resolution": "stateless"}])["notes"][0]
         assert note["note_type"] == "decision"
         assert note["status"] == "resolved"
         assert note["resolution"] == "stateless"
 
     def test_add_note_invalid_type(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         with pytest.raises(ValueError, match="Invalid note_type"):
-            tasks.add_note(self.conn, t["id"], "memo", "X")
+            tasks.add_note(self.conn, t["id"], [{"note_type": "memo", "content": "X"}])
 
     def test_add_note_invalid_status(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         with pytest.raises(ValueError, match="Invalid status"):
-            tasks.add_note(self.conn, t["id"], "question", "X", status="pending")
+            tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "X", "status": "pending"}])
 
     def test_update_note(self):
-        t = tasks.create_task(self.conn, "T")
-        note = tasks.add_note(self.conn, t["id"], "question", "WebSocket?")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        note = tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "WebSocket?"}])["notes"][0]
         updated = tasks.update_note(self.conn, note["id"],
                                     status="resolved", resolution="Use polling")
         assert updated["status"] == "resolved"
         assert updated["resolution"] == "Use polling"
 
     def test_delete_note(self):
-        t = tasks.create_task(self.conn, "T")
-        note = tasks.add_note(self.conn, t["id"], "constraint", "No external deps")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        note = tasks.add_note(self.conn, t["id"], [{"note_type": "constraint", "content": "No external deps"}])["notes"][0]
         tasks.delete_note(self.conn, note["id"])
         rows = self.conn.execute("SELECT * FROM notes WHERE id=?", (note["id"],)).fetchall()
         assert len(rows) == 0
 
     def test_list_notes_own_task(self):
-        t = tasks.create_task(self.conn, "T")
-        tasks.add_note(self.conn, t["id"], "decision", "D1")
-        tasks.add_note(self.conn, t["id"], "question", "Q1")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "D1"}])
+        tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "Q1"}])
         notes = tasks.list_notes(self.conn, t["id"], include_parent=False)
         assert len(notes) == 2
 
     def test_list_notes_include_parent_chain(self):
-        root = tasks.create_task(self.conn, "Root")
-        child = tasks.create_task(self.conn, "Child", parent_id=root["id"])
-        grandchild = tasks.create_task(self.conn, "GC", parent_id=child["id"])
-        tasks.add_note(self.conn, root["id"], "decision", "Root decision")
-        tasks.add_note(self.conn, child["id"], "constraint", "Child constraint")
-        tasks.add_note(self.conn, grandchild["id"], "question", "GC question")
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
+        grandchild = tasks.create_task(self.conn, [{"title": "GC"}], parent_id=child["id"])["tasks"][0]
+        tasks.add_note(self.conn, root["id"], [{"note_type": "decision", "content": "Root decision"}])
+        tasks.add_note(self.conn, child["id"], [{"note_type": "constraint", "content": "Child constraint"}])
+        tasks.add_note(self.conn, grandchild["id"], [{"note_type": "question", "content": "GC question"}])
         # grandchild should see all 3 notes
         notes = tasks.list_notes(self.conn, grandchild["id"], include_parent=True)
         assert len(notes) == 3
 
     def test_list_notes_filter_by_type(self):
-        t = tasks.create_task(self.conn, "T")
-        tasks.add_note(self.conn, t["id"], "decision", "D")
-        tasks.add_note(self.conn, t["id"], "question", "Q")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "D"}])
+        tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "Q"}])
         questions = tasks.list_notes(self.conn, t["id"],
                                      note_type="question", include_parent=False)
         assert len(questions) == 1
         assert questions[0]["note_type"] == "question"
 
     def test_note_alternatives_roundtrip(self):
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         alts = ["Option A", "Option B"]
-        note = tasks.add_note(self.conn, t["id"], "decision", "Use X",
-                              alternatives=alts)
+        tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "Use X", "alternatives": alts}])
         fetched = tasks.list_notes(self.conn, t["id"], include_parent=False)
         assert fetched[0]["alternatives"] == alts
 
@@ -598,9 +613,9 @@ class TestContracts(TestTaskBase):
 
     def setup_method(self):
         super().setup_method()
-        self.root = tasks.create_task(self.conn, "Scope")
-        self.t1 = tasks.create_task(self.conn, "Provider", parent_id=self.root["id"])
-        self.t2 = tasks.create_task(self.conn, "Consumer", parent_id=self.root["id"])
+        self.root = tasks.create_task(self.conn, [{"title": "Scope"}])["tasks"][0]
+        self.t1 = tasks.create_task(self.conn, [{"title": "Provider"}], parent_id=self.root["id"])["tasks"][0]
+        self.t2 = tasks.create_task(self.conn, [{"title": "Consumer"}], parent_id=self.root["id"])["tasks"][0]
 
     def _contract(self, name="IAuth", contract_type="interface", definition="IAuth { }",
                   provider_task_id=None, consumer_task_ids=None):
@@ -638,7 +653,7 @@ class TestContracts(TestTaskBase):
 
     def test_list_contracts_by_task_id_returns_both_roles(self):
         self._contract("IFoo", "interface", "X")
-        t3 = tasks.create_task(self.conn, "T3", parent_id=self.root["id"])
+        t3 = tasks.create_task(self.conn, [{"title": "T3"}], parent_id=self.root["id"])["tasks"][0]
         tasks.add_contract(self.conn, contract_type="api", definition="Y",
                            name="IBar", scope_task_id=self.root["id"],
                            provider_task_id=t3["id"],
@@ -696,7 +711,7 @@ class TestContractCodeNode(TestTaskBase):
 
     def setup_method(self):
         super().setup_method()
-        self.root = tasks.create_task(self.conn, "Root")
+        self.root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
 
     def _insert_node(self, name: str, qname: str) -> int:
         import time
@@ -774,32 +789,32 @@ class TestContractCodeNode(TestTaskBase):
 class TestSearchTasks(TestTaskBase):
 
     def test_search_finds_by_title(self):
-        root = tasks.create_task(self.conn, "OAuth integration")
-        tasks.create_task(self.conn, "JWT tokens", parent_id=root["id"])
-        tasks.create_task(self.conn, "Unrelated task", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "OAuth integration"}])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "JWT tokens"}], parent_id=root["id"])
+        tasks.create_task(self.conn, [{"title": "Unrelated task"}], parent_id=root["id"])
         results = tasks.search_tasks(self.conn, root["id"], "OAuth")
         ids = [r["id"] for r in results]
         assert root["id"] in ids
 
     def test_search_is_case_insensitive(self):
-        root = tasks.create_task(self.conn, "Root", description="Authentication flow")
+        root = tasks.create_task(self.conn, [{"title": "Root", "description": "Authentication flow"}])["tasks"][0]
         results = tasks.search_tasks(self.conn, root["id"], "authentication")
         assert len(results) == 1
 
     def test_search_empty_query_raises(self):
-        root = tasks.create_task(self.conn, "Root")
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
         with pytest.raises(ValueError):
             tasks.search_tasks(self.conn, root["id"], "")
 
     def test_search_limited_to_subtree(self):
-        root = tasks.create_task(self.conn, "Root")
-        other = tasks.create_task(self.conn, "Other branch", parent_id=root["id"])
-        tasks.create_task(self.conn, "hidden", parent_id=other["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        other = tasks.create_task(self.conn, [{"title": "Other branch"}], parent_id=root["id"])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "hidden"}], parent_id=other["id"])
         # search from root should find hidden
         results_root = tasks.search_tasks(self.conn, root["id"], "hidden")
         assert len(results_root) == 1
         # search from a sibling subtree should NOT find it
-        sibling = tasks.create_task(self.conn, "Sibling", parent_id=root["id"])
+        sibling = tasks.create_task(self.conn, [{"title": "Sibling"}], parent_id=root["id"])["tasks"][0]
         results_sibling = tasks.search_tasks(self.conn, sibling["id"], "hidden")
         assert len(results_sibling) == 0
 
@@ -812,9 +827,9 @@ class TestEdgeCases(TestTaskBase):
 
     def test_search_tasks_with_percent_wildcard(self):
         """% in query must be treated as literal, not SQL wildcard."""
-        root = tasks.create_task(self.conn, "Root")
-        tasks.create_task(self.conn, "100% complete", parent_id=root["id"])
-        tasks.create_task(self.conn, "50 percent done", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "100% complete"}], parent_id=root["id"])
+        tasks.create_task(self.conn, [{"title": "50 percent done"}], parent_id=root["id"])
         results = tasks.search_tasks(self.conn, root["id"], "100%")
         titles = [r["title"] for r in results]
         assert "100% complete" in titles
@@ -822,9 +837,9 @@ class TestEdgeCases(TestTaskBase):
 
     def test_search_tasks_with_underscore_wildcard(self):
         """_ in query must be treated as literal, not SQL wildcard."""
-        root = tasks.create_task(self.conn, "Root")
-        tasks.create_task(self.conn, "func_a helper", parent_id=root["id"])
-        tasks.create_task(self.conn, "funcXa helper", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        tasks.create_task(self.conn, [{"title": "func_a helper"}], parent_id=root["id"])
+        tasks.create_task(self.conn, [{"title": "funcXa helper"}], parent_id=root["id"])
         results = tasks.search_tasks(self.conn, root["id"], "func_a")
         titles = [r["title"] for r in results]
         assert "func_a helper" in titles
@@ -832,16 +847,16 @@ class TestEdgeCases(TestTaskBase):
 
     def test_list_tasks_root_only_ignores_parent_id(self):
         """root_only=True should override parent_id."""
-        root = tasks.create_task(self.conn, "Root")
-        child = tasks.create_task(self.conn, "Child", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
         result = tasks.list_tasks(self.conn, root_only=True, parent_id=child["id"])
         assert len(result) == 1
         assert result[0]["id"] == root["id"]
 
     def test_delete_no_cascade_leaves_children(self):
         """delete_task(cascade=False) should not delete children."""
-        root = tasks.create_task(self.conn, "Root")
-        child = tasks.create_task(self.conn, "Child", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
         tasks.delete_task(self.conn, root["id"], cascade=False)
         with pytest.raises(KeyError):
             tasks.get_task(self.conn, root["id"])
@@ -851,7 +866,7 @@ class TestEdgeCases(TestTaskBase):
 
     def test_edit_task_field_on_empty_field(self):
         """search/replace on empty field should raise ValueError."""
-        t = tasks.create_task(self.conn, "T")  # description is None
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]  # description is None
         with pytest.raises(ValueError, match="not found"):
             tasks.edit_task_field(self.conn, t["id"], "description",
                                   search="anything", replace="x")
@@ -863,9 +878,9 @@ class TestEdgeCases(TestTaskBase):
 
     def test_move_task_nonexistent_target_raises(self):
         """move_task to nonexistent new_parent_id raises KeyError."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         with pytest.raises(KeyError):
-            tasks.move_task(self.conn, t["id"], new_parent_id="no-such-parent")
+            tasks.move_task(self.conn, [t["id"]], new_parent_id="no-such-parent")
 
 
 # ---------------------------------------------------------------------------
@@ -881,65 +896,65 @@ class TestSinglePipelineDiscipline(TestTaskBase):
 
     def test_get_active_root_returns_open_root(self):
         """Create a root task → get_active_root returns it."""
-        root = tasks.create_task(self.conn, "Pipeline A")
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
         result = tasks.get_active_root(self.conn)
         assert result is not None
         assert result["id"] == root["id"]
 
     def test_create_second_root_blocked_while_first_open(self):
         """Creating a second root task raises ValueError."""
-        tasks.create_task(self.conn, "Pipeline A")
+        tasks.create_task(self.conn, [{"title": "Pipeline A"}])
         with pytest.raises(ValueError, match="open"):
-            tasks.create_task(self.conn, "Pipeline B")
+            tasks.create_task(self.conn, [{"title": "Pipeline B"}])
 
     def test_subtasks_always_allowed_regardless_of_root(self):
         """Subtasks can be created even while a root is open."""
-        root = tasks.create_task(self.conn, "Pipeline A")
-        child = tasks.create_task(self.conn, "Subtask", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "Subtask"}], parent_id=root["id"])["tasks"][0]
         assert child["parent_id"] == root["id"]
 
     def test_can_create_new_root_after_done(self):
         """After marking root done, a new root can be created."""
-        root = tasks.create_task(self.conn, "Pipeline A")
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
         tasks.update_task(self.conn, root["id"], status="done")
-        root2 = tasks.create_task(self.conn, "Pipeline B")
+        root2 = tasks.create_task(self.conn, [{"title": "Pipeline B"}])["tasks"][0]
         assert root2["title"] == "Pipeline B"
 
     def test_can_create_new_root_after_archived(self):
         """After archiving root, a new root can be created."""
-        root = tasks.create_task(self.conn, "Pipeline A")
-        tasks.archive_task(self.conn, root["id"], reason="cancelled")
-        root2 = tasks.create_task(self.conn, "Pipeline B")
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
+        tasks.archive_task(self.conn, [root["id"]], reason="cancelled")
+        root2 = tasks.create_task(self.conn, [{"title": "Pipeline B"}])["tasks"][0]
         assert root2["title"] == "Pipeline B"
 
     def test_get_active_root_ignores_done_root(self):
         """Done root does not appear as active root."""
-        root = tasks.create_task(self.conn, "Pipeline A")
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
         tasks.update_task(self.conn, root["id"], status="done")
         assert tasks.get_active_root(self.conn) is None
 
     def test_get_active_root_ignores_archived_root(self):
         """Archived root does not appear as active root."""
-        root = tasks.create_task(self.conn, "Pipeline A")
-        tasks.archive_task(self.conn, root["id"], reason="cancelled")
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
+        tasks.archive_task(self.conn, [root["id"]], reason="cancelled")
         assert tasks.get_active_root(self.conn) is None
 
     def test_draft_root_is_active(self):
         """draft status = open = active root."""
-        root = tasks.create_task(self.conn, "Pipeline A")
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
         assert tasks.get_active_root(self.conn)["id"] == root["id"]
 
     def test_in_progress_root_is_active(self):
         """in_progress status = open = active root."""
-        root = tasks.create_task(self.conn, "Pipeline A")
+        root = tasks.create_task(self.conn, [{"title": "Pipeline A"}])["tasks"][0]
         tasks.update_task(self.conn, root["id"], status="in_progress")
         assert tasks.get_active_root(self.conn)["id"] == root["id"]
 
     def test_error_message_includes_existing_title(self):
         """Error message names the blocking task."""
-        root = tasks.create_task(self.conn, "My Feature")
+        root = tasks.create_task(self.conn, [{"title": "My Feature"}])["tasks"][0]
         with pytest.raises(ValueError, match="My Feature"):
-            tasks.create_task(self.conn, "Another Feature")
+            tasks.create_task(self.conn, [{"title": "Another Feature"}])
 
 
 # ---------------------------------------------------------------------------
@@ -963,68 +978,73 @@ class TestLinkCodeQualifiedName(TestTaskBase):
 
     def test_link_by_code_node_id(self):
         """Classic path: link via integer code_node_id."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
         nid = self._insert_node("my_func", "src/mod.py::my_func")
-        ref = tasks.link_task_code(self.conn, t["id"], "modifies", code_node_id=nid)
-        assert ref["code_node_id"] == nid
+        result = tasks.link_task_code(self.conn, t["id"], [{"ref_type": "modifies", "code_node_id": nid}])
+        assert result["linked"][0]["code_node_id"] == nid
 
     def test_link_by_qualified_name(self):
         """New path: link via qualified_name string."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
         nid = self._insert_node("auth_func", "src/auth.py::auth_func")
-        ref = tasks.link_task_code(
-            self.conn, t["id"], "reads",
-            qualified_name="src/auth.py::auth_func",
+        result = tasks.link_task_code(
+            self.conn, t["id"],
+            [{"ref_type": "reads", "qualified_name": "src/auth.py::auth_func"}],
         )
-        assert ref["code_node_id"] == nid
-        assert ref["ref_type"] == "reads"
+        assert result["linked"][0]["code_node_id"] == nid
+        assert result["linked"][0]["ref_type"] == "reads"
 
     def test_link_by_qualified_name_windows_separator(self):
         """Windows backslash in qualified_name is normalised."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
         nid = self._insert_node("parse_fn", "src/parser.py::parse_fn")
-        ref = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            qualified_name=r"src\parser.py::parse_fn",
+        result = tasks.link_task_code(
+            self.conn, t["id"],
+            [{"ref_type": "modifies", "qualified_name": r"src\parser.py::parse_fn"}],
         )
-        assert ref["code_node_id"] == nid
+        assert result["linked"][0]["code_node_id"] == nid
 
     def test_link_by_qualified_name_not_found_raises(self):
-        """Non-existent qualified_name raises ValueError."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
-        with pytest.raises(ValueError, match="no code node found"):
-            tasks.link_task_code(
-                self.conn, t["id"], "modifies",
-                qualified_name="nonexistent.py::ghost_func",
-            )
+        """Non-existent qualified_name goes to errors (batch mode — no raise)."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
+        result = tasks.link_task_code(
+            self.conn, t["id"],
+            [{"ref_type": "modifies", "qualified_name": "nonexistent.py::ghost_func"}],
+        )
+        assert result["error_count"] == 1
+        assert "no code node found" in result["errors"][0]["error"]
 
     def test_link_both_raises(self):
-        """Providing both code_node_id and qualified_name raises ValueError."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
+        """Providing both code_node_id and qualified_name goes to errors."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
         nid = self._insert_node("fn", "f.py::fn")
-        with pytest.raises(ValueError, match="not both"):
-            tasks.link_task_code(
-                self.conn, t["id"], "modifies",
-                code_node_id=nid,
-                qualified_name="f.py::fn",
-            )
+        result = tasks.link_task_code(
+            self.conn, t["id"],
+            [{"ref_type": "modifies", "code_node_id": nid, "qualified_name": "f.py::fn"}],
+        )
+        assert result["error_count"] == 1
+        assert "not both" in result["errors"][0]["error"]
 
     def test_link_neither_raises(self):
-        """Providing neither code_node_id nor qualified_name raises ValueError."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
-        with pytest.raises(ValueError, match="required"):
-            tasks.link_task_code(self.conn, t["id"], "modifies")
+        """Providing neither code_node_id nor qualified_name goes to errors."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
+        result = tasks.link_task_code(
+            self.conn, t["id"],
+            [{"ref_type": "modifies"}],
+        )
+        assert result["error_count"] == 1
+        assert "required" in result["errors"][0]["error"]
 
     def test_link_by_qualified_name_double_backslash(self):
         """Double-backslash Windows path (JSON-escaped) resolves correctly."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
         import time
         cur = self.conn.execute(
             "INSERT INTO nodes(kind, name, qualified_name, file_path, "
@@ -1036,16 +1056,16 @@ class TestLinkCodeQualifiedName(TestTaskBase):
         self.conn.commit()
         nid = cur.lastrowid
         # Pass double-backslash qualified_name (as LLM receives from JSON)
-        ref = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            qualified_name="C:\\\\proj\\\\src.py::win_fn",
+        result = tasks.link_task_code(
+            self.conn, t["id"],
+            [{"ref_type": "modifies", "qualified_name": "C:\\\\proj\\\\src.py::win_fn"}],
         )
-        assert ref["code_node_id"] == nid
+        assert result["linked"][0]["code_node_id"] == nid
 
     def test_link_by_single_backslash_path(self):
         """Single-backslash Windows path resolves correctly."""
-        root = tasks.create_task(self.conn, "Root")
-        t = tasks.create_task(self.conn, "T", parent_id=root["id"])
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t = tasks.create_task(self.conn, [{"title": "T"}], parent_id=root["id"])["tasks"][0]
         import time
         cur = self.conn.execute(
             "INSERT INTO nodes(kind, name, qualified_name, file_path, "
@@ -1056,9 +1076,9 @@ class TestLinkCodeQualifiedName(TestTaskBase):
         )
         self.conn.commit()
         nid = cur.lastrowid
-        ref = tasks.link_task_code(
-            self.conn, t["id"], "reads",
-            qualified_name="C:\\proj\\src2.py::win2_fn",
+        tasks.link_task_code(
+            self.conn, t["id"],
+            [{"ref_type": "reads", "qualified_name": "C:\\proj\\src2.py::win2_fn"}],
         )
 
 
@@ -1071,14 +1091,14 @@ class TestBatchLinkCode(TestTaskBase):
 
     def test_batch_by_code_node_id(self):
         """Batch with code_node_id integers links all nodes."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         n1 = self._node("fn_a", "src/a.py")
         n2 = self._node("fn_b", "src/b.py")
         n3 = self._node("fn_c", "src/c.py")
 
         result = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
+            self.conn, t["id"],
+            [
                 {"ref_type": "modifies", "code_node_id": n1},
                 {"ref_type": "reads",    "code_node_id": n2},
                 {"ref_type": "creates",  "code_node_id": n3},
@@ -1094,13 +1114,13 @@ class TestBatchLinkCode(TestTaskBase):
 
     def test_batch_by_qualified_name(self):
         """Batch with qualified_name strings links all nodes."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         self._node("svc_a", "src/svc.py")
         self._node("svc_b", "src/svc.py")
 
         result = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
+            self.conn, t["id"],
+            [
                 {"ref_type": "modifies", "qualified_name": "src/svc.py::svc_a"},
                 {"ref_type": "reads",    "qualified_name": "src/svc.py::svc_b"},
             ],
@@ -1112,13 +1132,13 @@ class TestBatchLinkCode(TestTaskBase):
 
     def test_batch_mixed_id_and_qualified_name(self):
         """Batch can mix code_node_id and qualified_name."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         n1 = self._node("fn_x", "src/x.py")
         self._node("fn_y", "src/y.py")
 
         result = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
+            self.conn, t["id"],
+            [
                 {"ref_type": "modifies", "code_node_id": n1},
                 {"ref_type": "reads",    "qualified_name": "src/y.py::fn_y"},
             ],
@@ -1128,17 +1148,15 @@ class TestBatchLinkCode(TestTaskBase):
 
     def test_batch_with_description(self):
         """Each batch item can have its own description."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         n1 = self._node("fn_d", "src/d.py")
         n2 = self._node("fn_e", "src/e.py")
 
         result = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
-                {"ref_type": "modifies", "code_node_id": n1,
-                 "description": "core change"},
-                {"ref_type": "reads",    "code_node_id": n2,
-                 "description": "side effect"},
+            self.conn, t["id"],
+            [
+                {"ref_type": "modifies", "code_node_id": n1, "description": "core change"},
+                {"ref_type": "reads",    "code_node_id": n2, "description": "side effect"},
             ],
         )
         assert result["success_count"] == 2
@@ -1149,12 +1167,12 @@ class TestBatchLinkCode(TestTaskBase):
 
     def test_batch_partial_failure_continues(self):
         """Invalid items are collected in errors; valid items are still linked."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         n1 = self._node("fn_ok", "src/ok.py")
 
         result = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
+            self.conn, t["id"],
+            [
                 {"ref_type": "modifies",  "code_node_id": n1},          # valid
                 {"ref_type": "modifies",  "code_node_id": 99999},        # nonexistent node
                 {"ref_type": "INVALID",   "code_node_id": n1},           # bad ref_type
@@ -1170,13 +1188,11 @@ class TestBatchLinkCode(TestTaskBase):
 
     def test_batch_errors_contain_item_and_message(self):
         """Error entries expose the original item and a readable message."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
 
         result = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
-                {"ref_type": "modifies", "code_node_id": 99999},
-            ],
+            self.conn, t["id"],
+            [{"ref_type": "modifies", "code_node_id": 99999}],
         )
         assert len(result["errors"]) == 1
         err = result["errors"][0]
@@ -1185,50 +1201,29 @@ class TestBatchLinkCode(TestTaskBase):
         assert isinstance(err["error"], str)
 
     def test_batch_empty_list(self):
-        """Empty batch returns success with zero counts."""
-        t = tasks.create_task(self.conn, "T")
-        result = tasks.link_task_code(self.conn, t["id"], "modifies", batch=[])
+        """Empty list returns success with zero counts."""
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        result = tasks.link_task_code(self.conn, t["id"], [])
         assert result["success_count"] == 0
         assert result["error_count"] == 0
         assert result["total"] == 0
 
     def test_batch_non_list_raises(self):
-        """Passing a non-list as batch raises ValueError."""
-        t = tasks.create_task(self.conn, "T")
-        with pytest.raises(ValueError, match="batch must be a list"):
-            tasks.link_task_code(self.conn, t["id"], "modifies", batch="not-a-list")
-
-    def test_batch_top_level_args_ignored(self):
-        """When batch is provided, top-level code_node_id/qualified_name/ref_type
-        are ignored — only batch items are processed."""
-        t = tasks.create_task(self.conn, "T")
-        n1 = self._node("fn_ignore", "src/i.py")
-        n2 = self._node("fn_use", "src/u.py")
-
-        result = tasks.link_task_code(
-            self.conn, t["id"],
-            ref_type="deletes",          # ignored in batch mode
-            code_node_id=n1,             # ignored in batch mode
-            batch=[
-                {"ref_type": "reads", "code_node_id": n2},
-            ],
-        )
-        assert result["success_count"] == 1
-        refs = tasks.get_task_code_refs(self.conn, t["id"])
-        assert len(refs) == 1
-        assert refs[0]["ref_type"] == "reads"   # batch ref_type, not "deletes"
-        assert refs[0]["code_node_id"] == n2     # batch node, not n1
+        """Passing a non-list raises ValueError."""
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        with pytest.raises(ValueError, match="links must be a list"):
+            tasks.link_task_code(self.conn, t["id"], "not-a-list")
 
     def test_batch_idempotent_insert_or_replace(self):
         """Linking the same (task, node, ref_type) twice replaces, not duplicates.
         Different ref_types for the same node produce separate rows (by design)."""
-        t = tasks.create_task(self.conn, "T")
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         n1 = self._node("fn_idem", "src/idem.py")
 
         # First batch: modifies + reads → 2 rows (different ref_type)
         tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
+            self.conn, t["id"],
+            [
                 {"ref_type": "modifies", "code_node_id": n1},
                 {"ref_type": "reads",    "code_node_id": n1},
             ],
@@ -1238,10 +1233,8 @@ class TestBatchLinkCode(TestTaskBase):
 
         # Second batch: link same ref_type again → INSERT OR REPLACE, still 2 rows
         tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            batch=[
-                {"ref_type": "modifies", "code_node_id": n1},  # duplicate → replace
-            ],
+            self.conn, t["id"],
+            [{"ref_type": "modifies", "code_node_id": n1}],  # duplicate → replace
         )
         refs2 = tasks.get_task_code_refs(self.conn, t["id"])
         assert len(refs2) == 2  # no new row added, existing replaced

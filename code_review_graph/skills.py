@@ -196,8 +196,14 @@ _SKILLS: dict[str, dict[str, str]] = {
         "body": (
             "## Brainstorm Task\n\n"
             "Use `task_get_active_root` to check pipeline state, then `task_create` for root + subtasks.\n"
-            "Link code via `task_link_code(qualified_name=...)` using results from `semantic_search_nodes_tool`.\n"
-            "Add notes, contracts, and DAG edges, then run `task_validate` before handing off.\n\n"
+            "All bulk operations use list-based batch mode — always pass a list, even for one item:\n"
+            "  `task_create(tasks=[{\"title\": \"...\"}, ...], parent_id=...)` — decompose a task\n"
+            "  `task_add_edge(edges=[{\"source_id\": .., \"target_id\": ..}], edge_type=...)` — add dependencies\n"
+            "  `task_link_code(task_id=.., links=[{\"ref_type\": .., \"qualified_name\": ..}])` — link code nodes\n"
+            "  `task_move(task_ids=[..], new_parent_id=...)` — restructure the tree\n"
+            "  `task_archive(task_ids=[..], reason=...)` — selective archiving when changing approach\n"
+            "  `note_add(task_id=.., notes=[{\"note_type\": .., \"content\": ..}])` — add brainstorm notes\n"
+            "Run `task_validate` before handing off.\n\n"
             "See the full workflow in `skills/brainstorm-task/SKILL.md`."
         ),
     },

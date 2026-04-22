@@ -322,6 +322,8 @@ def semantic_search_nodes(
     repo_root: str | None = None,
     context_files: list[str] | None = None,
     model: str | None = None,
+    names: list[str] | None = None,
+    file_path: str | None = None,
 ) -> dict[str, Any]:
     """Search for nodes by name, keyword, or semantic similarity.
 
@@ -330,12 +332,19 @@ def semantic_search_nodes(
     keyword matching.
 
     Args:
-        query: Search string to match against node names and qualified names.
+        query: Search string. Multi-word queries are converted to FTS5 OR
+            expressions automatically — ``"create_task move_task"`` finds
+            nodes matching either token in one round-trip.
         kind: Optional filter by node kind (File, Class, Function, Type, Test).
         limit: Maximum results to return (default: 20).
         repo_root: Repository root path. Auto-detected if omitted.
         context_files: Optional list of file paths. Nodes in these files
             receive a relevance boost.
+        names: Optional list of symbol names for bulk multi-symbol lookup.
+            Equivalent to adding them space-separated to ``query``.
+            Example: ``names=["create_task", "move_task", "add_note"]``.
+        file_path: Optional file path filter. Only nodes whose ``file_path``
+            contains this string are returned (e.g. ``"tasks.py"``).
 
     Returns:
         Ranked list of matching nodes.
@@ -349,18 +358,25 @@ def semantic_search_nodes(
             limit=limit,
             context_files=context_files,
             model=model,
+            names=names,
+            file_path=file_path,
         )
 
         search_mode = "hybrid"
         if not results:
             search_mode = "keyword"
 
+        display_query = query
+        if names:
+            display_query = ", ".join(names) + (f" + {query}" if query and query.strip() else "")
+
         result: dict[str, object] = {
             "status": "ok",
-            "query": query,
+            "query": display_query,
             "search_mode": search_mode,
-            "summary": f"Found {len(results)} node(s) matching '{query}'"
-            + (f" (kind={kind})" if kind else ""),
+            "summary": f"Found {len(results)} node(s) matching '{display_query}'"
+            + (f" (kind={kind})" if kind else "")
+            + (f" (file_path contains '{file_path}')" if file_path else ""),
             "results": results,
         }
         result["_hints"] = generate_hints("semantic_search_nodes", result, get_session())

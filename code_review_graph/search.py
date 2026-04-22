@@ -133,6 +133,36 @@ def rrf_merge(*result_lists: list[tuple[int, float]], k: int = 60) -> list[tuple
 # ---------------------------------------------------------------------------
 
 
+def _build_fts_query(query: str) -> str:
+    """Build a safe FTS5 MATCH expression from a raw query string.
+
+    Single-token queries use phrase quoting (``"token"``), which is safe
+    against FTS5 operator injection and matches the token exactly.
+
+    Multi-token queries (whitespace-separated) are joined with ``OR`` so that
+    each token is searched independently across the index.  Every token is
+    individually phrase-quoted for safety.  This enables bulk multi-symbol
+    lookup in a single FTS5 query:
+
+        _build_fts_query("create_task")
+        → '"create_task"'
+
+        _build_fts_query("create_task move_task add_note")
+        → '"create_task" OR "move_task" OR "add_note"'
+
+    The BM25 score is unified across all OR branches by FTS5, so ranking
+    is correct for mixed-relevance results.
+    """
+    tokens = query.strip().split()
+    if not tokens:
+        return '""'
+    # Each token is phrase-quoted to suppress operator injection
+    quoted = ['"' + t.replace('"', '""') + '"' for t in tokens]
+    if len(quoted) == 1:
+        return quoted[0]
+    return " OR ".join(quoted)
+
+
 def _fts_search(
     conn: sqlite3.Connection,
     query: str,
@@ -142,9 +172,11 @@ def _fts_search(
 
     Returns list of ``(node_id, bm25_score)`` tuples. The BM25 score is
     negated so higher = better (FTS5 returns negative BM25).
+
+    Multi-word queries are automatically converted to OR expressions so that
+    each word is searched independently (see ``_build_fts_query``).
     """
-    # Sanitize: wrap in double quotes to prevent FTS5 operator injection
-    safe_query = '"' + query.replace('"', '""') + '"'
+    safe_query = _build_fts_query(query)
 
     try:
         rows = conn.execute(
@@ -213,7 +245,11 @@ def _keyword_search(
 ) -> list[tuple[int, float]]:
     """Fall back to simple LIKE keyword matching.
 
-    Each word in the query must match independently (AND logic).
+    For a single word: matches any node whose name or qualified_name contains
+    that word.  For multiple words: uses OR logic (same as FTS5 path) so that
+    each word is independently findable — e.g. "create_task move_task" finds
+    nodes matching either token.
+
     Returns ``(node_id, score)`` tuples with a basic relevance score.
     """
     words = query.lower().split()
@@ -228,7 +264,8 @@ def _keyword_search(
         )
         params.extend([f"%{word}%", f"%{word}%"])
 
-    where = " AND ".join(conditions)
+    # OR between words — consistent with FTS5 multi-token behaviour
+    where = " OR ".join(conditions)
     params.append(limit)
     sql = f"SELECT id, name, qualified_name FROM nodes WHERE {where} LIMIT ?"  # nosec B608
 
@@ -266,6 +303,8 @@ def hybrid_search(
     limit: int = 20,
     context_files: Optional[list[str]] = None,
     model: Optional[str] = None,
+    names: Optional[list[str]] = None,
+    file_path: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Hybrid search combining FTS5 BM25 and vector embeddings via RRF.
 
@@ -274,15 +313,30 @@ def hybrid_search(
 
     Args:
         store: The graph store to search.
-        query: Search query string.
+        query: Search query string.  Multi-word queries are automatically
+            converted to ``term1 OR term2 OR ...`` in FTS5, so
+            ``query="create_task move_task"`` finds nodes matching either
+            token — no need for separate calls.
         kind: Optional node kind filter (e.g. ``"Function"``, ``"Class"``).
         limit: Maximum results to return (default 20).
         context_files: Optional list of file paths. Nodes in these files
             receive a 1.5x score boost.
+        names: Optional list of symbol names for bulk multi-symbol lookup.
+            Merged with ``query`` into a single FTS5 OR expression, so the
+            result is identical to ``query="n1 n2 n3"`` but more explicit.
+            Example: ``names=["create_task", "move_task", "add_note"]``.
+        file_path: Optional file path filter (substring match, e.g.
+            ``"tasks.py"`` or ``"code_review_graph/tasks.py"``).
+            Only nodes whose ``file_path`` contains this string are returned.
 
     Returns:
         List of dicts with node metadata and ``score`` field.
     """
+    # --- names: merge into query as additional OR terms ---
+    if names:
+        extra = " ".join(n for n in names if n and n.strip())
+        query = (query.strip() + " " + extra).strip() if query and query.strip() else extra
+
     if not query or not query.strip():
         return []
 
@@ -346,7 +400,7 @@ def hybrid_search(
             continue
 
         node_kind = row["kind"]
-        file_path = row["file_path"]
+        node_file_path = row["file_path"]  # renamed to avoid shadowing the file_path parameter
         qualified_name = row["qualified_name"]
 
         boost = 1.0
@@ -355,7 +409,7 @@ def hybrid_search(
         if "_qualified" in kind_boosts and '.' in query:
             if query.lower() in qualified_name.lower():
                 boost *= kind_boosts["_qualified"]
-        if context_set and file_path in context_set:
+        if context_set and node_file_path in context_set:
             boost *= 1.5
 
         boosted.append((node_id, score * boost))
@@ -375,6 +429,9 @@ def hybrid_search(
         node_kind = row["kind"]
         if kind and node_kind != kind:
             continue
+
+        if file_path and file_path not in (row["file_path"] or ""):
+            continue  # file_path here is the function parameter (filter)
 
         results.append({
             "id": row["id"],

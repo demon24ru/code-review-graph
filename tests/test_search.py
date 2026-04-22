@@ -6,6 +6,7 @@ from pathlib import Path
 from code_review_graph.graph import GraphStore
 from code_review_graph.parser import NodeInfo
 from code_review_graph.search import (
+    _build_fts_query,
     detect_query_kind_boost,
     hybrid_search,
     rebuild_fts_index,
@@ -82,6 +83,38 @@ class TestHybridSearch:
         assert len(results) > 0
         names = [r["name"] for r in results]
         assert "get_users" in names
+
+    def test_multi_word_query_finds_multiple_nodes(self):
+        """Multi-word query is expanded to FTS5 OR — finds nodes for each token."""
+        rebuild_fts_index(self.store)
+        # Use limit=20 to avoid score-based cutoff; check at least 2 of the 3
+        results = hybrid_search(self.store, "get_users create_user authenticate", limit=20)
+        names = [r["name"] for r in results]
+        # All three tokens are in the query — each corresponding node must be found
+        assert "get_users" in names
+        assert "create_user" in names
+        assert "authenticate" in names
+
+    def test_names_param_finds_multiple_nodes(self):
+        """names=[] bulk lookup finds all listed symbols in one call."""
+        rebuild_fts_index(self.store)
+        results = hybrid_search(
+            self.store, query="", names=["get_users", "create_user", "authenticate"],
+            limit=20,
+        )
+        names = [r["name"] for r in results]
+        assert "get_users" in names
+        assert "create_user" in names
+        assert "authenticate" in names
+
+    def test_multi_word_query_no_spurious_results(self):
+        """Multi-word OR does not inflate results: UserResponse is not in the OR list."""
+        rebuild_fts_index(self.store)
+        results = hybrid_search(self.store, "get_users create_user")
+        names = [r["name"] for r in results]
+        # UserResponse and UserService should NOT appear (not in query tokens)
+        assert "UserResponse" not in names
+        assert "UserService" not in names
 
     # --- FTS search by signature ---
 
@@ -248,3 +281,33 @@ class TestHybridSearch:
             results = hybrid_search(self.store, dangerous_query)
             # Just assert no exception was raised
             assert isinstance(results, list)
+
+
+class TestBuildFtsQuery:
+    """Unit tests for _build_fts_query helper."""
+
+    def test_single_token_phrase_quoted(self):
+        assert _build_fts_query("create_task") == '"create_task"'
+
+    def test_multi_token_or_joined(self):
+        result = _build_fts_query("create_task move_task")
+        assert result == '"create_task" OR "move_task"'
+
+    def test_three_tokens_or_joined(self):
+        result = _build_fts_query("create_task move_task add_note")
+        assert result == '"create_task" OR "move_task" OR "add_note"'
+
+    def test_embedded_double_quote_escaped(self):
+        # A token containing " must be doubled inside phrase quotes
+        result = _build_fts_query('say"hello')
+        assert result == '"say""hello"'
+
+    def test_empty_query(self):
+        assert _build_fts_query("") == '""'
+
+    def test_whitespace_only(self):
+        assert _build_fts_query("   ") == '""'
+
+    def test_extra_whitespace_between_tokens(self):
+        result = _build_fts_query("  foo   bar  ")
+        assert result == '"foo" OR "bar"'

@@ -118,6 +118,23 @@ get_affected_flows_tool(changed_files=["code_review_graph/tasks.py"])
 task_find_for_impact(file_paths=["code_review_graph/tasks.py"])
 ```
 
+## When to Use MCP vs Direct Tools
+
+**MCP graph tools do NOT search inside function bodies.** They operate on the
+structural graph: declarations, edges, call relationships.
+
+| Need | Use |
+|---|---|
+| Blast radius of a file/function | `get_impact_radius_tool` / `analyze_edit_region_tool` |
+| Who calls function X | `query_graph_tool(callers_of)` |
+| Search inside function bodies | **Grep** — MCP doesn't index body content |
+| Find a string/pattern in code | **Grep** |
+| Read a specific function | `Read(offset=line_start, limit=line_end-line_start+1)` |
+
+**`line_start`/`line_end` from any MCP search result eliminate the need to read
+whole files.** On large codebases, loading an entire file to find where a function
+ends bloats input context while yielding no extra output — always scope your reads.
+
 ## Tips
 
 - `analyze_edit_region_tool` uses 1-indexed line numbers matching your editor

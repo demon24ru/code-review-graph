@@ -20,12 +20,26 @@ Workflow phases — strictly in order:
 
 ## Phase 1: Create the Task Tree
 
+All creation calls use **list-based batch mode** — always pass a list, even for one item.
+
 ```
 task_get_active_root()          # confirm pipeline is idle
-task_create(title, description) # root task — blocks until done/archived
-task_create(title, parent_id)   # L1 feature groups
-task_create(title, parent_id)   # L2 specific changes
-task_create(title, parent_id)   # L3 leaf tasks (actually implementable)
+
+# Create root task
+task_create(tasks=[{"title": "My Feature", "description": "..."}])
+
+# Decompose in one call — all subtasks sharing the same parent
+task_create(parent_id=root_id, tasks=[
+    {"title": "Auth module"},
+    {"title": "Token service", "description": "JWT-based"},
+    {"title": "Login endpoint"},
+])
+
+# Deeper nesting — same pattern
+task_create(parent_id=auth_id, tasks=[
+    {"title": "OAuth interface"},
+    {"title": "Google OAuth impl"},
+])
 ```
 
 Rules:
@@ -35,12 +49,23 @@ Rules:
 
 ## Phase 2: Add Notes and Design Decisions
 
+Add multiple notes in one call — always pass a list, even for one note.
+
 ```
-note_add(task_id, note_type="decision",   content="...", status="resolved", resolution="...")
-note_add(task_id, note_type="question",   content="...")   # open question
-note_add(task_id, note_type="assumption", content="...")   # to verify
-note_add(task_id, note_type="constraint", content="...")   # hard limit
-note_add(task_id, note_type="risk",       content="...")   # known risk
+# All notes for a task in one call (typical after structured brainstorm interview)
+note_add(task_id=task_id, notes=[
+    {"note_type": "decision",   "content": "Use JWT", "status": "resolved",
+     "resolution": "JWT tokens", "rationale": "stateless"},
+    {"note_type": "question",   "content": "WebSocket or polling?"},
+    {"note_type": "assumption", "content": "User model already exists"},
+    {"note_type": "constraint", "content": "self-hosted only"},
+    {"note_type": "risk",       "content": "Token refresh race condition"},
+])
+
+# Single note
+note_add(task_id=task_id, notes=[
+    {"note_type": "constraint", "content": "No external SaaS dependencies"}
+])
 ```
 
 - Notes on root/parent tasks are visible to ALL descendants via `include_parent=True`
@@ -73,41 +98,59 @@ Target **3–8 code nodes per leaf task**:
 ### Finding nodes
 
 ```
-# By keyword search (returns id + qualified_name directly)
+# Single symbol
 semantic_search_nodes_tool(query="create_task", kind="Function")
-→ { id: 1791, qualified_name: "code_review_graph/tasks.py::create_task", ... }
+→ { id: 655, qualified_name: "code_review_graph/tasks.py::create_task",
+    line_start: 100, line_end: 162, params: "(...)", ... }
 
-# By file structure
+# Multiple symbols in one call — multi-word = FTS5 OR, single round-trip
+semantic_search_nodes_tool(query="create_task add_task_edge move_task archive_task add_note")
+
+# Filter to specific file
+semantic_search_nodes_tool(query="create", file_path="tasks.py")
+
+# All functions in a file (structural, not text-based)
 query_graph_tool(pattern="children_of", target="code_review_graph/tasks.py")
 ```
 
-### Linking nodes — single and batch
+**Use `line_end` to read function bodies efficiently.**
+MCP search returns `line_start` and `line_end` for every node. Use them to make
+a targeted read instead of loading the whole file:
+```
+# GOOD: read only the function you need
+Read(filePath="tasks.py", offset=line_start, limit=line_end - line_start + 1)
 
-**Single link:**
-```
-task_link_code(task_id, ref_type="modifies",  code_node_id=1791)
-task_link_code(task_id, ref_type="modifies",  qualified_name="code_review_graph/tasks.py::create_task")
-task_link_code(task_id, ref_type="reads",     qualified_name="...")
-task_link_code(task_id, ref_type="creates",   qualified_name="...")
-task_link_code(task_id, ref_type="deletes",   qualified_name="...")
-task_link_code(task_id, ref_type="tests",     qualified_name="...")
+# BAD: reading the whole file to find where a function ends bloats input context
+# significantly while output context stays the same — avoid on large codebases
+Read(filePath="tasks.py")
 ```
 
-**Batch link — preferred for leaf tasks (3-8 nodes in one call):**
+**MCP does NOT replace grep for body content.** `semantic_search_nodes_tool` only
+indexes declarations (name, signature, params). To search inside function bodies —
+use Grep or ripgrep directly.
+
+### Linking nodes
+
+Always pass a list, even for one node. Both `code_node_id` (int) and `qualified_name` (str) can be mixed.
+Use values directly from `semantic_search_nodes_tool` — no extra lookup needed.
+
 ```
-task_link_code(task_id, batch=[
+# Single node
+task_link_code(task_id=task_id, links=[
+    {"ref_type": "modifies", "code_node_id": 1791}
+])
+
+# Typical leaf task (3-8 nodes in one call)
+task_link_code(task_id=task_id, links=[
     {"ref_type": "modifies", "code_node_id": 1791},
     {"ref_type": "modifies", "qualified_name": "src/auth.py::TokenModel"},
     {"ref_type": "reads",    "qualified_name": "src/config.py::JWTConfig"},
     {"ref_type": "creates",  "qualified_name": "src/auth.py::TokenResponse",
      "description": "new response schema"},
 ])
-# Returns: {success_count, error_count, total, linked[], errors[]}
-# Partial failures do NOT abort the batch — errors are collected, valid items linked.
+# Returns: {task_id, success_count, error_count, total, linked[], errors[]}
+# Partial failures do NOT abort — errors collected, valid items linked.
 ```
-
-Both `code_node_id` (int) and `qualified_name` (str) can be mixed in the same batch.
-Use values directly from `semantic_search_nodes_tool` — no extra lookup needed.
 
 **ref_type guide:**
 | ref_type | When to use |
@@ -156,13 +199,29 @@ contract_list(name="OAuthToken")               # find by name
 
 ## Phase 5: Add DAG Edges
 
+Always pass a list, even for one edge. A default `edge_type` applies to all items that lack their own.
+
 ```
-task_add_edge(source_id, target_id, edge_type="depends_on")   # sequential dependency
-task_add_edge(source_id, target_id, edge_type="blocks")        # blocking relationship
-task_add_edge(source_id, target_id, edge_type="shares_context") # related work
+# Single edge
+task_add_edge(edges=[{"source_id": child_id, "target_id": blocker_id}],
+              edge_type="depends_on")
+
+# Pattern A — one task depends on many (all children depend on the base interface)
+task_add_edge(edge_type="depends_on", edges=[
+    {"source_id": google_oauth_id, "target_id": oauth_interface_id},
+    {"source_id": github_oauth_id, "target_id": oauth_interface_id},
+    {"source_id": login_endpoint_id, "target_id": oauth_interface_id},
+])
+
+# Pattern B — mixed edge types in one call (per-item edge_type overrides default)
+task_add_edge(edge_type="depends_on", edges=[
+    {"source_id": t5_id, "target_id": t2_id},
+    {"source_id": t6_id, "target_id": t7_id, "edge_type": "shares_context"},
+])
 ```
 
-Cycle detection is automatic — depends_on/blocks edges cannot form cycles.
+Edge types: `depends_on` | `blocks` | `shares_context` | `conflicts_with` | `informs`
+Cycle detection is automatic — `depends_on`/`blocks` edges cannot form cycles (checked atomically).
 
 ## Phase 6: Run Analysis
 
@@ -218,7 +277,17 @@ task_check_rollup(task_id)    # check if parent can be closed
 After all leaves are done:
 ```
 task_validate()    # confirm 0 errors still
-task_archive(root_task_id, reason="Completed successfully")
+task_archive(task_ids=[root_task_id], reason="Completed successfully")
+```
+
+**Selective archiving** — when changing approach mid-brainstorm (archive only what's no longer needed):
+```
+task_archive(reason="Switching to in-app only", task_ids=["t2", "t3", "t6"])
+```
+
+**Restructuring** — move a group of tasks to a new parent in one call:
+```
+task_move(new_parent_id=auth_group_id, task_ids=["t2", "t3", "t4"])
 ```
 
 ## Cross-Layer Queries
@@ -246,7 +315,13 @@ task_execution_order(root_task_id)   # returns parallel levels
 ## Tips
 
 - **Sweet spot**: 3–8 code nodes per leaf task — not 1, not 50
-- **Batch link**: use `task_link_code(task_id, batch=[...])` to link all leaf nodes in one call instead of N separate calls
+- **Batch API**: all 6 bulk ops use list-based batch — always pass a list, even for one item
+  - `task_create(tasks=[...], parent_id=...)` — decompose
+  - `task_add_edge(edges=[...], edge_type=...)` — add dependencies
+  - `task_link_code(task_id=.., links=[...])` — link code nodes
+  - `task_move(task_ids=[...], new_parent_id=...)` — restructure tree
+  - `task_archive(task_ids=[...], reason=...)` — selective archiving
+  - `note_add(task_id=.., notes=[...])` — add brainstorm notes
 - **Handoff**: designer gets `task_export(mid_task_id)`, coder gets `task_export(leaf_task_id, include_analysis=True)`
 - Always link leaf tasks to code before `task_validate` — unlisted code refs are a warning
 - Use `note_list(include_children=True)` to search decisions across the whole brainstorm

@@ -99,19 +99,40 @@ def get_active_root(conn: sqlite3.Connection) -> Optional[dict[str, Any]]:
 
 def create_task(
     conn: sqlite3.Connection,
-    title: str,
-    description: Optional[str] = None,
+    tasks: list[dict[str, Any]],
     parent_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Create a task. If *parent_id* is set, the task becomes a subtask.
+    """Create one or more tasks sharing a common parent.
+
+    **Batch mode** — always a list, even for a single task:
+
+        create_task(conn, tasks=[{"title": "OAuth interface"}], parent_id="t1")
+        create_task(conn, tasks=[
+            {"title": "OAuth interface"},
+            {"title": "Google OAuth", "description": "impl Google provider"},
+            {"title": "JWT service"},
+        ], parent_id="t1")
+
+    Each item must have ``title`` (required) and may include ``description``.
 
     **Single-pipeline discipline**: a new *root* task (``parent_id=None``)
     can only be created when there is no other open root task.  Close or
-    archive the current root before starting a new one.
+    archive the current root before starting a new one.  This check is
+    performed once, before any task is inserted.
 
-    Returns the newly created task row as a dict.
+    Returns ``{"tasks": [...]}``.
     """
-    _require(title, "title")
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("tasks must be a non-empty list of dicts")
+
+    # Validate all items first — before any business-rule checks —
+    # so the caller gets a clear "title is required" error rather than a
+    # potentially confusing single-pipeline error.
+    for item in tasks:
+        if not isinstance(item, dict):
+            raise ValueError("Each task item must be a dict with at least 'title'")
+        _require(item.get("title"), "title")
+
     if parent_id is not None:
         row = conn.execute("SELECT id FROM tasks WHERE id = ?", (parent_id,)).fetchone()
         if row is None:
@@ -126,18 +147,24 @@ def create_task(
                 "Close or archive the current root task before starting a new one."
             )
 
-    task_id = _new_id()
     now = _now()
-    conn.execute(
-        """
-        INSERT INTO tasks (id, parent_id, title, description, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'draft', ?, ?)
-        """,
-        (task_id, parent_id, title, description, now, now),
-    )
+    created_ids: list[str] = []
+    for item in tasks:
+        title = item.get("title")
+        description = item.get("description")
+        task_id = _new_id()
+        conn.execute(
+            """
+            INSERT INTO tasks (id, parent_id, title, description, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'draft', ?, ?)
+            """,
+            (task_id, parent_id, title, description, now, now),
+        )
+        created_ids.append(task_id)
+        logger.debug("Created task %s: %r", task_id, title)
+
     conn.commit()
-    logger.debug("Created task %s: %r", task_id, title)
-    return get_task(conn, task_id)
+    return {"tasks": [get_task(conn, tid) for tid in created_ids]}
 
 
 def get_task(conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
@@ -452,31 +479,46 @@ def list_tasks(
 
 def move_task(
     conn: sqlite3.Connection,
-    task_id: str,
-    new_parent_id: Optional[str],
+    task_ids: list[str],
+    new_parent_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Move a task to a new parent (or make it a root task if *new_parent_id* is None).
+    """Move one or more tasks to a shared new parent (or promote them to root).
 
-    Raises *ValueError* if the move would create a hierarchy cycle.
+    **Batch mode** — always a list, even for a single task:
+
+        move_task(conn, task_ids=["t2", "t3", "t4"], new_parent_id="t11")
+        move_task(conn, task_ids=["t5"], new_parent_id=None)   # promote to root
+
+    Raises *ValueError* if any move would create a hierarchy cycle.
+    All cycle checks are performed before any update is applied (atomic).
+
+    Returns ``{"tasks": [...]}``.
     """
-    get_task(conn, task_id)  # verify exists
+    if not isinstance(task_ids, list) or not task_ids:
+        raise ValueError("task_ids must be a non-empty list of task IDs")
+
+    for tid in task_ids:
+        get_task(conn, tid)  # verify all tasks exist first
 
     if new_parent_id is not None:
         get_task(conn, new_parent_id)  # verify target exists
-        # Cycle check: new_parent must not be in the subtree of task_id
-        subtree_ids = set(_collect_subtree_ids(conn, task_id))
-        if new_parent_id in subtree_ids:
-            raise ValueError(
-                f"Cannot move task '{task_id}' under '{new_parent_id}': "
-                "would create a hierarchy cycle"
-            )
+        # Cycle check: new_parent must not be in the subtree of any moved task
+        for tid in task_ids:
+            subtree_ids = set(_collect_subtree_ids(conn, tid))
+            if new_parent_id in subtree_ids:
+                raise ValueError(
+                    f"Cannot move task '{tid}' under '{new_parent_id}': "
+                    "would create a hierarchy cycle"
+                )
 
-    conn.execute(
-        "UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?",
-        (new_parent_id, _now(), task_id),
-    )
+    now = _now()
+    for tid in task_ids:
+        conn.execute(
+            "UPDATE tasks SET parent_id = ?, updated_at = ? WHERE id = ?",
+            (new_parent_id, now, tid),
+        )
     conn.commit()
-    return get_task(conn, task_id)
+    return {"tasks": [get_task(conn, tid) for tid in task_ids]}
 
 
 def search_tasks(
@@ -548,34 +590,57 @@ def search_tasks(
 
 def archive_task(
     conn: sqlite3.Connection,
-    task_id: str,
+    task_ids: list[str],
     reason: str,
     cascade: bool = True,
 ) -> dict[str, Any]:
-    """Archive a task (and optionally its subtree).
+    """Archive one or more tasks (and optionally their subtrees).
+
+    **Batch mode** — always a list, even for a single task:
+
+        archive_task(conn, task_ids=["t2", "t3", "t6"], reason="Switching to in-app only")
+        archive_task(conn, task_ids=["t2"], reason="No longer needed")
 
     Sets status to 'archived' and records the *reason*. Does not delete —
     archived tasks remain in the database for historical reference.
+    *cascade* applies to each task individually.
 
-    Returns ``{ archived_ids: [...] }``.
+    Returns ``{"archived_ids": [...]}``.
     """
+    if not isinstance(task_ids, list) or not task_ids:
+        raise ValueError("task_ids must be a non-empty list of task IDs")
     _require(reason, "reason")
-    get_task(conn, task_id)  # verify exists
 
-    if cascade:
-        ids_to_archive = _collect_subtree_ids(conn, task_id)
-    else:
-        ids_to_archive = [task_id]
+    for tid in task_ids:
+        get_task(conn, tid)  # verify all exist first
+
+    ids_to_archive: list[str] = []
+    for tid in task_ids:
+        if cascade:
+            ids_to_archive.extend(_collect_subtree_ids(conn, tid))
+        else:
+            ids_to_archive.append(tid)
+
+    # Deduplicate while preserving order (subtrees may overlap)
+    seen: set[str] = set()
+    unique_ids: list[str] = []
+    for tid in ids_to_archive:
+        if tid not in seen:
+            seen.add(tid)
+            unique_ids.append(tid)
 
     now = _now()
-    for tid in ids_to_archive:
+    for tid in unique_ids:
         conn.execute(
             "UPDATE tasks SET status = 'archived', archive_reason = ?, updated_at = ? WHERE id = ?",
             (reason, now, tid),
         )
 
     conn.commit()
-    return {"archived_ids": ids_to_archive}
+    return {
+        "archived": [get_task(conn, tid) for tid in unique_ids],
+        "archived_ids": unique_ids,  # kept for backward compat
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -585,43 +650,96 @@ def archive_task(
 
 def add_task_edge(
     conn: sqlite3.Connection,
-    source_id: str,
-    target_id: str,
-    edge_type: str,
-    description: Optional[str] = None,
+    edges: list[dict[str, Any]],
+    edge_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Add a directed edge between two tasks.
+    """Add one or more directed edges between tasks.
+
+    **Batch mode** — always a list, even for a single edge:
+
+        # One source → many targets (Pattern A):
+        add_task_edge(conn, edge_type="depends_on", edges=[
+            {"source_id": "t8", "target_id": "t5"},
+            {"source_id": "t8", "target_id": "t6"},
+            {"source_id": "t8", "target_id": "t7"},
+        ])
+
+        # Many sources → one target (Pattern B):
+        add_task_edge(conn, edge_type="depends_on", edges=[
+            {"source_id": "t5", "target_id": "t2"},
+            {"source_id": "t6", "target_id": "t2"},
+        ])
+
+        # Mixed (Pattern C) — per-item edge_type overrides default:
+        add_task_edge(conn, edge_type="depends_on", edges=[
+            {"source_id": "t5", "target_id": "t2"},
+            {"source_id": "t6", "target_id": "t7", "edge_type": "shares_context"},
+        ])
+
+    Each item must have ``source_id`` and ``target_id``.
+    ``edge_type`` per item overrides the top-level default.
+    ``description`` per item is optional.
 
     For *depends_on* and *blocks* edge types, performs a cycle check via DFS.
-    Raises *ValueError* on invalid inputs or cycle detection.
+    All cycle checks run before any insert (atomic).
+
+    Returns ``{"edges": [...]}``.
     """
-    get_task(conn, source_id)
-    get_task(conn, target_id)
-    _check_enum(edge_type, TASK_EDGE_TYPES, "edge_type")
+    if not isinstance(edges, list) or not edges:
+        raise ValueError("edges must be a non-empty list of dicts")
 
-    if source_id == target_id:
-        raise ValueError("Cannot add a self-referencing edge")
+    # Validate all items and pre-resolve edge types before touching the DB
+    resolved: list[tuple[str, str, str, Optional[str]]] = []
+    for item in edges:
+        if not isinstance(item, dict):
+            raise ValueError("Each edge item must be a dict with source_id and target_id")
+        source_id: str = item.get("source_id", "")
+        target_id: str = item.get("target_id", "")
+        item_edge_type: str = item.get("edge_type") or edge_type or ""
+        description: Optional[str] = item.get("description")
+        if not source_id or not target_id:
+            raise ValueError("Each edge item must have 'source_id' and 'target_id'")
+        get_task(conn, source_id)
+        get_task(conn, target_id)
+        _check_enum(item_edge_type, TASK_EDGE_TYPES, "edge_type")
+        if source_id == target_id:
+            raise ValueError(f"Cannot add a self-referencing edge for task '{source_id}'")
+        resolved.append((source_id, target_id, item_edge_type, description))
 
-    if edge_type in _ORDERING_EDGE_TYPES:
-        _assert_no_cycle_after_edge(conn, source_id, target_id, edge_type)
+    # Cycle checks for ordering edges (before any insert).
+    # Pass all previously-checked ordering edges of the same type as *pending*
+    # so that intra-batch cycles (e.g. A→B + B→A in one call) are detected
+    # even though nothing has been inserted into the DB yet.
+    pending_ordering: list[tuple[str, str, str]] = []  # (src, tgt, type)
+    for source_id, target_id, item_edge_type, _ in resolved:
+        if item_edge_type in _ORDERING_EDGE_TYPES:
+            same_type_pending = [(s, t) for s, t, et in pending_ordering if et == item_edge_type]
+            _assert_no_cycle_after_edge(
+                conn, source_id, target_id, item_edge_type, pending=same_type_pending
+            )
+            pending_ordering.append((source_id, target_id, item_edge_type))
 
     now = _now()
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO task_edges
-            (source_task_id, target_task_id, type, description, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (source_id, target_id, edge_type, description, now),
-    )
+    created: list[dict[str, Any]] = []
+    for source_id, target_id, item_edge_type, description in resolved:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO task_edges
+                (source_task_id, target_task_id, type, description, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (source_id, target_id, item_edge_type, description, now),
+        )
+        created.append({
+            "source_task_id": source_id,
+            "target_task_id": target_id,
+            "type": item_edge_type,
+            "description": description,
+            "created_at": now,
+        })
+
     conn.commit()
-    return {
-        "source_task_id": source_id,
-        "target_task_id": target_id,
-        "type": edge_type,
-        "description": description,
-        "created_at": now,
-    }
+    return {"edges": created}
 
 
 def _assert_no_cycle_after_edge(
@@ -629,9 +747,20 @@ def _assert_no_cycle_after_edge(
     source_id: str,
     target_id: str,
     edge_type: str,
+    pending: Optional[list[tuple[str, str]]] = None,
 ) -> None:
     """DFS reachability: if *target_id* can already reach *source_id* via the
-    same edge type, adding source→target would create a cycle."""
+    same edge type, adding source→target would create a cycle.
+
+    *pending* is a list of (src, tgt) tuples already resolved in the current
+    batch but not yet inserted into the DB.  They are treated as virtual edges
+    so that intra-batch cycles (e.g. A→B + B→A in one call) are detected.
+    """
+    # Build a small in-memory adjacency map from pending edges of the same type
+    pending_adj: dict[str, list[str]] = {}
+    for psrc, ptgt in (pending or []):
+        pending_adj.setdefault(psrc, []).append(ptgt)
+
     visited: set[str] = set()
     stack = [target_id]
     while stack:
@@ -644,11 +773,12 @@ def _assert_no_cycle_after_edge(
         if node in visited:
             continue
         visited.add(node)
-        neighbours = conn.execute(
+        db_neighbours = conn.execute(
             "SELECT target_task_id FROM task_edges WHERE source_task_id = ? AND type = ?",
             (node, edge_type),
         ).fetchall()
-        stack.extend(r[0] for r in neighbours)
+        stack.extend(r[0] for r in db_neighbours)
+        stack.extend(pending_adj.get(node, []))
 
 
 def remove_task_edge(
@@ -922,32 +1052,33 @@ def _resolve_code_node(
 def link_task_code(
     conn: sqlite3.Connection,
     task_id: str,
-    ref_type: str,
-    code_node_id: Optional[int] = None,
-    qualified_name: Optional[str] = None,
-    description: Optional[str] = None,
-    batch: Optional[list[dict[str, Any]]] = None,
+    links: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Link a task to one or many code graph nodes.
 
-    **Single mode** (existing behaviour):
-        Exactly one of *code_node_id* or *qualified_name* must be supplied.
+    **Batch mode** — always a list, even for a single node:
 
-    **Batch mode** (new):
-        Supply *batch* — a list of dicts, each with at least ``ref_type`` and
-        one of ``code_node_id`` / ``qualified_name``.  Top-level
-        ``code_node_id``, ``qualified_name``, and ``ref_type`` are ignored
-        when *batch* is provided.
+        link_task_code(conn, task_id, links=[
+            {"ref_type": "modifies", "code_node_id": 101},
+        ])
+        link_task_code(conn, task_id, links=[
+            {"ref_type": "modifies", "code_node_id": 101},
+            {"ref_type": "modifies", "code_node_id": 102},
+            {"ref_type": "reads",    "qualified_name": "src/auth.py::TokenService"},
+            {"ref_type": "creates",  "qualified_name": "src/models.py::OAuthToken",
+             "description": "new model"},
+        ])
 
-        Each batch item:
-            {
-                "ref_type": "modifies",          # required
-                "code_node_id": 101,             # either this …
-                "qualified_name": "src/fn",      # … or this
-                "description": "optional note",  # optional
-            }
+    Each item requires ``ref_type`` and one of ``code_node_id`` / ``qualified_name``.
+    Failed items are collected in ``errors`` — does not abort the whole batch.
 
-    Returns (batch mode):
+    Using *qualified_name* lets the LLM pass the value directly from
+    ``semantic_search_nodes_tool`` or ``task_export`` code_refs without a
+    separate ID-lookup step.  Path separators are normalised (``\\`` → ``/``).
+
+    ref_type values: modifies | creates | deletes | reads | tests
+
+    Returns:
         {
             "task_id": "…",
             "linked": [{"code_node_id": …, "ref_type": …, "qualified_name": …}, …],
@@ -956,80 +1087,53 @@ def link_task_code(
             "success_count": N,
             "error_count": N,
         }
-
-    Using *qualified_name* lets the LLM pass the value directly from
-    ``semantic_search_nodes_tool`` or ``task_export`` code_refs without a
-    separate ID-lookup step.  Path separators are normalised (``\\`` → ``/``).
     """
     get_task(conn, task_id)
+    if not isinstance(links, list):
+        raise ValueError("links must be a list of dicts")
     now = _now()
 
-    # ── Batch mode ────────────────────────────────────────────────────────────
-    if batch is not None:
-        if not isinstance(batch, list):
-            raise ValueError("batch must be a list of dicts")
-        linked: list[dict[str, Any]] = []
-        errors: list[dict[str, Any]] = []
+    linked: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
 
-        for item in batch:
-            if not isinstance(item, dict):
-                errors.append({"item": item, "error": "each batch item must be a dict"})
-                continue
-            item_ref_type = item.get("ref_type")
-            item_node_id: Optional[int] = item.get("code_node_id")
-            item_qname: Optional[str] = item.get("qualified_name")
-            item_desc: Optional[str] = item.get("description")
-            try:
-                _check_enum(item_ref_type, CODE_REF_TYPES, "ref_type")
-                resolved_id = _resolve_code_node(
-                    conn, item_node_id, item_qname, caller="link_task_code[batch]"
-                )
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO task_code_refs
-                        (task_id, code_node_id, ref_type, description, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (task_id, resolved_id, item_ref_type, item_desc, now),
-                )
-                linked.append({
-                    "code_node_id": resolved_id,
-                    "ref_type": item_ref_type,
-                    "qualified_name": item_qname,
-                    "description": item_desc,
-                })
-            except (KeyError, ValueError) as exc:
-                errors.append({"item": item, "error": str(exc)})
+    for item in links:
+        if not isinstance(item, dict):
+            errors.append({"item": item, "error": "each link item must be a dict"})
+            continue
+        item_ref_type = item.get("ref_type")
+        item_node_id: Optional[int] = item.get("code_node_id")
+        item_qname: Optional[str] = item.get("qualified_name")
+        item_desc: Optional[str] = item.get("description")
+        try:
+            _check_enum(item_ref_type, CODE_REF_TYPES, "ref_type")
+            resolved_id = _resolve_code_node(
+                conn, item_node_id, item_qname, caller="link_task_code"
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO task_code_refs
+                    (task_id, code_node_id, ref_type, description, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (task_id, resolved_id, item_ref_type, item_desc, now),
+            )
+            linked.append({
+                "code_node_id": resolved_id,
+                "ref_type": item_ref_type,
+                "qualified_name": item_qname,
+                "description": item_desc,
+            })
+        except (KeyError, ValueError) as exc:
+            errors.append({"item": item, "error": str(exc)})
 
-        conn.commit()
-        return {
-            "task_id": task_id,
-            "linked": linked,
-            "errors": errors,
-            "total": len(batch),
-            "success_count": len(linked),
-            "error_count": len(errors),
-        }
-
-    # ── Single mode ───────────────────────────────────────────────────────────
-    _check_enum(ref_type, CODE_REF_TYPES, "ref_type")
-    code_node_id = _resolve_code_node(conn, code_node_id, qualified_name, caller="link_task_code")
-
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO task_code_refs
-            (task_id, code_node_id, ref_type, description, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (task_id, code_node_id, ref_type, description, now),
-    )
     conn.commit()
     return {
         "task_id": task_id,
-        "code_node_id": code_node_id,
-        "ref_type": ref_type,
-        "description": description,
-        "created_at": now,
+        "linked": linked,
+        "errors": errors,
+        "total": len(links),
+        "success_count": len(linked),
+        "error_count": len(errors),
     }
 
 
@@ -1214,35 +1318,66 @@ def _extract_keywords(text: str) -> list[str]:
 def add_note(
     conn: sqlite3.Connection,
     task_id: str,
-    note_type: str,
-    content: str,
-    status: str = "open",
-    resolution: Optional[str] = None,
-    rationale: Optional[str] = None,
-    alternatives: Optional[list[str]] = None,
+    notes: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Add a brainstorm note (decision / question / assumption / constraint / risk)."""
+    """Add one or more brainstorm notes to a task.
+
+    **Batch mode** — always a list, even for a single note:
+
+        add_note(conn, task_id, notes=[
+            {"note_type": "decision", "content": "Use JWT", "status": "resolved",
+             "resolution": "JWT tokens", "rationale": "stateless"},
+        ])
+        add_note(conn, task_id, notes=[
+            {"note_type": "decision", "content": "Use JWT",
+             "status": "resolved", "resolution": "JWT tokens"},
+            {"note_type": "constraint", "content": "self-hosted only"},
+            {"note_type": "question", "content": "WebSocket or polling?"},
+            {"note_type": "assumption", "content": "User model already exists"},
+        ])
+
+    Each item requires ``note_type`` and ``content``.
+    Optional per-item fields: ``status`` (default "open"), ``resolution``,
+    ``rationale``, ``alternatives``.
+
+    Note types: decision | question | assumption | constraint | risk
+
+    Returns ``{"notes": [...]}``.
+    """
     get_task(conn, task_id)
-    _require(content, "content")
-    _check_enum(note_type, NOTE_TYPES, "note_type")
-    _check_enum(status, NOTE_STATUSES, "status")
-
-    note_id = _new_id()
+    if not isinstance(notes, list) or not notes:
+        raise ValueError("notes must be a non-empty list of dicts")
     now = _now()
-    alternatives_json = json.dumps(alternatives) if alternatives is not None else None
 
-    conn.execute(
-        """
-        INSERT INTO notes
-            (id, task_id, note_type, content, status, resolution, rationale, alternatives,
-             created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (note_id, task_id, note_type, content, status, resolution, rationale,
-         alternatives_json, now, now),
-    )
+    created_ids: list[str] = []
+    for item in notes:
+        if not isinstance(item, dict):
+            raise ValueError("Each note item must be a dict with at least 'note_type' and 'content'")
+        note_type = item.get("note_type", "")
+        content = item.get("content", "")
+        status = item.get("status", "open")
+        resolution = item.get("resolution")
+        rationale = item.get("rationale")
+        alternatives = item.get("alternatives")
+        _require(content, "content")
+        _check_enum(note_type, NOTE_TYPES, "note_type")
+        _check_enum(status, NOTE_STATUSES, "status")
+        note_id = _new_id()
+        alternatives_json = json.dumps(alternatives) if alternatives is not None else None
+        conn.execute(
+            """
+            INSERT INTO notes
+                (id, task_id, note_type, content, status, resolution, rationale, alternatives,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (note_id, task_id, note_type, content, status, resolution, rationale,
+             alternatives_json, now, now),
+        )
+        created_ids.append(note_id)
+
     conn.commit()
-    return _get_note(conn, note_id)
+    return {"notes": [_get_note(conn, nid) for nid in created_ids]}
 
 
 def _get_note(conn: sqlite3.Connection, note_id: str) -> dict[str, Any]:

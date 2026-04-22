@@ -225,6 +225,8 @@ def semantic_search_nodes_tool(
     limit: int = 20,
     repo_root: Optional[str] = None,
     model: Optional[str] = None,
+    names: Optional[list] = None,
+    file_path: Optional[str] = None,
 ) -> dict:
     """Search for code entities by name, keyword, or semantic similarity.
 
@@ -232,16 +234,25 @@ def semantic_search_nodes_tool(
     first, requires sentence-transformers). Falls back to keyword matching otherwise.
 
     Args:
-        query: Search string to match against node names.
+        query: Search string. Multi-word queries are automatically converted
+               to FTS5 OR expressions — "create_task move_task add_note" finds
+               all three in one round-trip with correct BM25 ranking.
         kind: Optional filter: File, Class, Function, Type, or Test.
         limit: Maximum results. Default: 20.
         repo_root: Repository root path. Auto-detected if omitted.
         model: Embedding model for query vectors. Must match the model used
                during embed_graph. Falls back to CRG_EMBEDDING_MODEL env var,
                then all-MiniLM-L6-v2.
+        names: List of symbol names for bulk multi-symbol lookup. Equivalent
+               to adding them space-separated to query.
+               Example: names=["create_task", "move_task", "add_note"]
+        file_path: Optional file path filter (substring). Only nodes whose
+                   file_path contains this string are returned.
+                   Example: "tasks.py" or "code_review_graph/tasks.py"
     """
     return semantic_search_nodes(
-        query=query, kind=kind, limit=limit, repo_root=repo_root, model=model
+        query=query, kind=kind, limit=limit, repo_root=repo_root, model=model,
+        names=names, file_path=file_path,
     )
 
 
@@ -868,23 +879,31 @@ def task_get_active_root(
 
 @mcp.tool()
 def task_create(
-    title: str,
-    description: Optional[str] = None,
+    tasks: list,
     parent_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Create a new task for brainstorm-driven planning.
+    """Create one or more tasks under a common parent.
 
-    [BRAINSTORM] Creates a task optionally under a parent task.
+    [BRAINSTORM] Single-pipeline discipline: at most one root task may be
+    open (status not done/archived) at a time.  Use this to:
+    - Create the root task for a new brainstorm pipeline
+    - Decompose a task into subtasks (all sharing the same parent_id)
+
+    Always pass a list — even for a single task:
+        task_create(tasks=[{"title": "Root task"}])
+        task_create(parent_id="t1", tasks=[
+            {"title": "OAuth interface"},
+            {"title": "Google OAuth", "description": "impl Google provider"},
+            {"title": "JWT service"},
+        ])
 
     Args:
-        title: Task title (required).
-        description: Optional description.
-        parent_id: Parent task ID. Omit to create a root task.
+        tasks: List of task dicts — each with title (required), description (optional).
+        parent_id: Shared parent task ID. Omit to create root task(s).
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_create_func(title=title, description=description,
-                            parent_id=parent_id, repo_root=repo_root)
+    return task_create_func(tasks_list=tasks, parent_id=parent_id, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1007,20 +1026,30 @@ def task_list(
 
 @mcp.tool()
 def task_move(
-    task_id: str,
+    task_ids: list,
     new_parent_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Move a task to a new parent (or promote it to root).
+    """Move one or more tasks to a new parent (or promote them to root).
 
-    [BRAINSTORM] Fails if the move would create a hierarchy cycle.
+    [BRAINSTORM] Fails if the move would create a hierarchy cycle
+    (checked atomically across all tasks before applying any changes).
+
+    Always pass a list — even for a single task:
+        task_move(task_ids=["t5"], new_parent_id="t11")
+
+    Batch restructuring (common during brainstorm refinement):
+        task_move(new_parent_id="t11", task_ids=["t2", "t3", "t4"])
+
+    Promote to root:
+        task_move(task_ids=["t5"])
 
     Args:
-        task_id: Task to move.
-        new_parent_id: New parent task ID. Pass None to make it a root task.
+        task_ids: List of task IDs to move.
+        new_parent_id: Shared new parent task ID. Pass None to make them root tasks.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_move_func(task_id=task_id, new_parent_id=new_parent_id, repo_root=repo_root)
+    return task_move_func(task_ids=task_ids, new_parent_id=new_parent_id, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1043,49 +1072,77 @@ def task_search(
 
 @mcp.tool()
 def task_archive(
-    task_id: str,
+    task_ids: list,
     reason: str,
     cascade: bool = True,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Archive a task (preserves history, unlike task_delete).
+    """Archive one or more tasks (preserves history, unlike task_delete).
 
     [BRAINSTORM] Sets status to 'archived' with a recorded reason.
     Use when the direction changes fundamentally.
 
+    Always pass a list — even for a single task:
+        task_archive(task_ids=["t5"], reason="No longer needed")
+
+    Selective archiving (common when changing approach mid-brainstorm):
+        task_archive(reason="Switching to in-app only",
+                     task_ids=["t2", "t3", "t6"])
+
+    *cascade* applies to each task individually (default: True).
+
     Args:
-        task_id: Task to archive.
-        reason: Why this task is being archived (required).
-        cascade: If True (default), archive all subtasks too.
+        task_ids: List of task IDs to archive.
+        reason: Why these tasks are being archived (required).
+        cascade: If True (default), archive all subtasks of each task too.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_archive_func(task_id=task_id, reason=reason, cascade=cascade, repo_root=repo_root)
+    return task_archive_func(task_ids=task_ids, reason=reason, cascade=cascade, repo_root=repo_root)
 
 
 # --- DAG Edges (5) ---
 
 @mcp.tool()
 def task_add_edge(
-    source_id: str,
-    target_id: str,
-    edge_type: str,
-    description: Optional[str] = None,
+    edges: list,
+    edge_type: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Add a directed edge between two tasks.
+    """Add one or more directed edges between tasks.
 
     [BRAINSTORM] Edge types: depends_on | blocks | shares_context |
-    conflicts_with | informs. Cycle detection enforced for depends_on/blocks.
+    conflicts_with | informs. Cycle detection enforced for depends_on/blocks
+    (checked atomically before any insert).
+
+    Always pass a list — even for a single edge:
+        task_add_edge(edges=[{"source_id": "t8", "target_id": "t5"}],
+                      edge_type="depends_on")
+
+    Pattern A — one source, many targets:
+        task_add_edge(edge_type="depends_on", edges=[
+            {"source_id": "t8", "target_id": "t5"},
+            {"source_id": "t8", "target_id": "t6"},
+        ])
+
+    Pattern B — many sources, one target:
+        task_add_edge(edge_type="depends_on", edges=[
+            {"source_id": "t5", "target_id": "t2"},
+            {"source_id": "t6", "target_id": "t2"},
+        ])
+
+    Pattern C — mixed (per-item edge_type overrides default):
+        task_add_edge(edge_type="depends_on", edges=[
+            {"source_id": "t5", "target_id": "t2"},
+            {"source_id": "t6", "target_id": "t7", "edge_type": "shares_context"},
+        ])
 
     Args:
-        source_id: Source task ID.
-        target_id: Target task ID.
-        edge_type: Relationship type.
-        description: Optional description.
+        edges: List of edge dicts — each with source_id, target_id, and optional
+               edge_type (overrides top-level default) and description.
+        edge_type: Default edge type for items lacking their own edge_type.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_add_edge_func(source_id=source_id, target_id=target_id,
-                              edge_type=edge_type, description=description, repo_root=repo_root)
+    return task_add_edge_func(edges=edges, edge_type=edge_type, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1164,29 +1221,21 @@ def task_topological_sort(
 @mcp.tool()
 def task_link_code(
     task_id: str,
-    ref_type: str = "modifies",
-    code_node_id: Optional[int] = None,
-    qualified_name: Optional[str] = None,
-    description: Optional[str] = None,
-    batch: Optional[list] = None,
+    links: list,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Link a task to one or many code graph nodes.
 
     [BRAINSTORM] Associates a task with code entities (functions, classes, files).
+    Always pass a list — even for a single node.
 
-    **Single mode** — link one node (existing behaviour):
+    Single node:
+        task_link_code(task_id="t5", links=[
+            {"ref_type": "modifies", "code_node_id": 1786}
+        ])
 
-        # Option A: integer id from semantic_search_nodes_tool
-        task_link_code(task_id, ref_type="modifies", code_node_id=1786)
-
-        # Option B: qualified_name string from search results or task_export
-        task_link_code(task_id, ref_type="modifies",
-                       qualified_name="code_review_graph/tasks.py::create_task")
-
-    **Batch mode** — link many nodes in a single call:
-
-        task_link_code(task_id, batch=[
+    Multiple nodes (typical leaf task — 3-8 code refs is normal):
+        task_link_code(task_id="t5", links=[
             {"ref_type": "modifies", "code_node_id": 101},
             {"ref_type": "modifies", "code_node_id": 102},
             {"ref_type": "reads",    "qualified_name": "src/auth.py::TokenService"},
@@ -1194,28 +1243,19 @@ def task_link_code(
              "description": "new model class"},
         ])
 
-        When batch is provided, top-level ref_type/code_node_id/qualified_name
-        are ignored. Each item is processed independently — errors are collected
-        in ``result.errors`` and do not abort the whole batch.
+    Both ``code_node_id`` (int) and ``qualified_name`` (string) are returned by
+    semantic_search_nodes_tool — no extra lookup needed.
+    Failed items are collected in errors and do not abort the whole batch.
 
     ref_type values: modifies | creates | deletes | reads | tests
 
     Args:
         task_id: Task ID.
-        ref_type: Ref type for single mode (modifies|creates|deletes|reads|tests).
-        code_node_id: Integer ``id`` from semantic_search_nodes_tool results.
-        qualified_name: ``qualified_name`` string from search results or code_refs.
-        description: Optional description (single mode only).
-        batch: List of {ref_type, code_node_id|qualified_name, description?} dicts.
-               Enables batch mode — links multiple nodes in one call.
+        links: List of dicts — each with ref_type and one of code_node_id /
+               qualified_name. Optional per-item: description.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_link_code_func(task_id=task_id, ref_type=ref_type,
-                               code_node_id=code_node_id,
-                               qualified_name=qualified_name,
-                               description=description,
-                               batch=batch,
-                               repo_root=repo_root)
+    return task_link_code_func(task_id=task_id, links=links, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1441,32 +1481,38 @@ def task_export(
 @mcp.tool()
 def note_add(
     task_id: str,
-    note_type: str,
-    content: str,
-    status: str = "open",
-    resolution: Optional[str] = None,
-    rationale: Optional[str] = None,
-    alternatives: Optional[list] = None,
+    notes: list,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Add a brainstorm note to a task.
+    """Add one or more brainstorm notes to a task.
 
     [BRAINSTORM] Types: decision | question | assumption | constraint | risk.
-    For resolved decisions, set status='resolved' and supply resolution.
+    Always pass a list — even for a single note.
+
+    Single note:
+        note_add(task_id="t1", notes=[
+            {"note_type": "constraint", "content": "self-hosted only"}
+        ])
+
+    Multiple notes (typical after structured brainstorm interview):
+        note_add(task_id="t1", notes=[
+            {"note_type": "decision", "content": "Use JWT",
+             "status": "resolved", "resolution": "JWT tokens",
+             "rationale": "stateless"},
+            {"note_type": "constraint", "content": "self-hosted only"},
+            {"note_type": "question", "content": "WebSocket or polling?"},
+            {"note_type": "assumption", "content": "User model already exists"},
+        ])
+
+    Each item requires note_type and content.
+    Optional per-item: status (default "open"), resolution, rationale, alternatives.
 
     Args:
-        task_id: Task to attach the note to.
-        note_type: decision|question|assumption|constraint|risk.
-        content: Note text (required).
-        status: open|resolved|rejected|deferred (default: open).
-        resolution: The answer or decision text.
-        rationale: Why this decision was made.
-        alternatives: List of considered alternatives that were rejected.
+        task_id: Task to attach the notes to.
+        notes: List of note dicts.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return note_add_func(task_id=task_id, note_type=note_type, content=content,
-                         status=status, resolution=resolution, rationale=rationale,
-                         alternatives=alternatives, repo_root=repo_root)
+    return note_add_func(task_id=task_id, notes=notes, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1687,6 +1733,7 @@ def contract_list(
 @mcp.tool()
 def task_roadmap(
     root_task_id: Optional[str] = None,
+    include_archived: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Get an aggregated progress snapshot for the entire task tree.
@@ -1701,9 +1748,14 @@ def task_roadmap(
 
     Args:
         root_task_id: Root task ID. Auto-detected if omitted.
+        include_archived: If True, include archived tasks in phases and add
+            an ``archived`` section. Default False — archived tasks are
+            hidden from phases to keep the roadmap readable.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_roadmap_func(root_task_id=root_task_id, repo_root=repo_root)
+    return task_roadmap_func(root_task_id=root_task_id,
+                             include_archived=include_archived,
+                             repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1732,6 +1784,7 @@ def task_find_for_impact(
     root_task_id: Optional[str] = None,
     max_depth: int = 2,
     open_only: bool = True,
+    include_node_details: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Find open tasks whose code refs overlap the blast radius of changed files.
@@ -1751,10 +1804,14 @@ def task_find_for_impact(
         root_task_id: Restrict results to this task subtree. Omit for all tasks.
         max_depth: BFS hops into code graph. Default 2.
         open_only: If True (default), only return non-done/archived tasks.
+        include_node_details: If True, include full node metadata in
+            ``impacted_nodes`` and ``uncovered_nodes``. Default False —
+            only counts are returned to keep the response compact.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return task_find_for_impact_func(file_paths=file_paths, root_task_id=root_task_id,
                                      max_depth=max_depth, open_only=open_only,
+                                     include_node_details=include_node_details,
                                      repo_root=repo_root)
 
 

@@ -705,12 +705,19 @@ def validate_dag(
             if has_refs or has_links:
                 t = tasks_by_id.get(tid)
                 name = t["title"] if t else tid
-                mixed_tasks.append(name)
+                ref_ids = [
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT code_node_id FROM task_code_refs WHERE task_id = ?", (tid,)
+                    ).fetchall()
+                ]
+                mixed_tasks.append((name, ref_ids))
     if mixed_tasks:
-        for name in mixed_tasks:
+        for name, ref_ids in mixed_tasks:
+            refs_hint = f" (code_node_ids: {', '.join(ref_ids)})" if ref_ids else ""
             warnings.append(
                 f"Parent task '{name}' has direct code_refs or contract links "
-                "but also has subtasks — consider moving refs to leaf tasks"
+                f"but also has subtasks — move refs to leaf tasks{refs_hint}"
             )
     else:
         ok.append("No parent tasks with misplaced direct code_refs or contract links")
@@ -932,10 +939,17 @@ def export_task(
 def roadmap(
     conn: sqlite3.Connection,
     root_task_id: Optional[str] = None,
+    include_archived: bool = False,
 ) -> dict[str, Any]:
     """Aggregated progress snapshot for the root task and its entire subtree.
 
     If *root_task_id* is None, the active root task is auto-detected.
+
+    Args:
+        root_task_id: Root task ID. Auto-detected if omitted.
+        include_archived: If True, include archived tasks in *phases* and add
+            an ``archived`` section listing them. Default False — archived
+            tasks are excluded from phases to keep the roadmap readable.
 
     Returns a structured roadmap useful for LLM orientation::
 
@@ -943,6 +957,7 @@ def roadmap(
             root: { id, title, status },
             progress: { total, done, in_progress, ready, blocked, draft, archived, percent },
             phases: [ { level, tasks: [{ id, title, status, blocked_by }] } ],
+            archived: [ { id, title, archive_reason } ],   # only when include_archived=True
             contracts: { total, agreed, pending, pending_list },
             notes_count: int,
             attention: {
@@ -997,13 +1012,23 @@ def roadmap(
 
     blocked_count = len(blocked_by)
 
-    # Build phases via execution_order
+    # Collect archived tasks separately (always, regardless of include_archived)
+    archived_tasks = [
+        {"id": t["id"], "title": t["title"], "archive_reason": t.get("archive_reason")}
+        for t in all_tasks
+        if t["status"] == "archived"
+    ]
+    archived_ids = {t["id"] for t in archived_tasks}
+
+    # Build phases via execution_order — exclude archived tasks unless requested
     try:
         phases_raw = execution_order(conn, root_task_id)
         phases = []
         for phase in phases_raw:
             phase_tasks = []
             for t in phase["tasks"]:
+                if not include_archived and t["id"] in archived_ids:
+                    continue
                 entry = {
                     "id": t["id"],
                     "title": t["title"],
@@ -1012,7 +1037,9 @@ def roadmap(
                 if t["id"] in blocked_by:
                     entry["blocked_by"] = blocked_by[t["id"]]
                 phase_tasks.append(entry)
-            phases.append({"level": phase["level"], "tasks": phase_tasks})
+            # Drop empty phases (all tasks were archived)
+            if phase_tasks:
+                phases.append({"level": phase["level"], "tasks": phase_tasks})
     except ValueError:
         phases = []
 
@@ -1083,7 +1110,7 @@ def roadmap(
                 "isolation_score": iso["isolation_score"],
             })
 
-    return {
+    result: dict[str, Any] = {
         "root": {"id": root["id"], "title": root["title"], "status": root["status"]},
         "progress": {
             "total": total,
@@ -1111,6 +1138,9 @@ def roadmap(
             "pending_contracts": pending_contracts,
         },
     }
+    if include_archived:
+        result["archived"] = archived_tasks
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1372,6 +1402,7 @@ def find_tasks_for_impact(
     *,
     max_depth: int = 2,
     open_only: bool = True,
+    include_node_details: bool = False,
 ) -> dict[str, Any]:
     """Find tasks whose code refs fall within the blast radius of changed files.
 
@@ -1398,16 +1429,21 @@ def find_tasks_for_impact(
 
     Returns:
         Dict with keys:
-          ``impacted_nodes`` — list of {id, name, file_path, kind} dicts
-          ``tasks``          — list of matching task dicts enriched with
-                               ``matched_nodes`` (which nodes triggered the match)
-          ``uncovered_nodes``— node IDs from the impact set with no task refs
-          ``coverage_ratio`` — float 0..1 (impacted nodes covered by tasks)
+          ``impacted_nodes_count`` — total number of nodes in the blast radius
+          ``impacted_nodes``       — list of {id, name, file_path, kind} dicts
+                                     (only when ``include_node_details=True``)
+          ``tasks``                — list of matching task dicts enriched with
+                                     ``matched_nodes`` (which nodes triggered the match)
+          ``uncovered_nodes_count``— number of impact nodes with no task refs
+          ``uncovered_nodes``      — node detail dicts (only when ``include_node_details=True``)
+          ``coverage_ratio``       — float 0..1 (impacted nodes covered by tasks)
     """
     if not file_paths:
         return {
+            "impacted_nodes_count": 0,
             "impacted_nodes": [],
             "tasks": [],
+            "uncovered_nodes_count": 0,
             "uncovered_nodes": [],
             "coverage_ratio": 1.0,
         }
@@ -1443,8 +1479,10 @@ def find_tasks_for_impact(
 
     if not seed_ids:
         return {
+            "impacted_nodes_count": 0,
             "impacted_nodes": [],
             "tasks": [],
+            "uncovered_nodes_count": 0,
             "uncovered_nodes": [],
             "coverage_ratio": 1.0,
             "note": "No code nodes found for the provided file paths.",
@@ -1521,20 +1559,23 @@ def find_tasks_for_impact(
             d["matched_nodes"] = task_matched[d["id"]]
             tasks_out.append(d)
 
-    uncovered = [
-        node_meta[nid] for nid in sorted(all_impacted - covered_node_ids)
-        if nid in node_meta
-    ]
+    uncovered_ids = sorted(all_impacted - covered_node_ids)
     coverage = (
         len(covered_node_ids) / len(all_impacted) if all_impacted else 1.0
     )
 
-    return {
-        "impacted_nodes": list(node_meta.values()),
+    result: dict[str, Any] = {
+        "impacted_nodes_count": len(node_meta),
         "tasks": tasks_out,
-        "uncovered_nodes": uncovered,
+        "uncovered_nodes_count": len(uncovered_ids),
         "coverage_ratio": round(coverage, 3),
     }
+    if include_node_details:
+        result["impacted_nodes"] = list(node_meta.values())
+        result["uncovered_nodes"] = [
+            node_meta[nid] for nid in uncovered_ids if nid in node_meta
+        ]
+    return result
 
 
 # ---------------------------------------------------------------------------
