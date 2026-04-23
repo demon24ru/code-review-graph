@@ -227,12 +227,22 @@ def query_graph(
                     edges_out.append(edge_to_dict(e))
 
         elif pattern == "callees_of":
+            internal_callees: list[dict[str, Any]] = []
+            external_callees: list[str] = []
             for e in store.get_edges_by_source(qn):
                 if e.kind == "CALLS":
                     callee = store.get_node(e.target_qualified)
                     if callee:
+                        internal_callees.append(node_to_dict(callee))
                         results.append(node_to_dict(callee))
+                    else:
+                        external_callees.append(e.target_qualified)
                     edges_out.append(edge_to_dict(e))
+            if external_callees:
+                results.append({
+                    "_external_callees": external_callees,
+                    "_note": f"{len(external_callees)} external/stdlib callee(s) not in graph",
+                })
 
         elif pattern == "imports_of":
             for e in store.get_edges_by_source(qn):
@@ -263,19 +273,32 @@ def query_graph(
                         results.append(node_to_dict(child))
 
         elif pattern == "tests_for":
+            seen: set[str] = set()
+
+            # 1. TESTED_BY edges (explicit test coverage markers)
             for e in store.get_edges_by_target(qn):
                 if e.kind == "TESTED_BY":
                     test = store.get_node(e.source_qualified)
-                    if test:
+                    if test and test.qualified_name not in seen:
                         results.append(node_to_dict(test))
-            # Also search by naming convention
+                        seen.add(test.qualified_name)
+
+            # 2. CALLS edges from test nodes (most common: pytest/unittest call pattern)
+            for e in store.get_edges_by_target(qn):
+                if e.kind == "CALLS":
+                    caller = store.get_node(e.source_qualified)
+                    if caller and caller.is_test and caller.qualified_name not in seen:
+                        results.append(node_to_dict(caller))
+                        seen.add(caller.qualified_name)
+
+            # 3. Naming convention search (test_X, TestX)
             name = node.name if node else target
             test_nodes = store.search_nodes(f"test_{name}", limit=10)
             test_nodes += store.search_nodes(f"Test{name}", limit=10)
-            seen = {r.get("qualified_name") for r in results}
             for t in test_nodes:
                 if t.qualified_name not in seen and t.is_test:
                     results.append(node_to_dict(t))
+                    seen.add(t.qualified_name)
 
         elif pattern == "inheritors_of":
             seen_sources: set[str] = set()

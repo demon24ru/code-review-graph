@@ -562,6 +562,10 @@ def get_architecture_overview(store: GraphStore) -> dict[str, Any]:
     cross_counts: Counter[tuple[int, int]] = Counter()
 
     for e in all_edges:
+        # Skip containment edges (File→Function/Class) — these represent file
+        # structure, not semantic coupling, and would produce false positives.
+        if e.kind == "CONTAINS":
+            continue
         src_comm = node_to_community.get(e.source_qualified)
         tgt_comm = node_to_community.get(e.target_qualified)
         if (

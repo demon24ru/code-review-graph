@@ -153,29 +153,66 @@ def get_architecture_overview_func(
 
     [EXPLORE] Builds a high-level view of the codebase architecture by
     analyzing community boundaries and cross-community coupling.
+    Returns compact community summaries (no member lists) and aggregated
+    cross-community coupling counts instead of individual edges.
     Includes warnings for high coupling between communities.
 
     Args:
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        Architecture overview with communities, cross-community edges,
-        and warnings.
+        Architecture overview with compact communities, aggregated
+        cross-community coupling, and warnings.
     """
     store, root = _get_store(repo_root)
     try:
         overview = get_architecture_overview(store)
-        n_communities = len(overview["communities"])
-        n_cross = len(overview["cross_community_edges"])
+
+        # Strip member lists from communities — keep only summary fields
+        communities_compact = []
+        for c in overview.get("communities", []):
+            communities_compact.append({
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "size": c.get("size"),
+                "cohesion": c.get("cohesion"),
+                "dominant_language": c.get("dominant_language"),
+                "member_count": len(c.get("members", c.get("member_qns", []))),
+            })
+
+        # Compress cross-community edges into pair counts (de-duplicated)
+        cross_pairs: dict[str, int] = {}
+        comm_name_by_id = {c.get("id"): c.get("name") for c in overview.get("communities", [])}
+        for e in overview.get("cross_community_edges", []):
+            src_id = e.get("source_community")
+            tgt_id = e.get("target_community")
+            src_name = comm_name_by_id.get(src_id, f"community-{src_id}")
+            tgt_name = comm_name_by_id.get(tgt_id, f"community-{tgt_id}")
+            # Use sorted pair key to deduplicate direction
+            pair_key = " <-> ".join(sorted([src_name, tgt_name]))
+            cross_pairs[pair_key] = cross_pairs.get(pair_key, 0) + 1
+
+        # Sort by count descending
+        cross_coupling = [
+            {"communities": k, "edge_count": v}
+            for k, v in sorted(cross_pairs.items(), key=lambda x: -x[1])
+        ]
+
+        n_communities = len(communities_compact)
+        n_cross_pairs = len(cross_coupling)
         n_warnings = len(overview["warnings"])
         result = {
             "status": "ok",
             "summary": (
                 f"Architecture: {n_communities} communities, "
-                f"{n_cross} cross-community edges, "
+                f"{n_cross_pairs} cross-community pairs, "
                 f"{n_warnings} warning(s)"
             ),
-            **overview,
+            "communities": communities_compact,
+            "cross_community_coupling": cross_coupling,
+            "warnings": overview["warnings"],
+            "total_communities": n_communities,
+            "total_cross_pairs": n_cross_pairs,
         }
         result["_hints"] = generate_hints("get_architecture_overview", result, get_session())
         return result

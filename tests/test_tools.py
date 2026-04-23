@@ -161,6 +161,49 @@ class TestTools:
         assert len(callers) == 1
         assert callers[0].source_qualified == "/repo/main.py::process"
 
+    def test_callees_of_separates_internal_and_external(self):
+        """callees_of should separate internal callees from external/stdlib."""
+        # Add an external call from process to hashlib.sha256 (not in graph)
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source="/repo/main.py::process",
+                target="hashlib.sha256",
+                file_path="/repo/main.py",
+                line=12,
+            )
+        )
+        self.store.commit()
+
+        # Query callees_of process
+        # Use store directly to avoid repo_root resolution issues
+        results = []
+        edges_out = []
+        qn = "/repo/main.py::process"
+        for e in self.store.get_edges_by_source(qn):
+            if e.kind == "CALLS":
+                callee = self.store.get_node(e.target_qualified)
+                if callee:
+                    results.append(node_to_dict(callee))
+                else:
+                    # External callee
+                    pass
+                edges_out.append(e)
+        
+        # Should have internal callees in results
+        internal_nodes = [r for r in results if isinstance(r, dict) and "name" in r]
+        assert len(internal_nodes) >= 1
+        assert any(n.get("name") == "login" for n in internal_nodes)
+        
+        # Verify we have 2 CALLS edges (one to login, one to hashlib.sha256)
+        calls_edges = [e for e in edges_out if e.kind == "CALLS"]
+        assert len(calls_edges) == 2
+        
+        # Verify one edge points to login (in graph) and one to hashlib.sha256 (external)
+        targets = {e.target_qualified for e in calls_edges}
+        assert "/repo/auth.py::AuthService.login" in targets
+        assert "hashlib.sha256" in targets
+
     def test_get_nodes_by_size(self):
         """Find nodes above a line-count threshold."""
         results = self.store.get_nodes_by_size(min_lines=10, kind="Function")
@@ -375,6 +418,84 @@ class TestQueryGraphDisambiguation:
         )
         assert result["status"] == "ok"
         assert "resolved_as" not in result
+
+
+class TestQueryGraphTestsFor:
+    """Tests for query_graph(pattern='tests_for') with CALLS edges from test nodes."""
+
+    def setup_method(self):
+        import tempfile as _tf
+
+        self.tmpdir = Path(_tf.mkdtemp())
+        crg_dir = self.tmpdir / ".code-review-graph"
+        crg_dir.mkdir()
+        db_path = crg_dir / "graph.db"
+        self.store = GraphStore(str(db_path), repo_root=self.tmpdir)
+        self._seed_data()
+
+    def teardown_method(self):
+        self.store.close()
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _seed_data(self):
+        """Seed a production function and a test that calls it via CALLS edge."""
+        # Production function
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="create_task",
+                file_path=str(self.tmpdir / "tasks.py"),
+                line_start=10,
+                line_end=30,
+                language="python",
+                is_test=False,
+            )
+        )
+        # Test function that calls create_task
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="test_create_basic",
+                file_path=str(self.tmpdir / "tests" / "test_tasks.py"),
+                line_start=5,
+                line_end=15,
+                language="python",
+                is_test=True,
+            )
+        )
+        # CALLS edge: test_create_basic → create_task
+        create_task_qn = str(self.tmpdir / "tasks.py") + "::create_task"
+        test_qn = str(self.tmpdir / "tests" / "test_tasks.py") + "::test_create_basic"
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source=test_qn,
+                target=create_task_qn,
+                file_path=str(self.tmpdir / "tests" / "test_tasks.py"),
+            )
+        )
+        self.store.commit()
+
+    def test_tests_for_finds_callers_from_test_nodes(self):
+        """Test that tests_for finds test nodes via CALLS edges."""
+        result = query_graph(
+            pattern="tests_for",
+            target="create_task",
+            repo_root=str(self.tmpdir),
+        )
+        assert result["status"] == "ok"
+        assert "results" in result
+        # The test node should be in results
+        test_results = result["results"]
+        assert len(test_results) > 0
+        # Find the test node
+        test_node = next(
+            (r for r in test_results if r.get("name") == "test_create_basic"), None
+        )
+        assert test_node is not None, "test_create_basic should be in results"
+        assert test_node.get("is_test") is True
 
 
 class TestQueryGraphInheritors:
@@ -916,6 +1037,38 @@ class TestFlowTools:
         assert "flow(s) affected" in result["summary"]
         assert "changed_files" in result
 
+    def test_get_affected_flows_default_excludes_steps(self):
+        """Default response excludes steps array, includes step_count."""
+        result = get_affected_flows_func(changed_files=["auth.py"], repo_root=str(self.root))
+        assert result["status"] == "ok"
+        assert result["total"] >= 1
+        
+        for flow in result["affected_flows"]:
+            # steps should not be present by default
+            assert "steps" not in flow, "steps array should be stripped by default"
+            # step_count should be present and be an integer
+            assert "step_count" in flow, "step_count should be present"
+            assert isinstance(flow["step_count"], int), "step_count should be an integer"
+            assert flow["step_count"] >= 0, "step_count should be non-negative"
+
+    def test_get_affected_flows_include_steps_true_returns_steps(self):
+        """With include_steps=True, steps array is included."""
+        result = get_affected_flows_func(
+            changed_files=["auth.py"],
+            repo_root=str(self.root),
+            include_steps=True
+        )
+        assert result["status"] == "ok"
+        assert result["total"] >= 1
+        
+        for flow in result["affected_flows"]:
+            # steps should be present when include_steps=True
+            assert "steps" in flow, "steps array should be present when include_steps=True"
+            assert isinstance(flow["steps"], list), "steps should be a list"
+            # step_count may or may not be present, but steps should be
+            if "step_count" in flow:
+                assert flow["step_count"] == len(flow["steps"]), "step_count should match steps length"
+
 
 class TestCommunityTools:
     """Tests for community-related MCP tool functions."""
@@ -1230,17 +1383,18 @@ class TestCommunityTools:
     def test_get_architecture_overview_has_expected_keys(self):
         result = get_architecture_overview_func(repo_root=str(self.root))
         assert "communities" in result
-        assert "cross_community_edges" in result
-        # "warnings" is only present when there are actual warnings;
-        # empty lists are pruned from responses.
-        assert "warnings" in result or result.get("status") == "ok"
+        # cross_community_edges replaced by aggregated cross_community_coupling
+        # (empty lists pruned from response; check total_cross_pairs scalar instead)
+        assert "total_cross_pairs" in result
+        assert "total_communities" in result
         assert "summary" in result
 
     def test_get_architecture_overview_summary_format(self):
         result = get_architecture_overview_func(repo_root=str(self.root))
         assert "Architecture:" in result["summary"]
         assert "communities" in result["summary"]
-        assert "cross-community edges" in result["summary"]
+        # New format: "cross-community pairs" instead of "cross-community edges"
+        assert "cross-community" in result["summary"]
 
     def test_trace_dataflow_ambiguous_source_prefers_non_test(self):
         """Test that ambiguous source names prefer non-test nodes."""

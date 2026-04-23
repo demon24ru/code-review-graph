@@ -253,7 +253,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `build_or_update_graph_tool` | Build or incrementally update the graph |
 | `get_impact_radius_tool` | Blast radius of changed files |
 | `get_review_context_tool` | Token-optimised review context with structural summary |
-| `query_graph_tool` | Callers, callees, tests, imports, inheritance queries |
+| `query_graph_tool` | Callers, callees, tests, imports, inheritance queries. `callees_of` separates internal vs external/stdlib callees via `_external_callees`. `tests_for` unions TESTED_BY + CALLS from test nodes |
 | `semantic_search_nodes_tool` | Search code entities by name or meaning |
 | `embed_graph_tool` | Compute vector embeddings for semantic search |
 | `list_graph_stats_tool` | Graph size and health |
@@ -262,10 +262,10 @@ Your AI assistant uses these automatically once the graph is built.
 | `find_large_functions_tool` | Find functions/classes exceeding a line-count threshold; summary tip when kind=None mixes File/Class/Function nodes |
 | `list_flows_tool` | List execution flows sorted by criticality; `is_test` filter to hide test flows; `total_count` in response |
 | `get_flow_tool` | Get details of a single execution flow |
-| `get_affected_flows_tool` | Find flows affected by changed files |
+| `get_affected_flows_tool` | Find flows affected by changed files. Default returns `step_count` per flow (compact). Use `include_steps=True` for full call chains |
 | `list_communities_tool` | List detected code communities |
 | `get_community_tool` | Get details of a single community; `include_members=False` hides QN list (only `member_count` scalar returned); `include_members=True` adds full `member_details` |
-| `get_architecture_overview_tool` | Architecture overview from community structure |
+| `get_architecture_overview_tool` | Architecture overview — compact community summaries (`member_count` scalar) + aggregated `cross_community_coupling` pairs. CONTAINS edges excluded from coupling |
 | `detect_changes_tool` | Risk-scored change impact analysis for code review |
 | `refactor_tool` | Rename preview, dead code detection, suggestions |
 | `apply_refactor_tool` | Apply a previously previewed refactoring |

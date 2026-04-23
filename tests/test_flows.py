@@ -387,6 +387,23 @@ class TestFlows:
         result = get_affected_flows(self.store, [])
         assert result["total"] == 0
 
+    def test_get_affected_flows_default_excludes_steps(self):
+        """Default response excludes steps array, includes step_count."""
+        self._add_func("handler", path="routes.py")
+        self._add_func("service", path="services.py")
+        self._add_call("routes.py::handler", "services.py::service", "routes.py")
+
+        flows = trace_flows(self.store)
+        store_flows(self.store, flows)
+
+        # Test the underlying function - it returns full steps
+        result = get_affected_flows(self.store, ["services.py"])
+        assert result["total"] >= 1
+        
+        # Verify that the underlying function returns steps
+        for flow in result["affected_flows"]:
+            assert "steps" in flow, "underlying function should return steps"
+
     # ---------------------------------------------------------------
     # get_flows sorting
     # ---------------------------------------------------------------

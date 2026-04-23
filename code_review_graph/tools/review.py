@@ -214,6 +214,7 @@ def get_affected_flows_func(
     changed_files: list[str] | None = None,
     base: str = "HEAD~1",
     repo_root: str | None = None,
+    include_steps: bool = False,
 ) -> dict[str, Any]:
     """Find execution flows affected by changed files.
 
@@ -226,9 +227,13 @@ def get_affected_flows_func(
                        Auto-detected from git diff if omitted.
         base: Git ref for auto-detecting changes (default: HEAD~1).
         repo_root: Repository root path. Auto-detected if omitted.
+        include_steps: If True, include full step arrays for each flow.
+                       Default False returns only flow metadata + step_count.
+                       Use get_flow_tool(flow_id) for step details of a specific flow.
 
     Returns:
-        Affected flows sorted by criticality, with step details.
+        Affected flows sorted by criticality. By default includes only metadata
+        + step_count. With include_steps=True, includes full step arrays.
     """
     store, root = _get_store(repo_root)
     try:
@@ -250,11 +255,22 @@ def get_affected_flows_func(
         result = _get_affected_flows(store, abs_files)
 
         total = result["total"]
+        flows = result["affected_flows"]
+        
+        # Strip step arrays if not requested — return only metadata + step_count
+        if not include_steps:
+            compact_flows = []
+            for f in flows:
+                cf = {k: v for k, v in f.items() if k != "steps"}
+                cf["step_count"] = len(f.get("steps", []))
+                compact_flows.append(cf)
+            flows = compact_flows
+        
         out = {
             "status": "ok",
             "summary": (f"{total} flow(s) affected by changes in {len(changed_files)} file(s)"),
             "changed_files": changed_files,
-            "affected_flows": result["affected_flows"],
+            "affected_flows": flows,
             "total": total,
         }
         out["_hints"] = generate_hints("get_affected_flows", out, get_session())

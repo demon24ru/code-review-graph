@@ -159,7 +159,7 @@ def query_graph_tool(
 
     Available patterns:
     - callers_of: Find functions that call the target
-    - callees_of: Find functions called by the target
+    - callees_of: Find functions called by the target. Results include internal callees (in graph) plus an `_external_callees` list for stdlib/builtin calls not indexed in the graph.
     - imports_of: Find what the target imports
     - importers_of: Find files that import the target
     - children_of: Find nodes contained in a file or class
@@ -424,6 +424,7 @@ def get_affected_flows_tool(
     changed_files: Optional[list[str]] = None,
     base: str = "HEAD~1",
     repo_root: Optional[str] = None,
+    include_steps: bool = False,
 ) -> dict:
     """Find execution flows affected by changed files.
 
@@ -435,11 +436,13 @@ def get_affected_flows_tool(
         changed_files: List of changed file paths (relative to repo root). Auto-detected if omitted.
         base: Git ref for auto-detecting changes. Default: HEAD~1.
         repo_root: Repository root path. Auto-detected if omitted.
+        include_steps: If True, include full step arrays for each flow. Default False.
     """
     return get_affected_flows_func(
         changed_files=changed_files,
         base=base,
         repo_root=repo_root,
+        include_steps=include_steps,
     )
 
 
@@ -503,8 +506,10 @@ def get_architecture_overview_tool(
     """Generate an architecture overview based on community structure.
 
     Builds a high-level view of the codebase architecture by analyzing
-    community boundaries and cross-community coupling. Includes warnings
-    for high coupling between communities.
+    community boundaries and cross-community coupling. Returns compact
+    community summaries (no member lists) and aggregated cross-community
+    coupling counts instead of individual edges. Includes warnings for
+    high coupling between communities.
 
     Args:
         repo_root: Repository root path. Auto-detected if omitted.

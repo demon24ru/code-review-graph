@@ -428,3 +428,85 @@ class TestGetCommunity:
         # Should return not_found status
         assert result["status"] == "not_found"
         assert "No community found" in result["summary"]
+
+    def _seed_two_clusters(self):
+        """Seed two distinct clusters: auth (auth.py) and db (db.py) with a cross-cluster edge."""
+        from code_review_graph.parser import EdgeInfo, NodeInfo
+        # Auth cluster
+        self.store.upsert_node(NodeInfo(kind="File", name="auth.py", file_path="auth.py", line_start=1, line_end=100, language="python"), file_hash="a1")
+        self.store.upsert_node(NodeInfo(kind="Function", name="login", file_path="auth.py", line_start=5, line_end=20, language="python"), file_hash="a1")
+        self.store.upsert_node(NodeInfo(kind="Function", name="logout", file_path="auth.py", line_start=25, line_end=40, language="python"), file_hash="a1")
+        self.store.upsert_node(NodeInfo(kind="Function", name="check_token", file_path="auth.py", line_start=45, line_end=60, language="python"), file_hash="a1")
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="auth.py::login", target="auth.py::check_token", file_path="auth.py", line=10))
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="auth.py::logout", target="auth.py::check_token", file_path="auth.py", line=30))
+        # DB cluster
+        self.store.upsert_node(NodeInfo(kind="File", name="db.py", file_path="db.py", line_start=1, line_end=100, language="python"), file_hash="b1")
+        self.store.upsert_node(NodeInfo(kind="Function", name="connect", file_path="db.py", line_start=5, line_end=20, language="python"), file_hash="b1")
+        self.store.upsert_node(NodeInfo(kind="Function", name="query", file_path="db.py", line_start=25, line_end=40, language="python"), file_hash="b1")
+        self.store.upsert_node(NodeInfo(kind="Function", name="close", file_path="db.py", line_start=45, line_end=60, language="python"), file_hash="b1")
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="db.py::query", target="db.py::connect", file_path="db.py", line=30))
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="db.py::close", target="db.py::connect", file_path="db.py", line=50))
+        # Cross-cluster edge: login calls db.connect
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="auth.py::login", target="db.py::connect", file_path="auth.py", line=15))
+        self.store.commit()
+
+    def test_overview_communities_no_members(self):
+        """Architecture overview communities have member_count but no members/member_qns."""
+        from code_review_graph.tools.community_tools import get_architecture_overview_func
+
+        self._seed_two_clusters()
+        communities = detect_communities(self.store, min_size=2)
+        store_communities(self.store, communities)
+
+        result = get_architecture_overview_func(repo_root=self.repo_root)
+
+        assert result["status"] == "ok"
+        assert "communities" in result
+        communities_list = result["communities"]
+        assert isinstance(communities_list, list)
+        assert len(communities_list) > 0
+
+        # Each community should have member_count but NOT members or member_qns
+        for comm in communities_list:
+            assert "member_count" in comm
+            assert isinstance(comm["member_count"], int)
+            assert "members" not in comm
+            assert "member_qns" not in comm
+            # Verify lightweight fields are present
+            assert "id" in comm
+            assert "name" in comm
+            assert "size" in comm
+            assert "cohesion" in comm
+            assert "dominant_language" in comm
+
+    def test_overview_has_cross_community_coupling(self):
+        """Architecture overview has cross_community_coupling (aggregated pairs) not individual edges."""
+        from code_review_graph.tools.community_tools import get_architecture_overview_func
+
+        self._seed_two_clusters()
+        communities = detect_communities(self.store, min_size=2)
+        store_communities(self.store, communities)
+
+        result = get_architecture_overview_func(repo_root=self.repo_root)
+
+        assert result["status"] == "ok"
+        # Should NOT have individual cross_community_edges
+        assert "cross_community_edges" not in result
+        # Should have scalar total_cross_pairs (always present even if 0)
+        assert "total_cross_pairs" in result
+        assert isinstance(result["total_cross_pairs"], int)
+        # With cross-cluster edge seeded, there should be at least 1 pair
+        assert result["total_cross_pairs"] >= 1
+
+        # cross_community_coupling is present when non-empty (pruned if empty)
+        coupling = result.get("cross_community_coupling", [])
+        assert isinstance(coupling, list)
+        assert len(coupling) >= 1
+
+        # Each coupling item should have communities (string) and edge_count (int)
+        for item in coupling:
+            assert "communities" in item
+            assert "edge_count" in item
+            assert isinstance(item["communities"], str)
+            assert isinstance(item["edge_count"], int)
+            assert " <-> " in item["communities"]  # Bidirectional pair format

@@ -262,6 +262,14 @@ def analyze_changes(
 
     # Affected flows.
     affected = get_affected_flows(store, changed_files)
+    
+    # Strip step arrays from affected flows — return only metadata + step_count
+    compact_flows = []
+    for f in affected.get("affected_flows", []):
+        cf = {k: v for k, v in f.items() if k != "steps"}
+        cf["step_count"] = len(f.get("steps", []))
+        compact_flows.append(cf)
+    affected["affected_flows"] = compact_flows
 
     # Detect test gaps: changed functions without TESTED_BY edges.
     test_gaps: list[dict[str, Any]] = []
