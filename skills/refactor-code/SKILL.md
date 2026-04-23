@@ -68,8 +68,9 @@ apply_refactor_tool(refactor_id="ref_abc123")
 
 After applying:
 ```
-build_or_update_graph_tool()    # update graph to reflect rename
-detect_changes_tool()           # verify impact
+build_or_update_graph_tool()                   # update graph to reflect rename
+detect_changes_tool(summary_only=True)         # quick impact check (counts only)
+detect_changes_tool()                          # full impact if needed
 ```
 
 ## Find Large Functions (Decomposition Targets)
@@ -104,7 +105,7 @@ import_scip_tool(scip_path=".code-review-graph/export.scip.json")
 ## Safety Checklist Before Any Refactor
 
 1. `audit_workspace_tool()` — understand current health
-2. `get_impact_radius_tool()` — blast radius of target area
+2. `get_impact_radius_tool(summary_only=True)` — gauge blast radius (counts); omit `summary_only` for full details
 3. `query_graph_tool(pattern="tests_for", target=name)` — test coverage
 4. `refactor_tool(mode="rename", ...)` — preview all changes
 5. Review edit list — confirm no unintended replacements

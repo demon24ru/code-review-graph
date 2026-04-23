@@ -21,6 +21,7 @@ Perform a comprehensive code review of a pull request or branch diff using the k
 3. **Get the full review context** by calling `get_review_context_tool(base="main")`:
    - This uses `main` (or the specified base branch) as the diff base
    - Returns all changed files across all commits in the PR
+   - On large PRs, call with `summary_only=True` first to gauge scope before loading full node arrays
 
 4. **Analyze impact** by calling `get_impact_radius_tool(base="main")`:
    - Review the blast radius across the entire PR

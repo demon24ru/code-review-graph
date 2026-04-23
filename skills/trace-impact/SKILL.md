@@ -61,11 +61,13 @@ trace_dataflow_tool(source="hybrid_search")
 
 ```
 get_impact_radius_tool(changed_files=["code_review_graph/tasks.py"])
-get_impact_radius_tool(base="HEAD~1")     # auto-detect from git diff
-get_impact_radius_tool(max_depth=3)       # deeper traversal
+get_impact_radius_tool(base="HEAD~1")                  # auto-detect from git diff
+get_impact_radius_tool(max_depth=3)                    # deeper traversal
+get_impact_radius_tool(summary_only=True)              # counts only (<1 KB) — start here on large repos
 ```
 
 Returns: affected files, affected functions, impacted communities.
+Use `summary_only=True` first to gauge scale, then omit it to get full node/edge details.
 
 ## Multi-Repository Cross-Search
 
@@ -102,8 +104,9 @@ Returns: which execution flows (entry point → end) pass through the changed co
 ```
 # Full pre-edit workflow for code_review_graph/tasks.py lines 200-250:
 
-# 1. Line-level precision
-analyze_edit_region_tool("code_review_graph/tasks.py", 200, 250)
+# 1. Line-level precision (summary first, then full if needed)
+analyze_edit_region_tool("code_review_graph/tasks.py", 200, 250, summary_only=True)
+analyze_edit_region_tool("code_review_graph/tasks.py", 200, 250)  # full details
 
 # 2. File-level blast radius
 get_impact_radius_tool(changed_files=["code_review_graph/tasks.py"])

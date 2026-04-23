@@ -251,8 +251,8 @@ Your AI assistant uses these automatically once the graph is built.
 | Tool | Description |
 |------|-------------|
 | `build_or_update_graph_tool` | Build or incrementally update the graph |
-| `get_impact_radius_tool` | Blast radius of changed files |
-| `get_review_context_tool` | Token-optimised review context with structural summary |
+| `get_impact_radius_tool` | Blast radius of changed files. `summary_only=True` returns counts only (<1 KB) |
+| `get_review_context_tool` | Token-optimised review context with structural summary. `summary_only=True` returns counts only (<1 KB) |
 | `query_graph_tool` | Callers, callees, tests, imports, inheritance queries. `callees_of` separates internal vs external/stdlib callees via `_external_callees`. `tests_for` unions TESTED_BY + CALLS from test nodes |
 | `semantic_search_nodes_tool` | Search code entities by name or meaning |
 | `embed_graph_tool` | Compute vector embeddings for semantic search |
@@ -266,14 +266,14 @@ Your AI assistant uses these automatically once the graph is built.
 | `list_communities_tool` | List detected code communities |
 | `get_community_tool` | Get details of a single community; `include_members=False` hides QN list (only `member_count` scalar returned); `include_members=True` adds full `member_details` |
 | `get_architecture_overview_tool` | Architecture overview — compact community summaries (`member_count` scalar) + aggregated `cross_community_coupling` pairs. CONTAINS edges excluded from coupling |
-| `detect_changes_tool` | Risk-scored change impact analysis for code review |
+| `detect_changes_tool` | Risk-scored change impact analysis for code review. `summary_only=True` returns counts only (<1 KB) |
 | `refactor_tool` | Rename preview, dead code detection, suggestions |
 | `apply_refactor_tool` | Apply a previously previewed refactoring |
 | `generate_wiki_tool` | Generate markdown wiki from communities |
 | `get_wiki_page_tool` | Retrieve a specific wiki page |
 | `list_repos_tool` | List registered repositories |
 | `cross_repo_search_tool` | Search across all registered repositories |
-| `analyze_edit_region_tool` | Blast radius of a specific line range in a file |
+| `analyze_edit_region_tool` | Blast radius of a specific line range in a file. `summary_only=True` returns counts only (<1 KB) |
 | `audit_workspace_tool` | Consolidated dead code + large functions + cycle audit |
 | `trace_dataflow_tool` | Forward BFS data-flow tracing from source to sink |
 | `export_scip_tool` | Export graph to SCIP-compatible JSON |
