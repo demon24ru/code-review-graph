@@ -301,8 +301,8 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_archive` | Archive tasks — batch list API: `task_ids=[...]`. `dry_run=True` previews `would_archive` list. Response includes `reason` as a top-level field |
 | `task_add_edge` | Add edges between tasks — batch list API: `edges=[{source_id, target_id, edge_type?}]` |
 | `task_remove_edge` | Remove an edge between tasks |
-| `task_get_dag` | Full DAG for a subtree (nodes + all edges). `compact=True` returns only `{id, title, status, depth, parent_id}`. All nodes include `depth` field |
-| `task_topological_sort` | Topological order of leaf tasks by depends_on |
+| `task_get_dag` | Full DAG for a subtree (nodes + all edges). `compact=True` returns only `{id, title, status, depth, parent_id}`. All nodes include `depth` field. Nodes ordered by depth then `created_at` |
+| `task_topological_sort` | Topological order of leaf tasks by depends_on. Each task includes `topo_order` (1-based). Prefer `task_execution_order` for parallel scheduling |
 | `task_link_code` | Link a task to code nodes — batch list API: `links=[{ref_type, code_node_id\|qualified_name}]` |
 | `task_unlink_code` | Remove code node association |
 | `task_get_code_refs` | Get code nodes linked to a task |
@@ -313,7 +313,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_blast_radius` | BFS impact from task's code refs. Returns `affected_nodes_count` + full `uncovered_nodes`. Use `include_affected_nodes=True` for full list. Returns `status: not_applicable` if no code refs |
 | `task_execution_order` | Parallelism-aware execution levels from depends_on |
 | `task_validate` | Gate-check: 8 algorithmic checks before coder handoff |
-| `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts; `pipeline_state.summary` explains all blockers (questions, assumptions, contracts) |
+| `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts; `pipeline_state.summary` explains all blockers; `subtask_code_refs_summary` rollup for mid-level tasks |
 | `note_add` | Add notes to a task — batch list API: `notes=[{note_type, content, status?, resolution?}]` |
 | `note_update` | Resolve or update a note |
 | `note_list` | List notes (with optional ancestor chain) |

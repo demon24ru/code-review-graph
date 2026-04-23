@@ -1176,6 +1176,66 @@ class TestAutoDetectRoot(TestAnalysisBase):
          assert result["pipeline_state"]["summary"] == "Ready for handoff"
          assert result["pipeline_state"]["ready_for_coder"] is True
 
+    def test_export_task_with_subtasks_has_code_refs_summary(self):
+         """export_task(root) includes subtask_code_refs_summary when root has leaf subtasks."""
+         # Create root → 2 leaf subtasks
+         root = tasks.create_task(self.conn, "Root Task")
+         leaf1 = tasks.create_task(self.conn, "Leaf 1", parent_id=root["id"])
+         leaf2 = tasks.create_task(self.conn, "Leaf 2", parent_id=root["id"])
+         
+         # Add code nodes to the graph
+         node1_id = self.store.upsert_node(NodeInfo(
+             kind="Function", name="func1", file_path="src/a.py",
+             line_start=1, line_end=10, language="python"
+         ))
+         node2_id = self.store.upsert_node(NodeInfo(
+             kind="Function", name="func2", file_path="src/b.py",
+             line_start=1, line_end=10, language="python"
+         ))
+         node3_id = self.store.upsert_node(NodeInfo(
+             kind="Function", name="func3", file_path="src/c.py",
+             line_start=1, line_end=10, language="python"
+         ))
+         self.store.commit()
+         
+         # Link code refs to leaves
+         tasks.link_task_code(self.conn, leaf1["id"], [
+             {"ref_type": "modifies", "code_node_id": node1_id},
+             {"ref_type": "modifies", "code_node_id": node2_id},
+         ])
+         tasks.link_task_code(self.conn, leaf2["id"], [
+             {"ref_type": "modifies", "code_node_id": node2_id},  # shared with leaf1
+             {"ref_type": "modifies", "code_node_id": node3_id},
+         ])
+         
+         # Export root
+         result = task_analysis.export_task(self.conn, root["id"])
+         
+         # Check subtask_code_refs_summary
+         assert "subtask_code_refs_summary" in result
+         summary = result["subtask_code_refs_summary"]
+         assert summary["leaf_task_count"] == 2
+         assert summary["total_unique_code_nodes"] == 3  # node1, node2, node3
+         assert summary["tasks_with_code_refs"] == 2
+         assert summary["tasks_without_code_refs"] == 0
+         assert len(summary["per_task"]) == 2
+         assert summary["per_task"][0]["task_id"] == leaf1["id"]
+         assert summary["per_task"][0]["code_ref_count"] == 2
+         assert summary["per_task"][1]["task_id"] == leaf2["id"]
+         assert summary["per_task"][1]["code_ref_count"] == 2
+
+    def test_export_leaf_task_no_subtask_summary(self):
+         """export_task(leaf) returns empty subtask_code_refs_summary."""
+         root = tasks.create_task(self.conn, "Root")
+         leaf = tasks.create_task(self.conn, "Leaf", parent_id=root["id"])
+         
+         # Export the leaf task
+         result = task_analysis.export_task(self.conn, leaf["id"])
+         
+         # Leaf has no subtasks, so summary should be empty dict
+         assert "subtask_code_refs_summary" in result
+         assert result["subtask_code_refs_summary"] == {}
+
 
 # ---------------------------------------------------------------------------
 # Fix 1: _resolve_code_node — double-backslash and single-backslash Windows paths

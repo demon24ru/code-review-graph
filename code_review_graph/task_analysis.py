@@ -869,6 +869,48 @@ def export_task(
         sub["edges"] = get_task_edges(conn, sub["id"], "both")
         subtasks.append(sub)
 
+    # Subtask code refs rollup — collect from all leaf descendants
+    subtask_code_refs_summary: dict[str, Any] = {}
+    if subtasks:
+        subtree_ids = _collect_subtree_ids(conn, task_id)
+        leaf_ids_in_subtree = []
+        if len(subtree_ids) > 1:  # has descendants
+            all_parents = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT parent_id FROM tasks WHERE parent_id IS NOT NULL AND parent_id IN ({})".format(
+                        ", ".join("?" * len(subtree_ids))
+                    ),
+                    subtree_ids,
+                ).fetchall()
+            }
+            leaf_ids_in_subtree = [tid for tid in subtree_ids if tid not in all_parents and tid != task_id]
+
+        if leaf_ids_in_subtree:
+            # Count unique code nodes across all leaf tasks
+            all_leaf_node_ids: set[int] = set()
+            leaf_refs_by_task: list[dict[str, Any]] = []
+            for leaf_id in leaf_ids_in_subtree:
+                try:
+                    leaf_task = get_task(conn, leaf_id)
+                    refs = get_task_code_refs(conn, leaf_id)
+                    if refs:
+                        leaf_refs_by_task.append({
+                            "task_id": leaf_id,
+                            "task_title": leaf_task.get("title"),
+                            "code_ref_count": len(refs),
+                        })
+                        all_leaf_node_ids.update(r.get("code_node_id") for r in refs if r.get("code_node_id"))
+                except (KeyError, Exception):
+                    pass
+            subtask_code_refs_summary = {
+                "leaf_task_count": len(leaf_ids_in_subtree),
+                "total_unique_code_nodes": len(all_leaf_node_ids),
+                "tasks_with_code_refs": len(leaf_refs_by_task),
+                "tasks_without_code_refs": len(leaf_ids_in_subtree) - len(leaf_refs_by_task),
+                "per_task": leaf_refs_by_task,
+            }
+
     # Edges: both incoming and outgoing
     edges_raw = get_task_edges(conn, task_id, "both")
     edges = {
@@ -941,6 +983,7 @@ def export_task(
             "unverified_assumptions": unverified_assumptions,
             "pending_contracts": pending_contracts,
         },
+        "subtask_code_refs_summary": subtask_code_refs_summary,
     }
 
     if include_analysis:

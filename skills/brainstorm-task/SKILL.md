@@ -99,7 +99,7 @@ Target **3–8 code nodes per leaf task**:
 **Code links only on leaf tasks.** Parent/mid-level tasks are grouping containers — no direct code refs (task_validate warns if violated).
 
 **Handoff levels:**
-- Designer → `task_export(mid_task_id)` — sees all leaf subtasks, contracts, notes
+- Designer → `task_export(mid_task_id)` — sees all leaf subtasks, contracts, notes, plus `subtask_code_refs_summary` (rollup: how many unique code nodes all leaves collectively touch, which leaves have no code refs yet)
 - Coder → `task_export(leaf_task_id)` — sees exact nodes, line ranges, acceptance criteria
 
 ### Finding nodes

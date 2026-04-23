@@ -96,6 +96,14 @@ def import_scip_func(
                 "semantic_search_nodes_tool",
                 "query_graph_tool",
             ]
+            # Community detection, FTS index, flow data, and embeddings are NOT
+            # part of the SCIP format — only nodes and edges are imported.
+            result["warning"] = (
+                "SCIP import restores nodes and edges only. "
+                "Community detection, FTS search index, execution flows, and "
+                "vector embeddings are NOT included. Run `code-review-graph build` "
+                "(or rebuild via MCP) to refresh all derived data."
+            )
         return result
     except Exception as exc:
         logger.exception("import_scip_func failed")

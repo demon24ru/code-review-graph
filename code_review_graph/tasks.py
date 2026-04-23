@@ -1122,6 +1122,9 @@ def get_task_dag(
             d["depth"] = depth_map.get(r["id"], 0)
             node_list.append(d)
 
+    # Sort nodes: depth first (BFS order), then created_at for stable tie-breaking
+    node_list.sort(key=lambda n: (n.get("depth", 0), n.get("created_at", "") or ""))
+
     return {
         "nodes": node_list,
         "edges": [_row_to_dict(r) for r in edges] + hierarchy_edges,
@@ -1137,7 +1140,12 @@ def topological_sort_tasks(
     Only *depends_on* edges are considered for ordering.
     Raises *ValueError* if a dependency cycle is detected.
 
-    Returns tasks in topological order (dependencies first).
+    Returns tasks in topological order (dependencies first). Each task
+    includes a ``topo_order`` field (1-based index in sort order).
+
+    Note: prefer ``execution_order`` / ``task_execution_order`` for parallel
+    scheduling — it groups tasks into executable levels, which is strictly more
+    useful than a flat ordered list.
     """
     get_task(conn, root_task_id)
     subtree_ids = set(_collect_subtree_ids(conn, root_task_id))
@@ -1204,7 +1212,13 @@ def topological_sort_tasks(
     for r in rows:
         id_to_row[r["id"]] = _row_to_dict(r)
 
-    return [id_to_row[tid] for tid in sorted_ids if tid in id_to_row]
+    result = []
+    for i, tid in enumerate(sorted_ids, 1):
+        if tid in id_to_row:
+            task = id_to_row[tid].copy()
+            task["topo_order"] = i  # 1-based position in topological order
+            result.append(task)
+    return result
 
 
 # ---------------------------------------------------------------------------
