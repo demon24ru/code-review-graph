@@ -362,6 +362,7 @@ def list_flows_tool(
     sort_by: str = "criticality",
     limit: int = 50,
     kind: Optional[str] = None,
+    is_test: Optional[bool] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
     """List execution flows in the codebase, sorted by criticality.
@@ -374,6 +375,9 @@ def list_flows_tool(
         sort_by: Sort column: criticality, depth, node_count, file_count, or name.
         limit: Maximum flows to return. Default: 50.
         kind: Optional filter by entry point kind (e.g. "Test", "Function").
+        is_test: Filter by test status. True=only test flows, False=only
+                 production flows (excludes Test-kind entry points).
+                 Default None shows all.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return list_flows(
@@ -381,6 +385,7 @@ def list_flows_tool(
         sort_by=sort_by,
         limit=limit,
         kind=kind,
+        is_test=is_test,
     )
 
 
@@ -1319,16 +1324,21 @@ def task_find_by_code_node(
 def task_suggest_code_links(
     task_id: str,
     repo_root: Optional[str] = None,
+    limit: int = 20,
 ) -> dict:
     """Suggest code nodes to link to a task based on keyword extraction.
 
-    [BRAINSTORM] Does NOT create links — returns candidates for review.
+    [BRAINSTORM] Extracts keywords from task title and description, searches
+    the code graph, and returns ranked candidates. Already-linked nodes are
+    excluded. Results scored by keyword match count. Does NOT create links —
+    returns candidates for review.
 
     Args:
         task_id: Task ID.
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of results to return (default 20).
     """
-    return task_suggest_code_links_func(task_id=task_id, repo_root=repo_root)
+    return task_suggest_code_links_func(task_id=task_id, repo_root=repo_root, limit=limit)
 
 
 # --- Analysis (4) ---

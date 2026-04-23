@@ -1811,3 +1811,53 @@ class TestSemanticSearchDisambiguation:
         assert len(non_test) == 3, f"Expected 3 non-test (Function), got {len(non_test)}"
         test_nodes = [r for r in exact_matches if r.get("kind") == "Test"]
         assert len(test_nodes) == 2, f"Expected 2 test (Test kind), got {len(test_nodes)}"
+
+
+class TestListGraphStats:
+    """Tests for list_graph_stats_tool."""
+
+    def setup_method(self):
+        import shutil
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        # Create .code-review-graph directory to make it a valid project root
+        (self.root / ".code-review-graph").mkdir(parents=True, exist_ok=True)
+        self.db_path = self.root / ".code-review-graph" / "graph.db"
+        self.store = GraphStore(str(self.db_path))
+
+    def teardown_method(self):
+        import shutil
+        self.store.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_stats_warns_when_no_embeddings(self):
+        """When emb_count=0 and embeddings available, result has warnings."""
+        from code_review_graph.tools.query import list_graph_stats
+
+        # Seed a simple node so graph is not empty
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File",
+                name="/repo/test.py",
+                file_path="/repo/test.py",
+                line_start=1,
+                line_end=10,
+                language="python",
+            )
+        )
+
+        # Close the store to release the database lock
+        self.store.close()
+
+        result = list_graph_stats(repo_root=str(self.root))
+
+        # Check that warnings key exists and contains NO_EMBEDDINGS
+        assert "warnings" in result, "Result should have 'warnings' key when embeddings are 0"
+        assert len(result["warnings"]) > 0, "Should have at least one warning"
+        assert result["warnings"][0]["code"] == "NO_EMBEDDINGS"
+        assert "embed_graph_tool" in result["warnings"][0]["message"]
+        assert result["warnings"][0]["next_step"] == "embed_graph_tool"
+
+        # Check that summary contains the warning hint
+        assert "⚠️" in result["summary"], "Summary should contain warning emoji"
+        assert "embed_graph_tool" in result["summary"]

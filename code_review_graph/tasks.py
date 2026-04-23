@@ -55,7 +55,8 @@ _EDITABLE_TEXT_FIELDS = frozenset({"description", "spec", "acceptance_criteria"}
 
 
 def _now() -> float:
-    return time.time()
+    # Use time.time_ns() for higher precision to ensure unique timestamps in batch operations
+    return time.time_ns() / 1e9
 
 
 def _new_id() -> str:
@@ -192,12 +193,15 @@ def create_task(
                 "Close or archive the current root task before starting a new one."
             )
 
-    now = _now()
     created_ids: list[str] = []
-    for item in tasks:
+    for i, item in enumerate(tasks):
         title = item.get("title")
         description = item.get("description")
         task_id = _new_id()
+        now = _now()
+        # Add a tiny sleep to ensure unique timestamps for batch operations
+        if i < len(tasks) - 1:
+            time.sleep(0.000001)  # 1 microsecond
         conn.execute(
             """
             INSERT INTO tasks (id, parent_id, title, description, status, created_at, updated_at)
@@ -233,7 +237,7 @@ def create_task(
                         (source_task_id, target_task_id, type, description, created_at)
                     VALUES (?, ?, ?, ?, ?)
                     """,
-                    (src_id, tgt_id, etype, desc, now),
+                    (src_id, tgt_id, etype, desc, _now()),
                 )
                 created_edges.append(
                     {
@@ -1429,12 +1433,23 @@ def find_tasks_by_code_node(
 def suggest_code_links(
     conn: sqlite3.Connection,
     task_id: str,
+    limit: int = 20,
 ) -> list[dict[str, Any]]:
     """Suggest code nodes to link based on keyword extraction from the task.
 
     Extracts significant words from title and description, then runs a
     keyword search against the nodes table (name + qualified_name).
+    Results are scored by number of matching keywords and ranked descending.
+    Already-linked nodes are excluded.
     Returns candidate nodes — does NOT create any links automatically.
+
+    Args:
+        conn: Database connection.
+        task_id: Task ID to find suggestions for.
+        limit: Maximum number of results to return (default 20).
+
+    Returns:
+        List of candidate code node dicts, each with a 'match_score' field.
     """
     task = get_task(conn, task_id)
     text = " ".join(filter(None, [task.get("title"), task.get("description")]))
@@ -1442,7 +1457,16 @@ def suggest_code_links(
     if not keywords:
         return []
 
-    results: dict[int, dict[str, Any]] = {}
+    # Get already-linked node IDs to exclude them
+    existing_rows = conn.execute(
+        "SELECT code_node_id FROM task_code_refs WHERE task_id = ?", (task_id,)
+    ).fetchall()
+    already_linked: set[int] = {r["code_node_id"] for r in existing_rows}
+
+    # Score nodes by how many keywords they match
+    scores: dict[int, int] = {}
+    node_data: dict[int, dict[str, Any]] = {}
+
     for kw in keywords:
         pattern = f"%{kw}%"
         rows = conn.execute(
@@ -1451,15 +1475,26 @@ def suggest_code_links(
             FROM nodes
             WHERE name LIKE ? COLLATE NOCASE
                OR qualified_name LIKE ? COLLATE NOCASE
-            LIMIT 10
+            LIMIT 20
             """,
             (pattern, pattern),
         ).fetchall()
         for row in rows:
-            if row["id"] not in results:
-                results[row["id"]] = _row_to_dict(row)
+            node_id = row["id"]
+            if node_id in already_linked:
+                continue
+            scores[node_id] = scores.get(node_id, 0) + 1
+            if node_id not in node_data:
+                node_data[node_id] = _row_to_dict(row)
 
-    return list(results.values())
+    # Sort by score descending, take top `limit`
+    sorted_ids = sorted(scores, key=lambda nid: scores[nid], reverse=True)
+    result = []
+    for nid in sorted_ids[:limit]:
+        entry = node_data[nid].copy()
+        entry["match_score"] = scores[nid]
+        result.append(entry)
+    return result
 
 
 def _extract_keywords(text: str) -> list[str]:

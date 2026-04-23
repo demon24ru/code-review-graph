@@ -266,7 +266,16 @@ def analyze_changes(
     # Detect test gaps: changed functions without TESTED_BY edges.
     test_gaps: list[dict[str, Any]] = []
     for node in changed_funcs:
-        if node.is_test:
+        # Skip nodes that are themselves tests or come from test files.
+        # Test classes (kind="Class") have is_test=False but are still test code.
+        is_test_node = node.is_test or (
+            node.file_path and (
+                "/test_" in node.file_path.replace("\\", "/")
+                or "\\test_" in node.file_path
+                or node.file_path.endswith(("_test.py", "_test.ts", "_test.js"))
+            )
+        )
+        if is_test_node:
             continue
         tested = store.get_edges_by_target(node.qualified_name)
         if not any(e.kind == "TESTED_BY" for e in tested):

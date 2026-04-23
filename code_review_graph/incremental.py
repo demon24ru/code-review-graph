@@ -358,6 +358,32 @@ def run_post_build_hooks(store: GraphStore) -> dict:
     return results
 
 
+def _parse_single_file(
+    args: tuple[str, str],
+) -> tuple[str, list, list, Optional[str], str]:
+    """Parse a single file for parallel build use.
+
+    Args:
+        args: ``(rel_path, repo_root_str)`` tuple for pickling compatibility.
+
+    Returns:
+        ``(rel_path, nodes, edges, error_or_None, file_hash)``
+    """
+    rel_path, repo_root_str = args
+    repo_root = Path(repo_root_str)
+    full_path = repo_root / rel_path
+    try:
+        source = full_path.read_bytes()
+        fhash = hashlib.sha256(source).hexdigest()
+        parser = CodeParser()
+        nodes, edges = parser.parse_bytes(full_path, source)
+        return (rel_path, nodes, edges, None, fhash)
+    except (OSError, PermissionError) as e:
+        return (rel_path, [], [], str(e), "")
+    except Exception as e:  # noqa: BLE001
+        return (rel_path, [], [], str(e), "")
+
+
 def full_build(repo_root: Path, store: GraphStore) -> dict:
     """Full rebuild of the entire graph."""
     t0 = time.monotonic()

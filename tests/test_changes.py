@@ -450,6 +450,57 @@ class TestChanges:
     # detect_changes_func (integration)
     # ---------------------------------------------------------------
 
+    def test_test_class_not_in_test_gaps(self):
+        """Test classes in test_*.py files should NOT appear in test_gaps."""
+        from code_review_graph.changes import analyze_changes
+
+        # Add a test class in a test file
+        test_class_id = self.store.upsert_node(
+            NodeInfo(
+                kind="Class",
+                name="TestAnalysisBase",
+                file_path="tests/test_analysis.py",
+                line_start=5,
+                line_end=50,
+                language="python",
+                parent_name=None,
+                is_test=False,  # Test classes have is_test=False
+                extra={},
+            ),
+            file_hash="test_hash",
+        )
+        self.store.commit()
+
+        # Add a production function that is untested
+        prod_func_id = self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="analyze_data",
+                file_path="src/analysis.py",
+                line_start=10,
+                line_end=20,
+                language="python",
+                parent_name=None,
+                is_test=False,
+                extra={},
+            ),
+            file_hash="prod_hash",
+        )
+        self.store.commit()
+
+        # Run analyze_changes with both files changed
+        result = analyze_changes(
+            self.store,
+            changed_files=["tests/test_analysis.py", "src/analysis.py"],
+        )
+
+        # Test class should NOT be in test_gaps
+        test_gap_names = [gap["name"] for gap in result["test_gaps"]]
+        assert "TestAnalysisBase" not in test_gap_names
+
+        # Production function SHOULD be in test_gaps (no TESTED_BY edge)
+        assert "analyze_data" in test_gap_names
+
     def test_detect_changes_tool_no_changes(self):
         """detect_changes_func returns clean result when no changes detected."""
         from code_review_graph.tools import detect_changes_func

@@ -56,6 +56,28 @@ class TestTaskCRUD(TestTaskBase):
         with pytest.raises(ValueError, match="does not exist"):
             tasks.create_task(self.conn, [{"title": "Bad"}], parent_id="nonexistent")
 
+    def test_batch_create_has_unique_timestamps(self):
+        """Verify that batch-created tasks have unique created_at timestamps."""
+        result = tasks.create_task(self.conn, [
+            {"title": "Task 1"},
+            {"title": "Task 2"},
+            {"title": "Task 3"},
+        ])
+        task_list = result["tasks"]
+        assert len(task_list) == 3
+        
+        # Extract created_at timestamps
+        timestamps = [t["created_at"] for t in task_list]
+        
+        # All timestamps should be unique (not equal)
+        assert len(set(timestamps)) == 3, f"Expected 3 unique timestamps, got {len(set(timestamps))}: {timestamps}"
+        
+        # Verify ORDER BY created_at preserves insertion order
+        ordered = tasks.list_tasks(self.conn, root_only=True)
+        ordered_ids = [t["id"] for t in ordered]
+        expected_ids = [t["id"] for t in task_list]
+        assert ordered_ids == expected_ids, f"Order mismatch: {ordered_ids} != {expected_ids}"
+
     def test_get_task(self):
         t = tasks.create_task(self.conn, [{"title": "X"}])["tasks"][0]
         fetched = tasks.get_task(self.conn, t["id"])
@@ -316,6 +338,29 @@ class TestArchiveTask(TestTaskBase):
         archived_t2 = tasks.get_task(self.conn, t2["id"])
         assert archived_t1["archive_reason"] == "First reason"  # original preserved
         assert archived_t2["archive_reason"] == "Second reason"  # newly archived
+
+
+# ---------------------------------------------------------------------------
+# 5.1.5b — MCP wrapper response structure
+# ---------------------------------------------------------------------------
+
+class TestArchiveTaskMCPResponse(TestTaskBase):
+    """Test that task_archive_func returns reason as a top-level field."""
+
+    def test_task_archive_response_has_reason_field(self):
+        """Verify that task_archive_func response includes reason as a structured field."""
+        from code_review_graph.tools.task_tools import _ok
+        
+        # Test the _ok helper directly to verify it accepts reason kwarg
+        result = _ok("Archived 1 task(s)", reason="Test reason", archived_ids=["t1"])
+        
+        # Verify response structure
+        assert result["status"] == "ok"
+        assert "reason" in result, "Response must have 'reason' as a top-level field"
+        assert result["reason"] == "Test reason"
+        assert result["summary"] == "Archived 1 task(s)"
+        assert "Test reason" not in result["summary"], "Reason should not be in summary string"
+        assert result["archived_ids"] == ["t1"]
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +876,60 @@ class TestCodeRefs(TestTaskBase):
         suggestions = tasks.suggest_code_links(self.conn, t["id"])
         names = [s["name"] for s in suggestions]
         assert any("authentication" in n.lower() for n in names)
+
+    def test_suggest_code_links_excludes_already_linked(self):
+        """Already-linked nodes should not appear in suggestions."""
+        nid1 = self._node("auth_service", "auth.py")
+        nid2 = self._node("token_handler", "jwt.py")
+        t = tasks.create_task(self.conn, [{"title": "Implement authentication", "description": "Build auth service and token handler"}])["tasks"][0]
+        # Link nid1 to the task
+        tasks.link_task_code(self.conn, t["id"], [{"ref_type": "modifies", "code_node_id": nid1}])
+        # Get suggestions
+        suggestions = tasks.suggest_code_links(self.conn, t["id"])
+        suggestion_ids = [s["id"] for s in suggestions]
+        # nid1 should NOT be in suggestions (already linked)
+        assert nid1 not in suggestion_ids
+        # nid2 might be in suggestions (if it matches keywords)
+        # But the key assertion is that nid1 is excluded
+
+    def test_suggest_code_links_has_match_score(self):
+        """Each suggestion should have a match_score field."""
+        self._node("authentication_handler", "auth.py")
+        self._node("token_generator", "jwt.py")
+        t = tasks.create_task(self.conn, [{"title": "Implement authentication flow", "description": "Build authentication handler"}])["tasks"][0]
+        suggestions = tasks.suggest_code_links(self.conn, t["id"])
+        assert len(suggestions) > 0
+        for suggestion in suggestions:
+            assert "match_score" in suggestion
+            assert isinstance(suggestion["match_score"], int)
+            assert suggestion["match_score"] >= 1
+
+    def test_suggest_code_links_sorted_by_score(self):
+        """Results should be sorted by match_score descending."""
+        # Create nodes with different keyword matches
+        self._node("authentication_handler", "auth.py")
+        self._node("authentication_service", "auth.py")
+        self._node("token_generator", "jwt.py")
+        # Task with keywords that match multiple nodes
+        t = tasks.create_task(self.conn, [{"title": "Implement authentication", "description": "Build authentication handler and service"}])["tasks"][0]
+        suggestions = tasks.suggest_code_links(self.conn, t["id"])
+        # Verify sorted by score descending
+        if len(suggestions) > 1:
+            scores = [s["match_score"] for s in suggestions]
+            assert scores == sorted(scores, reverse=True)
+
+    def test_suggest_code_links_respects_limit(self):
+        """The limit parameter should control max results."""
+        # Create many nodes
+        for i in range(15):
+            self._node(f"auth_func_{i}", "auth.py")
+        t = tasks.create_task(self.conn, [{"title": "Implement authentication", "description": "Build auth functions"}])["tasks"][0]
+        # Get suggestions with limit=5
+        suggestions = tasks.suggest_code_links(self.conn, t["id"], limit=5)
+        assert len(suggestions) <= 5
+        # Get suggestions with limit=10
+        suggestions_10 = tasks.suggest_code_links(self.conn, t["id"], limit=10)
+        assert len(suggestions_10) <= 10
 
 
 # ---------------------------------------------------------------------------

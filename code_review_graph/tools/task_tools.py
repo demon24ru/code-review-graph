@@ -444,7 +444,7 @@ def task_archive_func(
     def _fn(conn, task_ids, reason, cascade):
         result = tasks.archive_task(conn, task_ids, reason=reason, cascade=cascade)
         count = len(result["archived_ids"])
-        return _ok(f"Archived {count} task(s): {reason}", **result)
+        return _ok(f"Archived {count} task(s)", reason=reason, **result)
     return _run(repo_root, _fn, task_ids, reason, cascade)
 
 
@@ -736,22 +736,25 @@ def task_find_by_code_node_func(
 def task_suggest_code_links_func(
     task_id: str,
     repo_root: Optional[str] = None,
+    limit: int = 20,
 ) -> dict[str, Any]:
     """Suggest code nodes to link to a task based on keyword extraction.
 
     [BRAINSTORM] Extracts keywords from the task's title and description,
-    then searches the code graph. Returns candidates — does NOT create any
-    links automatically.
+    then searches the code graph. Already-linked nodes are excluded.
+    Results scored by keyword match count. Returns candidates — does NOT
+    create any links automatically.
 
     Args:
         task_id: Task ID to find code suggestions for.
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of results to return (default 20).
 
     Returns:
-        List of candidate code node dicts.
+        List of candidate code node dicts, each with 'match_score' field.
     """
     def _fn(conn, task_id):
-        suggestions = tasks.suggest_code_links(conn, task_id)
+        suggestions = tasks.suggest_code_links(conn, task_id, limit=limit)
         return _ok(f"Found {len(suggestions)} code node suggestion(s)", suggestions=suggestions)
     return _run(repo_root, _fn, task_id)
 

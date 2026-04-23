@@ -236,8 +236,20 @@ class TestCheckIsolation(TestAnalysisBase):
     def test_empty_code_refs_returns_full_isolation(self):
         t = self._task("T")
         result = task_analysis.check_isolation(self.conn, t["id"])
-        assert result["isolation_score"] == 1.0
+        assert result["status"] == "not_applicable"
+        assert result["isolation_score"] is None
         assert result["internal_nodes"] == 0
+
+    def test_check_isolation_not_applicable_when_no_code_refs(self):
+        t = self._task("T")
+        result = task_analysis.check_isolation(self.conn, t["id"])
+        assert result["status"] == "not_applicable"
+        assert result["message"] == "Task has no code refs linked. Use task_link_code to associate code nodes."
+        assert result["isolation_score"] is None
+        assert result["internal_nodes"] == 0
+        assert result["external_dependencies"] == 0
+        assert result["external_dependents"] == 0
+        assert result["external_nodes"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +271,20 @@ class TestBlastRadius(TestAnalysisBase):
     def test_empty_refs_returns_empty(self):
         t = self._task("T")
         result = task_analysis.blast_radius(self.conn, t["id"])
+        assert result["status"] == "not_applicable"
         assert result["direct_nodes"] == []
         assert result["affected_nodes"] == []
-        assert result["coverage_ratio"] == 1.0
+        assert result["coverage_ratio"] is None
+
+    def test_blast_radius_not_applicable_when_no_code_refs(self):
+        t = self._task("T")
+        result = task_analysis.blast_radius(self.conn, t["id"])
+        assert result["status"] == "not_applicable"
+        assert result["message"] == "Task has no code refs linked. Use task_link_code to associate code nodes."
+        assert result["direct_nodes"] == []
+        assert result["affected_nodes"] == []
+        assert result["uncovered_nodes"] == []
+        assert result["coverage_ratio"] is None
 
     def test_coverage_ratio_full_when_all_covered(self):
         root = self._task("Root")
@@ -434,6 +457,13 @@ class TestValidateDAG(TestAnalysisBase):
         result = task_analysis.validate_dag(self.conn, root["id"])
         warnings_text = " ".join(result["warnings"])
         assert "acceptance_criteria" in warnings_text.lower() or "criteria" in warnings_text.lower()
+
+    def test_unresolved_constraints_are_warnings(self):
+        root = self._task("Root")
+        tasks.add_note(self.conn, root["id"], "constraint", "Must use PostgreSQL", status="open")
+        result = task_analysis.validate_dag(self.conn, root["id"])
+        warnings_text = " ".join(result["warnings"])
+        assert "constraint" in warnings_text.lower() or "unresolved" in warnings_text.lower()
 
 
 # ---------------------------------------------------------------------------

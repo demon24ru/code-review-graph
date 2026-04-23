@@ -309,10 +309,12 @@ def check_isolation(
 
     if not internal_ids:
         return {
+            "status": "not_applicable",
+            "message": "Task has no code refs linked. Use task_link_code to associate code nodes.",
             "internal_nodes": 0,
             "external_dependencies": 0,
             "external_dependents": 0,
-            "isolation_score": 1.0,
+            "isolation_score": None,
             "external_nodes": [],
         }
 
@@ -344,6 +346,7 @@ def check_isolation(
     caller_external = len(callers - internal_ids)
 
     return {
+        "status": "ok",
         "internal_nodes": internal_count,
         "external_dependencies": callee_external,
         "external_dependents": caller_external,
@@ -381,10 +384,12 @@ def blast_radius(
 
     if not internal_ids:
         return {
+            "status": "not_applicable",
+            "message": "Task has no code refs linked. Use task_link_code to associate code nodes.",
             "direct_nodes": [],
             "affected_nodes": [],
             "uncovered_nodes": [],
-            "coverage_ratio": 1.0,
+            "coverage_ratio": None,
         }
 
     affected_ids = _bfs_code_graph(conn, internal_ids, "both", depth=depth)
@@ -415,6 +420,7 @@ def blast_radius(
     )
 
     return {
+        "status": "ok",
         "direct_nodes": _fetch_nodes(internal_ids),
         "affected_nodes": _fetch_nodes(affected_ids),
         "uncovered_nodes": _fetch_nodes(uncovered_ids),
@@ -632,6 +638,16 @@ def validate_dag(
         warnings.append(f"{open_assumptions} unverified assumption(s) — verify before coding")
     else:
         ok.append("No unverified assumptions")
+
+    # --- Check 5b: Unresolved constraints ---
+    open_constraints = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'constraint' AND status = 'open'",
+        subtree_ids,
+    ).fetchone()[0]
+    if open_constraints > 0:
+        warnings.append(f"{open_constraints} unresolved constraint(s) — resolve before coding")
+    else:
+        ok.append("No unresolved constraints")
 
     # --- Check 6: Contracts in 'proposed' status where active tasks are participants ---
     proposed_contract_ids = set(

@@ -460,6 +460,8 @@ def list_graph_stats(repo_root: str | None = None) -> dict[str, Any]:
             summary_parts.append(f"Embeddings: {emb_count} nodes embedded")
             if not emb_store.available:
                 summary_parts.append("  (install sentence-transformers for semantic search)")
+            elif emb_count == 0:
+                summary_parts.append("  ⚠️  No embeddings — run embed_graph_tool to enable semantic search")
         finally:
             emb_store.close()
 
@@ -475,6 +477,14 @@ def list_graph_stats(repo_root: str | None = None) -> dict[str, Any]:
             "last_updated": stats.last_updated,
             "embeddings_count": emb_count,
         }
+        if emb_count == 0 and emb_store.available:
+            result["warnings"] = [
+                {
+                    "code": "NO_EMBEDDINGS",
+                    "message": "Semantic search is disabled. Run embed_graph_tool to enable it.",
+                    "next_step": "embed_graph_tool",
+                }
+            ]
         result["_hints"] = generate_hints("list_graph_stats", result, get_session())
         return result
     finally:

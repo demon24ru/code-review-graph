@@ -19,6 +19,7 @@ def list_flows(
     sort_by: str = "criticality",
     limit: int = 50,
     kind: str | None = None,
+    is_test: bool | None = None,
 ) -> dict[str, Any]:
     """List execution flows in the codebase, sorted by criticality.
 
@@ -32,14 +33,21 @@ def list_flows(
                  or name.
         limit: Maximum flows to return (default: 50).
         kind: Optional filter by entry point kind (e.g. "Test", "Function").
+        is_test: Filter by test status. True=only test flows, False=only
+                 production flows (excludes Test-kind entry points).
+                 Default None shows all.
 
     Returns:
-        List of flows with criticality scores.
+        List of flows with criticality scores and total_count.
     """
     store, root = _get_store(repo_root)
     try:
-        fetch_limit = limit if not kind else limit * 10  # fetch more when filtering
+        # Fetch more to account for post-fetch filtering
+        fetch_limit = limit
+        if kind or is_test is not None:
+            fetch_limit = limit * 10
         flows = get_flows(store, sort_by=sort_by, limit=fetch_limit)
+        total_before_filter = len(flows)
 
         if kind:
             filtered = []
@@ -49,12 +57,34 @@ def list_flows(
                     node_kind = store.get_node_kind_by_id(ep_id)
                     if node_kind == kind:
                         filtered.append(f)
-            flows = filtered[:limit]
+            flows = filtered
+
+        if is_test is not None:
+            test_flows = []
+            for f in flows:
+                ep_id = f.get("entry_point_id")
+                if ep_id is not None:
+                    node_kind = store.get_node_kind_by_id(ep_id)
+                    flow_is_test = (node_kind == "Test")
+                    if flow_is_test == is_test:
+                        test_flows.append(f)
+                elif is_test is False:
+                    # No entry_point → treat as non-test
+                    test_flows.append(f)
+            flows = test_flows
+
+        flows = flows[:limit]
 
         result: dict[str, object] = {
             "status": "ok",
-            "summary": f"Found {len(flows)} execution flow(s)",
+            "summary": f"Found {len(flows)} execution flow(s)"
+            + (
+                f" (filtered from {total_before_filter})"
+                if total_before_filter > len(flows)
+                else ""
+            ),
             "flows": flows,
+            "total_count": len(flows),
         }
         result["_hints"] = generate_hints("list_flows", result, get_session())
         return result

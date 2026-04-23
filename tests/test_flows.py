@@ -410,3 +410,55 @@ class TestFlows:
         assert len(by_depth) >= 2
         # Deepest flow first.
         assert by_depth[0]["depth"] >= by_depth[-1]["depth"]
+
+    # ---------------------------------------------------------------
+    # list_flows with is_test filter
+    # ---------------------------------------------------------------
+
+    def test_list_flows_is_test_false_excludes_tests(self):
+        """is_test=False excludes Test-kind entry point flows."""
+        from code_review_graph.tools.flows_tools import list_flows
+
+        # Create test and non-test flows
+        self._add_func("test_handler", is_test=True)
+        self._add_func("test_helper", is_test=True)
+        self._add_call("app.py::test_handler", "app.py::test_helper")
+
+        self._add_func("prod_handler", is_test=False)
+        self._add_func("prod_helper", is_test=False)
+        self._add_call("app.py::prod_handler", "app.py::prod_helper")
+
+        flows = trace_flows(self.store)
+        store_flows(self.store, flows)
+
+        # Get all flows
+        all_result = list_flows(repo_root=None)
+        all_flows = all_result["flows"]
+        assert len(all_flows) >= 2
+
+        # Get only production flows (is_test=False)
+        prod_result = list_flows(repo_root=None, is_test=False)
+        prod_flows = prod_result["flows"]
+
+        # Verify no test flows in production result
+        for flow in prod_flows:
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node_kind = self.store.get_node_kind_by_id(ep_id)
+                assert node_kind != "Test", f"Test flow found in is_test=False result: {flow}"
+
+    def test_list_flows_has_total_count(self):
+        """list_flows response includes total_count."""
+        from code_review_graph.tools.flows_tools import list_flows
+
+        self._add_func("ep1")
+        self._add_func("helper1")
+        self._add_call("app.py::ep1", "app.py::helper1")
+
+        flows = trace_flows(self.store)
+        store_flows(self.store, flows)
+
+        result = list_flows(repo_root=None)
+        assert "total_count" in result, "total_count missing from response"
+        assert isinstance(result["total_count"], int)
+        assert result["total_count"] == len(result["flows"])
