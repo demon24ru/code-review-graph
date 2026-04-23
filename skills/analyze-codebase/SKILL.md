@@ -23,6 +23,8 @@ The architecture overview groups code into communities (clusters of tightly rela
 list_communities_tool(sort_by="size")        # all communities sorted by size
 list_communities_tool(sort_by="cohesion")    # tightest clusters first
 get_community_tool(community_name="auth")    # details + member list
+# If multiple communities share the name → status:"ambiguous" + matches:[{id,name}...]
+# Use community_id= to select unambiguously
 ```
 
 Communities are detected automatically via the Leiden algorithm. Each community represents a logical module boundary — useful for understanding ownership and change impact.
@@ -42,6 +44,8 @@ semantic_search_nodes_tool(query="create_task add_task_edge move_task archive_ta
 semantic_search_nodes_tool(query="create", file_path="tasks.py")
 
 # Returns: id, name, qualified_name, file_path, line_start, line_end, params, signature
+# If single-token query matches 4+ nodes with the same name, response includes
+# "disambiguation_note" suggesting to add file_path= to narrow results.
 ```
 
 **`line_end` is critical for large codebases.** It tells you the exact boundary of a

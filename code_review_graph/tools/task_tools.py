@@ -661,13 +661,28 @@ def task_unlink_code_func(
     Returns:
         Number of refs removed.
     """
-    def _fn(conn, task_id, code_node_id):
-        result = tasks.unlink_task_code(conn, task_id, code_node_id)
+    store, _ = _get_store(repo_root)
+    try:
+        result = tasks.unlink_task_code(store._conn, task_id, code_node_id)
         return _ok(
             f"Unlinked {result['removed']} ref(s) between task {task_id[:8]} and node {code_node_id}",
             **result,
         )
-    return _run(repo_root, _fn, task_id, code_node_id)
+    except KeyError as exc:
+        msg = str(exc)
+        if "code ref" in msg.lower():
+            return graph_error(
+                "CODE_REF_NOT_FOUND",
+                msg,
+                recovery=f"Use task_get_code_refs(task_id='{task_id}') to list linked code nodes.",
+            )
+        return graph_error("TASK_NOT_FOUND", msg)
+    except ValueError as exc:
+        return graph_error("TASK_INVALID_PARAMS", str(exc))
+    except Exception as exc:
+        return graph_error("TASK_PARSE_ERROR", str(exc))
+    finally:
+        store.close()
 
 
 def task_get_code_refs_func(
@@ -694,6 +709,7 @@ def task_get_code_refs_func(
 
 def task_find_by_code_node_func(
     code_node_id: int,
+    open_only: bool = True,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Find all tasks that reference a given code node.
@@ -703,15 +719,18 @@ def task_find_by_code_node_func(
 
     Args:
         code_node_id: Integer ID of the code node.
+        open_only: If True (default), exclude archived and done tasks.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
         List of task dicts (with ref_type appended).
     """
-    def _fn(conn, code_node_id):
-        result = tasks.find_tasks_by_code_node(conn, code_node_id)
-        return _ok(f"Found {len(result)} task(s) referencing node {code_node_id}", tasks=result)
-    return _run(repo_root, _fn, code_node_id)
+    def _fn(conn, code_node_id, open_only):
+        task_list = tasks.find_tasks_by_code_node(conn, code_node_id)
+        if open_only:
+            task_list = [t for t in task_list if t.get("status") not in ("done", "archived")]
+        return _ok(f"Found {len(task_list)} task(s) referencing node {code_node_id}", tasks=task_list)
+    return _run(repo_root, _fn, code_node_id, open_only)
 
 
 def task_suggest_code_links_func(
@@ -792,7 +811,8 @@ def task_check_isolation_func(
         return _ok(
             f"Isolation score: {score:.2f} ({quality}) — "
             f"{result['internal_nodes']} internal, "
-            f"{result['external_dependencies']} external deps",
+            f"{result['external_dependencies']} deps (callees), "
+            f"{result['external_dependents']} dependents (callers)",
             **result,
         )
     return _run(repo_root, _fn, task_id)

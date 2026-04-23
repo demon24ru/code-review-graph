@@ -467,8 +467,11 @@ def execution_order(
     in_degree: dict[str, int] = {lid: 0 for lid in leaf_ids}
     successors: dict[str, list[str]] = {lid: [] for lid in leaf_ids}
 
-    dep_rows = conn.execute(
-        "SELECT source_task_id, target_task_id FROM task_edges WHERE type = 'depends_on'"
+    ph_dep = ", ".join("?" * len(subtree_list))
+    dep_rows = conn.execute(  # noqa: S608
+        f"SELECT source_task_id, target_task_id FROM task_edges "
+        f"WHERE type = 'depends_on' AND source_task_id IN ({ph_dep})",
+        subtree_list,
     ).fetchall()
 
     for r in dep_rows:
@@ -500,13 +503,16 @@ def execution_order(
     ).fetchall()
     id_to_row: dict[str, dict[str, Any]] = {r["id"]: _row_to_dict(r) for r in rows}
 
-    return [
-        {
+    result = []
+    for i, level in enumerate(levels):
+        missing = [tid for tid in level if tid not in id_to_row]
+        if missing:
+            logger.debug("execution_order: %d task(s) missing from id_to_row at level %d: %s", len(missing), i, missing)
+        result.append({
             "level": i,
             "tasks": [id_to_row[tid] for tid in level if tid in id_to_row],
-        }
-        for i, level in enumerate(levels)
-    ]
+        })
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1327,12 +1333,13 @@ def roadmap_diff(
         """,
         (*subtree_ids, since_timestamp, since_timestamp),
     ).fetchall()
-    # Note: we can't recover old_status without a history table, so we report current status
+    # old_status is not recoverable without a history table; reported as null
     tasks_status_changed = [
         {
             "id": r["id"],
             "title": r["title"],
-            "current_status": r["status"],
+            "old_status": None,
+            "new_status": r["status"],
             "updated_at": r["updated_at"],
         }
         for r in status_changed_rows

@@ -1756,8 +1756,7 @@ def link_contract(
 ) -> dict[str, Any]:
     """Attach a task to an existing contract as provider or consumer.
 
-    Safe to call multiple times (INSERT OR IGNORE). Useful when task
-    decomposition happens *after* the contract was created.
+    Safe to call multiple times. Returns changed=False if link already exists.
 
     Args:
         contract_id: Contract to link to.
@@ -1769,13 +1768,27 @@ def link_contract(
     if role not in ("provider", "consumer"):
         raise ValueError(f"role must be 'provider' or 'consumer', got {role!r}")
 
+    # Check if link already exists
+    existing = conn.execute(
+        "SELECT 1 FROM contract_links WHERE contract_id = ? AND task_id = ? AND role = ?",
+        (contract_id, task_id, role),
+    ).fetchone()
+
+    if existing:
+        contract = _get_contract(conn, contract_id)
+        contract["changed"] = False
+        contract["reason"] = f"Task '{task_id}' is already linked as '{role}'"
+        return contract
+
     conn.execute(
-        "INSERT OR IGNORE INTO contract_links(contract_id, task_id, role) "
+        "INSERT INTO contract_links(contract_id, task_id, role) "
         "VALUES (?, ?, ?)",
         (contract_id, task_id, role),
     )
     conn.commit()
-    return _get_contract(conn, contract_id)
+    contract = _get_contract(conn, contract_id)
+    contract["changed"] = True
+    return contract
 
 
 def unlink_contract(
@@ -1783,14 +1796,21 @@ def unlink_contract(
     contract_id: str,
     task_id: str,
 ) -> dict[str, Any]:
-    """Remove all links (any role) between a contract and a task."""
+    """Remove all links (any role) between a contract and a task.
+    
+    Returns changed=False if the link did not exist.
+    """
     _get_contract(conn, contract_id)
-    conn.execute(
+    cursor = conn.execute(
         "DELETE FROM contract_links WHERE contract_id = ? AND task_id = ?",
         (contract_id, task_id),
     )
     conn.commit()
-    return _get_contract(conn, contract_id)
+    contract = _get_contract(conn, contract_id)
+    contract["changed"] = cursor.rowcount > 0
+    if not contract["changed"]:
+        contract["reason"] = f"Task '{task_id}' was not linked to contract '{contract_id}'"
+    return contract
 
 
 def _get_contract(conn: sqlite3.Connection, contract_id: str) -> dict[str, Any]:
@@ -1824,11 +1844,17 @@ def update_contract(
 
     To update the linked code node provide EITHER *code_node_id* (integer)
     OR *qualified_name* (string from ``semantic_search_nodes_tool`` results).
+    
+    If status is updated to a backward lifecycle state, a warning is added.
     """
     _get_contract(conn, contract_id)  # verify exists
 
     if status is not None:
         _check_enum(status, CONTRACT_STATUSES, "status")
+
+    # Capture old status before update (for lifecycle validation)
+    old_row = conn.execute("SELECT status FROM contracts WHERE id = ?", (contract_id,)).fetchone()
+    old_status = old_row["status"] if old_row else None
 
     # Resolve code node if either identifier was supplied
     if code_node_id is not None or qualified_name is not None:
@@ -1855,7 +1881,20 @@ def update_contract(
         params,
     )
     conn.commit()
-    return _get_contract(conn, contract_id)
+    result = _get_contract(conn, contract_id)
+
+    # Check for backward lifecycle transition
+    if status is not None and status != "void":
+        STATUS_ORDER = {"proposed": 0, "agreed": 1, "implemented": 2, "verified": 3, "void": 99}
+        old_order = STATUS_ORDER.get(old_status, -1)
+        new_order = STATUS_ORDER.get(status, -1)
+        if 0 <= new_order < old_order:
+            result["warning"] = (
+                f"Backward lifecycle transition: {old_status} → {status}. "
+                f"Expected order: proposed → agreed → implemented → verified."
+            )
+
+    return result
 
 
 def list_contracts(

@@ -321,6 +321,66 @@ class TestExecutionOrder(TestAnalysisBase):
         assert left["id"] in level1_ids
         assert right["id"] in level1_ids
 
+    def test_execution_order_correct_levels(self):
+        """C depends_on A and B — C must appear at level 1, not level 0."""
+        root = self._task("Root")
+        a = self._task("A", parent_id=root["id"])
+        b = self._task("B", parent_id=root["id"])
+        c = self._task("C", parent_id=root["id"])
+        tasks.add_task_edge(self.conn, c["id"], a["id"], "depends_on")
+        tasks.add_task_edge(self.conn, c["id"], b["id"], "depends_on")
+        levels = task_analysis.execution_order(self.conn, root["id"])
+        # A and B have no deps → level 0; C depends on both → level 1
+        assert len(levels) == 2
+        level0_ids = {t["id"] for t in levels[0]["tasks"]}
+        level1_ids = {t["id"] for t in levels[1]["tasks"]}
+        assert a["id"] in level0_ids
+        assert b["id"] in level0_ids
+        assert c["id"] in level1_ids
+        assert c["id"] not in level0_ids
+
+    def test_execution_order_scoped_to_subtree(self):
+        """Deps in subtree 2 must not affect execution_order for subtree 1."""
+        # Use a single wrapper root to satisfy the single-pipeline rule;
+        # root1 and root2 are independent sub-trees under it.
+        wrapper = self._task("Wrapper")
+
+        # Sub-tree 1: root1 → [X, Y], Y depends_on X → Y at level 1
+        root1 = self._task("Root1", parent_id=wrapper["id"])
+        x = self._task("X", parent_id=root1["id"])
+        y = self._task("Y", parent_id=root1["id"])
+        tasks.add_task_edge(self.conn, y["id"], x["id"], "depends_on")
+
+        # Sub-tree 2: root2 → [P, Q, R], R depends_on P and Q (unrelated to sub-tree 1)
+        root2 = self._task("Root2", parent_id=wrapper["id"])
+        p = self._task("P", parent_id=root2["id"])
+        q = self._task("Q", parent_id=root2["id"])
+        r = self._task("R", parent_id=root2["id"])
+        tasks.add_task_edge(self.conn, r["id"], p["id"], "depends_on")
+        tasks.add_task_edge(self.conn, r["id"], q["id"], "depends_on")
+
+        # execution_order for tree 1 must be unaffected by tree 2's edges
+        levels1 = task_analysis.execution_order(self.conn, root1["id"])
+        assert len(levels1) == 2
+        level0_ids = {t["id"] for t in levels1[0]["tasks"]}
+        level1_ids = {t["id"] for t in levels1[1]["tasks"]}
+        assert x["id"] in level0_ids
+        assert y["id"] in level1_ids
+        # No tasks from tree 2 should appear in tree 1's levels
+        all_ids = level0_ids | level1_ids
+        assert p["id"] not in all_ids
+        assert q["id"] not in all_ids
+        assert r["id"] not in all_ids
+
+        # execution_order for tree 2 must also be unaffected by tree 1's edges
+        levels2 = task_analysis.execution_order(self.conn, root2["id"])
+        assert len(levels2) == 2
+        level0_ids2 = {t["id"] for t in levels2[0]["tasks"]}
+        level1_ids2 = {t["id"] for t in levels2[1]["tasks"]}
+        assert p["id"] in level0_ids2
+        assert q["id"] in level0_ids2
+        assert r["id"] in level1_ids2
+
 
 # ---------------------------------------------------------------------------
 # 5.2.5 — validate_dag
@@ -510,6 +570,22 @@ class TestRoadmapDiff(TestAnalysisBase):
         assert diff["tasks_created"] == []
         assert diff["tasks_status_changed"] == []
         assert diff["notes_added"] == []
+
+    def test_roadmap_diff_status_changed_has_new_status_key(self):
+        """Verify tasks_status_changed has new_status (not current_status) and old_status."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        ts = time.time()
+        time.sleep(0.01)
+        tasks.update_task(self.conn, t1["id"], status="done")
+        diff = task_analysis.roadmap_diff(self.conn, root["id"], ts)
+        assert len(diff["tasks_status_changed"]) == 1
+        changed = diff["tasks_status_changed"][0]
+        assert "new_status" in changed, "Missing 'new_status' key"
+        assert "old_status" in changed, "Missing 'old_status' key"
+        assert "current_status" not in changed, "Should not have 'current_status' key"
+        assert changed["new_status"] == "done"
+        assert changed["old_status"] is None
 
 
 # ---------------------------------------------------------------------------

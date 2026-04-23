@@ -293,7 +293,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]`; optional `edges=[{from, to, type?}]` for atomic decomposition + wiring |
 | `task_update` | Update title, description, status, spec, acceptance_criteria |
 | `task_edit` | Surgically edit a text field: search/replace or line-range |
-| `task_delete` | Delete a task (cascade deletes subtree) |
+| `task_delete` | Delete a task. Without `cascade=True`, raises error if task has children |
 | `task_get` | Get a task by ID |
 | `task_list` | List tasks with filters: parent_id, status, root_only |
 | `task_move` | Move tasks to a shared new parent — batch list API: `task_ids=[...]` |
@@ -306,7 +306,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_link_code` | Link a task to code nodes — batch list API: `links=[{ref_type, code_node_id\|qualified_name}]` |
 | `task_unlink_code` | Remove code node association |
 | `task_get_code_refs` | Get code nodes linked to a task |
-| `task_find_by_code_node` | Find all tasks referencing a code node |
+| `task_find_by_code_node` | Find open tasks referencing a code node (`open_only=True` by default) |
 | `task_suggest_code_links` | Keyword-based code node suggestions (no auto-linking) |
 | `task_find_conflicts` | Leaf tasks with overlapping code refs |
 | `task_check_isolation` | Isolation score: internal / (internal + external) |
@@ -320,7 +320,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `note_list` | List notes (with optional ancestor chain) |
 | `note_delete` | Delete a note |
 | `contract_add` | Record interface contract between provider and consumer tasks |
-| `contract_update` | Advance contract status (proposed→agreed→implemented→verified) |
+| `contract_update` | Advance contract status (proposed→agreed→implemented→verified). Backward transitions return a `warning` field. |
 | `contract_list` | All contracts where task is provider or consumer |
 | `task_roadmap` | Progress snapshot: counts, phases, contracts, attention block |
 | `task_roadmap_diff` | What changed since a Unix timestamp (for resuming sessions) |

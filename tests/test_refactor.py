@@ -361,6 +361,49 @@ class TestFindDeadCode:
         dead = find_dead_code(self.store, file_pattern="nonexistent")
         assert len(dead) == 0
 
+    def test_find_dead_code_exclude_paths(self):
+        """exclude_paths removes nodes whose file_path contains any excluded substring."""
+        # Seed an unreferenced function in an excluded file
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="excluded_dead_func",
+                file_path="/repo/excluded_file.py",
+                line_start=1,
+                line_end=10,
+                language="python",
+            )
+        )
+        # Seed an unreferenced function in a kept file
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="kept_dead_func",
+                file_path="/repo/kept_file.py",
+                line_start=1,
+                line_end=10,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        dead = find_dead_code(self.store, exclude_paths=["excluded_file"])
+        dead_names = {d["name"] for d in dead}
+
+        assert "excluded_dead_func" not in dead_names
+        assert "kept_dead_func" in dead_names
+
+    def test_find_dead_code_result_has_file_path_key(self):
+        """Dead code results have both 'file' and 'file_path' keys."""
+        dead = find_dead_code(self.store)
+        assert len(dead) > 0, "Expected at least one dead code result"
+        for result in dead:
+            assert "file" in result, "Result missing 'file' key"
+            assert "file_path" in result, "Result missing 'file_path' key"
+            assert result["file"] is not None, "'file' key should not be None"
+            assert result["file_path"] is not None, "'file_path' key should not be None"
+            assert result["file"] == result["file_path"], "'file' and 'file_path' should match"
+
 
 class TestSuggestRefactorings:
     """Tests for suggest_refactorings."""

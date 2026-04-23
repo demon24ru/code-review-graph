@@ -213,6 +213,7 @@ def find_dead_code(
     store: GraphStore,
     kind: Optional[str] = None,
     file_pattern: Optional[str] = None,
+    exclude_paths: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """Find functions/classes with no callers, no test refs, and no importers.
 
@@ -223,6 +224,9 @@ def find_dead_code(
         store: The GraphStore instance.
         kind: Optional filter (e.g. ``"Function"`` or ``"Class"``).
         file_pattern: Optional file-path substring filter.
+        exclude_paths: Optional list of path substrings to exclude.  Nodes
+            whose ``file_path`` contains any of the given substrings are
+            omitted from results (e.g. ``["vscode", "generated"]``).
 
     Returns:
         List of dead-code dicts with name, qualified_name, kind, file, line.
@@ -257,9 +261,20 @@ def find_dead_code(
                     "qualified_name": _sanitize_name(node.qualified_name),
                     "kind": node.kind,
                     "file": node.file_path,
+                    "file_path": node.file_path,
                     "line": node.line_start,
                 }
             )
+
+    # Python-level file_pattern post-filter (handles nodes where DB file_path was NULL)
+    if file_pattern:
+        dead = [d for d in dead if file_pattern in (d.get("file") or "")]
+
+    if exclude_paths:
+        dead = [
+            r for r in dead
+            if not any(ex in (r.get("file") or "") for ex in exclude_paths)
+        ]
 
     logger.info("find_dead_code: found %d dead symbols", len(dead))
     return dead

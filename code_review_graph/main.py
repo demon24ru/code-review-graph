@@ -542,6 +542,7 @@ def refactor_tool(
     new_name: Optional[str] = None,
     kind: Optional[str] = None,
     file_pattern: Optional[str] = None,
+    exclude_paths: Optional[list] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Graph-powered refactoring operations.
@@ -563,6 +564,8 @@ def refactor_tool(
         new_name: (rename) Desired new name for the symbol.
         kind: (dead_code) Optional filter: Function or Class.
         file_pattern: (dead_code) Filter by file path substring.
+        exclude_paths: List of path substrings to exclude (e.g. ['vscode', 'test']).
+            Nodes in matching files are omitted from results.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return refactor_func(
@@ -571,6 +574,7 @@ def refactor_tool(
         new_name=new_name,
         kind=kind,
         file_pattern=file_pattern,
+        exclude_paths=exclude_paths,
         repo_root=repo_root,
     )
 
@@ -697,6 +701,7 @@ def audit_workspace_tool(
     include_cycles: bool = True,
     min_lines: int = 50,
     file_pattern: Optional[str] = None,
+    exclude_paths: Optional[list] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Consolidated workspace audit: dead code, large functions, and dependency cycles.
@@ -711,6 +716,8 @@ def audit_workspace_tool(
         include_cycles: Detect import/call cycles. Default: True.
         min_lines: Minimum lines to flag a function as large. Default: 50.
         file_pattern: Filter dead code / large functions by file path substring.
+        exclude_paths: List of path substrings to exclude (e.g. ['vscode', 'test']).
+            Nodes in matching files are omitted from results.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return audit_workspace(
@@ -719,6 +726,7 @@ def audit_workspace_tool(
         include_cycles=include_cycles,
         min_lines=min_lines,
         file_pattern=file_pattern,
+        exclude_paths=exclude_paths,
         repo_root=repo_root,
     )
 
@@ -1292,6 +1300,7 @@ def task_get_code_refs(
 @mcp.tool()
 def task_find_by_code_node(
     code_node_id: int,
+    open_only: bool = True,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Find all tasks that reference a given code node.
@@ -1300,9 +1309,10 @@ def task_find_by_code_node(
 
     Args:
         code_node_id: Integer ID of the code node.
+        open_only: If True (default), exclude archived and done tasks.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_find_by_code_node_func(code_node_id=code_node_id, repo_root=repo_root)
+    return task_find_by_code_node_func(code_node_id=code_node_id, open_only=open_only, repo_root=repo_root)
 
 
 @mcp.tool()

@@ -87,10 +87,18 @@ def get_community_func(
                     community = c
                     break
         elif community_name is not None:
-            for c in all_communities:
-                if community_name.lower() in c["name"].lower():
-                    community = c
-                    break
+            matches = [c for c in all_communities if community_name.lower() in c["name"].lower()]
+            if len(matches) == 1:
+                community = matches[0]
+            elif len(matches) > 1:
+                return {
+                    "status": "ambiguous",
+                    "summary": (
+                        f"Multiple communities match '{community_name}'. "
+                        f"Use community_id to select one."
+                    ),
+                    "matches": [{"id": c["id"], "name": c["name"]} for c in matches],
+                }
 
         if community is None:
             return {

@@ -510,6 +510,85 @@ def _migrate_v8(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """v10: Add UNIQUE(entry_point_id, path_json) to flows table.
+
+    Prevents duplicate flow rows that can accumulate when incremental rebuilds
+    race or when store_flows is called concurrently.  Any existing duplicate
+    rows are deduplicated first (keeping the row with the lowest id per group).
+    The flows and flow_memberships tables are recreated via the standard
+    rename-create-copy-drop pattern because SQLite does not support ADD CONSTRAINT.
+    """
+    # Check whether the constraint already exists by inspecting the CREATE TABLE sql.
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='flows'"
+    ).fetchone()
+    existing_sql: str = (row[0] if row else "") or ""
+    if "UNIQUE" in existing_sql.upper():
+        logger.info("v10 migration: UNIQUE constraint already present on flows, skipping")
+        return
+
+    # De-duplicate: remove rows with a higher id when (entry_point_id, path_json) repeats.
+    conn.execute("""
+        DELETE FROM flow_memberships
+        WHERE flow_id IN (
+            SELECT id FROM flows
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM flows
+                GROUP BY entry_point_id, path_json
+            )
+        )
+    """)
+    conn.execute("""
+        DELETE FROM flows
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM flows
+            GROUP BY entry_point_id, path_json
+        )
+    """)
+
+    # Recreate flows with UNIQUE constraint (SQLite rename-create-copy-drop).
+    conn.execute("ALTER TABLE flows RENAME TO _flows_v9")
+    conn.execute("""
+        CREATE TABLE flows (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            name           TEXT NOT NULL,
+            entry_point_id INTEGER NOT NULL,
+            depth          INTEGER NOT NULL,
+            node_count     INTEGER NOT NULL,
+            file_count     INTEGER NOT NULL,
+            criticality    REAL NOT NULL DEFAULT 0.0,
+            path_json      TEXT NOT NULL,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(entry_point_id, path_json)
+        )
+    """)
+    conn.execute("""
+        INSERT INTO flows
+            (id, name, entry_point_id, depth, node_count, file_count,
+             criticality, path_json, created_at, updated_at)
+        SELECT id, name, entry_point_id, depth, node_count, file_count,
+               criticality, path_json, created_at, updated_at
+        FROM _flows_v9
+    """)
+    conn.execute("DROP TABLE _flows_v9")
+
+    # Recreate indexes on the new table.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_flows_criticality ON flows(criticality DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_flows_entry ON flows(entry_point_id)"
+    )
+    logger.info(
+        "v10 migration: added UNIQUE(entry_point_id, path_json) to flows "
+        "and removed duplicates"
+    )
+
+
 def _migrate_v9(conn: sqlite3.Connection) -> None:
     """v9: Drop legacy provider_task_id / consumer_task_id columns from contracts.
 
@@ -578,6 +657,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     7: _migrate_v7,
     8: _migrate_v8,
     9: _migrate_v9,
+    10: _migrate_v10,
 }
 
 LATEST_VERSION = max(MIGRATIONS.keys())

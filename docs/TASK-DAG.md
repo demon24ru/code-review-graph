@@ -64,7 +64,7 @@ Lifecycle: `proposed → agreed → implemented → verified`
 | `task_list` | List tasks with filters: parent_id, status, root_only. |
 | `task_move` | Move a task to a new parent (cycle detection enforced). |
 | `task_search` | Keyword search within a subtree (title + description + spec). |
-| `task_delete` | Delete a task. `cascade=True` removes the whole subtree. |
+| `task_delete` | Delete a task. Without `cascade=True`, raises error if task has children (prevents orphaned subtasks). |
 | `task_archive` | Archive (soft-delete) with a recorded reason. Preserves history. |
 
 **Valid statuses:** `draft` → `refined` → `ready` → `in_progress` → `done` → `archived`
@@ -85,7 +85,7 @@ Lifecycle: `proposed → agreed → implemented → verified`
 | `task_link_code` | Associate a task with a code node by ID and ref_type. |
 | `task_unlink_code` | Remove all associations between a task and a code node. |
 | `task_get_code_refs` | Get code nodes linked to a task (with metadata). |
-| `task_find_by_code_node` | Find all tasks that reference a specific code node. |
+| `task_find_by_code_node` | Find open tasks referencing a code node. `open_only=True` by default (excludes done/archived). |
 | `task_suggest_code_links` | Keyword-based suggestions from title+description. Does NOT auto-link. |
 
 Use `semantic_search_nodes_tool` to find `code_node_id` values from descriptions.
@@ -121,7 +121,7 @@ Use `semantic_search_nodes_tool` to find `code_node_id` values from descriptions
 | Tool | Description |
 |------|-------------|
 | `contract_add` | Record an interface contract between provider and consumer tasks. |
-| `contract_update` | Update definition or advance status (proposed→agreed→implemented→verified). |
+| `contract_update` | Update definition or advance status (proposed→agreed→implemented→verified). Backward transitions return a `warning` field. |
 | `contract_list` | All contracts where task is provider OR consumer. |
 
 ### Roadmap tools
@@ -129,7 +129,7 @@ Use `semantic_search_nodes_tool` to find `code_node_id` values from descriptions
 | Tool | Description |
 |------|-------------|
 | `task_roadmap` | Progress snapshot: counts, phases, contracts, attention block. |
-| `task_roadmap_diff` | What changed since a Unix timestamp. For resuming sessions. |
+| `task_roadmap_diff` | What changed since a Unix timestamp. `tasks_status_changed` items have `old_status` (null — not stored) + `new_status`. |
 
 ---
 

@@ -295,3 +295,136 @@ class TestCommunities:
     def test_igraph_available_is_bool(self):
         """IGRAPH_AVAILABLE is a boolean."""
         assert isinstance(IGRAPH_AVAILABLE, bool)
+
+
+class TestGetCommunity:
+    """Tests for get_community_func tool."""
+
+    def setup_method(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.repo_root = self.tmpdir.name
+        # Create .code-review-graph directory
+        crg_dir = Path(self.repo_root) / ".code-review-graph"
+        crg_dir.mkdir(exist_ok=True)
+        db_path = crg_dir / "graph.db"
+        self.store = GraphStore(str(db_path))
+
+    def teardown_method(self):
+        self.store.close()
+        import time
+        time.sleep(0.1)  # Give file system time to release lock
+        try:
+            self.tmpdir.cleanup()
+        except Exception:
+            pass  # Ignore cleanup errors on Windows
+
+    def _seed_two_similar_communities(self):
+        """Seed two communities with similar names: 'task-core' and 'task-analysis'."""
+        # First community: task-core
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File", name="task_core.py", file_path="task_core.py",
+                line_start=1, line_end=100, language="python",
+            ), file_hash="tc1"
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function", name="create_task", file_path="task_core.py",
+                line_start=5, line_end=20, language="python",
+            ), file_hash="tc1"
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function", name="update_task", file_path="task_core.py",
+                line_start=25, line_end=40, language="python",
+            ), file_hash="tc1"
+        )
+
+        # Second community: task-analysis
+        self.store.upsert_node(
+            NodeInfo(
+                kind="File", name="task_analysis.py", file_path="task_analysis.py",
+                line_start=1, line_end=100, language="python",
+            ), file_hash="ta1"
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function", name="analyze_task", file_path="task_analysis.py",
+                line_start=5, line_end=20, language="python",
+            ), file_hash="ta1"
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function", name="score_task", file_path="task_analysis.py",
+                line_start=25, line_end=40, language="python",
+            ), file_hash="ta1"
+        )
+        self.store.commit()
+
+        # Detect and store communities
+        communities = detect_communities(self.store, min_size=1)
+        # Manually set names to ensure they match the pattern
+        for i, comm in enumerate(communities):
+            if i == 0:
+                comm["name"] = "task-core"
+            elif i == 1:
+                comm["name"] = "task-analysis"
+        store_communities(self.store, communities)
+
+    def test_get_community_ambiguous_name_returns_matches_list(self):
+        """When multiple communities match a name, return ambiguous status with matches list."""
+        from code_review_graph.tools.community_tools import get_community_func
+
+        self._seed_two_similar_communities()
+
+        # Call with ambiguous name "task" that matches both "task-core" and "task-analysis"
+        result = get_community_func(community_name="task", repo_root=self.repo_root)
+
+        # Should return ambiguous status
+        assert result["status"] == "ambiguous"
+        assert "Multiple communities match" in result["summary"]
+        assert "task" in result["summary"]
+        assert "Use community_id to select one" in result["summary"]
+
+        # Should have matches list with both communities
+        assert "matches" in result
+        assert isinstance(result["matches"], list)
+        # Should have at least 2 matches (may have more if other communities match)
+        assert len(result["matches"]) >= 2
+
+        # Check that our two communities are in the matches
+        match_names = [m["name"] for m in result["matches"]]
+        assert "task-core" in match_names
+        assert "task-analysis" in match_names
+
+        # Each match should have id and name
+        for match in result["matches"]:
+            assert "id" in match
+            assert "name" in match
+
+    def test_get_community_single_match_works_as_before(self):
+        """When only one community matches, return it normally."""
+        from code_review_graph.tools.community_tools import get_community_func
+
+        self._seed_two_similar_communities()
+
+        # Call with specific name that matches only one
+        result = get_community_func(community_name="task-core", repo_root=self.repo_root)
+
+        # Should return ok status with the community
+        assert result["status"] == "ok"
+        assert "community" in result
+        assert result["community"]["name"] == "task-core"
+
+    def test_get_community_no_match_returns_not_found(self):
+        """When no communities match, return not_found status."""
+        from code_review_graph.tools.community_tools import get_community_func
+
+        self._seed_two_similar_communities()
+
+        # Call with name that doesn't match anything
+        result = get_community_func(community_name="nonexistent", repo_root=self.repo_root)
+
+        # Should return not_found status
+        assert result["status"] == "not_found"
+        assert "No community found" in result["summary"]

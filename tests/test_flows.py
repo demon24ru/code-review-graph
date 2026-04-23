@@ -280,6 +280,42 @@ class TestFlows:
         store_flows(self.store, [])
         assert len(get_flows(self.store)) == 0
 
+    def test_store_flows_twice_no_duplicates(self):
+        """Calling store_flows twice with the same data must not create duplicate rows."""
+        self._add_func("ep")
+        self._add_func("callee")
+        self._add_call("app.py::ep", "app.py::callee")
+
+        flows = trace_flows(self.store)
+        assert len(flows) >= 1
+
+        store_flows(self.store, flows)
+        store_flows(self.store, flows)  # second call — must be idempotent
+
+        stored = get_flows(self.store)
+        # No duplicate names/paths: each (entry_point_id, path_json) must be unique.
+        keys = [(f["entry_point_id"], str(sorted(f["path"]))) for f in stored]
+        assert len(keys) == len(set(keys)), f"Duplicate flows found: {stored}"
+        # Exact same count as the original traced flows.
+        assert len(stored) == len(flows)
+
+    def test_incremental_rebuild_no_duplicate_flows(self):
+        """Simulates multiple post-build hook calls; flows must not accumulate."""
+        from code_review_graph.incremental import run_post_build_hooks
+
+        self._add_func("handler", path="routes.py")
+        self._add_func("service", path="services.py")
+        self._add_call("routes.py::handler", "services.py::service", "routes.py")
+
+        # Run post-build hooks twice (simulates incremental rebuild after full build).
+        run_post_build_hooks(self.store)
+        run_post_build_hooks(self.store)
+
+        stored = get_flows(self.store)
+        # No duplicate (entry_point_id, path) pairs.
+        keys = [(f["entry_point_id"], str(sorted(f["path"]))) for f in stored]
+        assert len(keys) == len(set(keys)), f"Duplicate flows after double hook run: {stored}"
+
     def test_get_flow_by_id(self):
         """get_flow_by_id returns full step details."""
         self._add_func("ep")

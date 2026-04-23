@@ -195,6 +195,8 @@ contract_add(
 # Add participants after decomposition
 contract_link(contract_id, task_id, role="consumer")
 contract_unlink(contract_id, task_id)
+# contract_link returns changed:True (new) or changed:False + reason (already linked)
+# contract_unlink returns changed:True (removed) or changed:False + reason (wasn't linked)
 ```
 
 Find all contracts in a brainstorm:
@@ -233,6 +235,8 @@ task_add_edge(edge_type="depends_on", edges=[
 
 Edge types: `depends_on` | `blocks` | `shares_context` | `conflicts_with` | `informs`
 Cycle detection is automatic — `depends_on`/`blocks` edges cannot form cycles (checked atomically).
+Duplicate edges are idempotent — adding the same edge twice returns `already_exists: true` (no overwrite).
+`blocks` edges are cross-checked against `depends_on` to prevent mutual-wait deadlocks.
 
 ## Phase 6: Run Analysis
 
@@ -250,6 +254,8 @@ task_find_for_impact(file_paths)      # open tasks in blast radius of changed fi
 - score 0.4–0.7 → moderate coupling, coordinate with related tasks
 - score < 0.4 → highly coupled, consider splitting or adding contracts
 
+Summary includes both `external_dependencies` (callees this task calls) and `external_dependents` (callers of this task).
+
 ## Phase 7: Validate Before Implementation
 
 ```
@@ -262,6 +268,7 @@ Common errors to fix:
 - Missing `acceptance_criteria` on leaf tasks → add via `task_update`
 - Open questions → resolve via `note_update(note_id, status="resolved", resolution="...")`
 - Proposed contracts between ready tasks → `contract_update(id, status="agreed")`
+  # Backward transition (e.g. implemented→proposed) returns a "warning" field in response
 - Leaf tasks with no code refs → `task_link_code(...)` or justify in notes
 
 ## Phase 8: Generate Handoff Context
@@ -304,8 +311,9 @@ task_move(new_parent_id=auth_group_id, task_ids=["t2", "t3", "t4"])
 ## Cross-Layer Queries
 
 ```
-# "Which tasks touch AuthService?"
-task_find_by_code_node(code_node_id)
+# "Which tasks touch AuthService?" (open tasks only by default)
+task_find_by_code_node(code_node_id)                  # open_only=True by default
+task_find_by_code_node(code_node_id, open_only=False) # include done/archived
 
 # "What open tasks are in blast radius of my changes?"
 task_find_for_impact(file_paths=["src/auth.py", "src/user.py"])

@@ -27,6 +27,7 @@ Filter by area:
 ```
 audit_workspace_tool(file_pattern="src/auth/", min_lines=100)
 audit_workspace_tool(include_dead_code=True, include_large_functions=False, include_cycles=False)
+audit_workspace_tool(exclude_paths=["vscode", "generated/"])  # exclude paths from dead code + large functions
 ```
 
 ## Find Dead Code
@@ -35,6 +36,7 @@ audit_workspace_tool(include_dead_code=True, include_large_functions=False, incl
 refactor_tool(mode="dead_code")                    # all unreferenced code
 refactor_tool(mode="dead_code", kind="Function")   # only functions
 refactor_tool(mode="dead_code", file_pattern="code_review_graph/")
+refactor_tool(mode="dead_code", exclude_paths=["vscode/", "generated/"])  # exclude paths
 ```
 
 Dead code = no callers + no tests + no importers + not an entry point.
@@ -54,7 +56,7 @@ Suggestions are community-driven: if a function is used predominantly by communi
 **Always preview first:**
 ```
 refactor_tool(mode="rename", old_name="create_task", new_name="make_task")
-# Returns: refactor_id, edit_list (file, line, old_text, new_text)
+# Returns: refactor_id, edits[] (high-confidence), possible_misses[] (docstrings/comments — review manually)
 # Preview expires in 10 minutes
 ```
 

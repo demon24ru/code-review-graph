@@ -278,12 +278,26 @@ def query_graph(
                     results.append(node_to_dict(t))
 
         elif pattern == "inheritors_of":
+            seen_sources: set[str] = set()
             for e in store.get_edges_by_target(qn):
                 if e.kind in ("INHERITS", "IMPLEMENTS"):
                     child = store.get_node(e.source_qualified)
-                    if child:
+                    if child and e.source_qualified not in seen_sources:
                         results.append(node_to_dict(child))
+                        seen_sources.add(e.source_qualified)
                     edges_out.append(edge_to_dict(e))
+            # Fallback: INHERITS edges store bare target names (e.g. "BaseService")
+            # rather than fully qualified names (e.g. "file.py::BaseService").
+            # Search by bare name too so callers get results even when the
+            # qualified-name lookup returns nothing.
+            if node:
+                for e in store.get_edges_by_target(node.name):
+                    if e.kind in ("INHERITS", "IMPLEMENTS") and e.source_qualified not in seen_sources:
+                        child = store.get_node(e.source_qualified)
+                        if child:
+                            results.append(node_to_dict(child))
+                            seen_sources.add(e.source_qualified)
+                        edges_out.append(edge_to_dict(e))
 
         elif pattern == "file_summary":
             abs_path = str(root / target)
@@ -371,6 +385,21 @@ def semantic_search_nodes(
         if names:
             display_query = ", ".join(names) + (f" + {query}" if query and query.strip() else "")
 
+        # Disambiguation signal: single-token query with many exact-name matches
+        # Threshold of 3 is a design choice: >3 exact matches suggests ambiguity
+        disambiguation_note: str | None = None
+        query_tokens = query.strip().split() if query else []
+        if len(query_tokens) == 1 and not names:
+            exact_matches = [r for r in results if r.get("name") == query.strip()]
+            if len(exact_matches) > 3:
+                non_test = [r for r in exact_matches if not r.get("is_test")]
+                disambiguation_note = (
+                    f"Query '{query.strip()}' matched {len(exact_matches)} nodes with the exact same name. "
+                    f"Use file_path='.../filename.py' to narrow results"
+                    + (f" ({len(non_test)} non-test, {len(exact_matches) - len(non_test)} test)" if non_test else "")
+                    + "."
+                )
+
         result: dict[str, object] = {
             "status": "ok",
             "query": display_query,
@@ -380,6 +409,8 @@ def semantic_search_nodes(
             + (f" (file_path contains '{file_path}')" if file_path else ""),
             "results": results,
         }
+        if disambiguation_note:
+            result["disambiguation_note"] = disambiguation_note
         result["_hints"] = generate_hints("semantic_search_nodes", result, get_session())
         return result
     finally:

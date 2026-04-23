@@ -441,6 +441,12 @@ def analyze_edit_region(
                 "external_callers": [],
                 "downstream_calls": [],
                 "test_coverage": [],
+                "impact_summary": {
+                    "edited_symbol_count": 0,
+                    "external_callers": 0,
+                    "downstream_calls": 0,
+                    "test_coverage": 0,
+                },
                 "next_actions": ["query_graph_tool", "semantic_search_nodes_tool"],
             }
 
@@ -485,6 +491,24 @@ def analyze_edit_region(
                     if callee:
                         downstream_calls.append(node_to_dict(callee))
                         seen_downstream.add(edge.target_qualified)
+
+        # Also include test callers from external_callers that aren't already in test_coverage
+        # (handles projects that don't have TESTED_BY edges but have CALLS from test functions)
+        for caller_dict in external_callers:
+            qn = caller_dict.get("qualified_name", "")
+            if qn not in seen_tests:
+                is_test_node = (
+                    caller_dict.get("is_test")
+                    or caller_dict.get("kind") == "Test"
+                    or caller_dict.get("name", "").startswith("test_")
+                    or "/test" in caller_dict.get("file_path", "").replace("\\", "/")
+                    or "\\test" in caller_dict.get("file_path", "")
+                )
+                if is_test_node:
+                    node_obj = store.get_node(qn)
+                    if node_obj:
+                        test_coverage.append(node_to_dict(node_obj))
+                        seen_tests.add(qn)
 
         summary_parts = [
             f"Edit region {file_path}:{line_start}-{line_end} overlaps "
@@ -658,6 +682,7 @@ def audit_workspace(
     include_cycles: bool = True,
     min_lines: int = 50,
     file_pattern: str | None = None,
+    exclude_paths: list[str] | None = None,
     repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Consolidated workspace quality audit: dead code, cycles, and large functions.
@@ -673,6 +698,9 @@ def audit_workspace(
         min_lines: Line threshold for ``include_large_functions``.  Default: 50.
         file_pattern: Restrict all checks to file paths containing this
             substring.  Default: None (entire repo).
+        exclude_paths: List of path substrings to exclude.  Nodes in matching
+            files are omitted from dead_code and large_functions results
+            (e.g. ``["vscode", "generated"]``).  Default: None.
         repo_root: Repository root path.  Auto-detected if omitted.
 
     Returns:
@@ -688,7 +716,9 @@ def audit_workspace(
         cycles: list[list[str]] = []
 
         if include_dead_code:
-            dead_code = find_dead_code(store, file_pattern=file_pattern)
+            dead_code = find_dead_code(
+                store, file_pattern=file_pattern, exclude_paths=exclude_paths
+            )
 
         if include_large_functions:
             nodes = store.get_nodes_by_size(
@@ -709,6 +739,11 @@ def audit_workspace(
                 }
                 for n in nodes
             ]
+            if exclude_paths:
+                large_functions = [
+                    f for f in large_functions
+                    if not any(ex in (f.get("file") or "") for ex in exclude_paths)
+                ]
 
         if include_cycles:
             try:

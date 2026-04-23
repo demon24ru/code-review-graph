@@ -30,6 +30,7 @@ def refactor_func(
     new_name: str | None = None,
     kind: str | None = None,
     file_pattern: str | None = None,
+    exclude_paths: list[str] | None = None,
     repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Unified refactoring entry point.
@@ -46,6 +47,8 @@ def refactor_func(
         new_name: (rename mode) Desired new name.
         kind: (dead_code mode) Optional node kind filter.
         file_pattern: (dead_code mode) Optional file path substring filter.
+        exclude_paths: (dead_code mode) List of path substrings to exclude.
+            Nodes in matching files are omitted from results.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
@@ -86,7 +89,9 @@ def refactor_func(
             return result
 
         elif mode == "dead_code":
-            dead = find_dead_code(store, kind=kind, file_pattern=file_pattern)
+            dead = find_dead_code(
+                store, kind=kind, file_pattern=file_pattern, exclude_paths=exclude_paths
+            )
             result = {
                 "status": "ok",
                 "summary": f"Found {len(dead)} dead code symbol(s).",

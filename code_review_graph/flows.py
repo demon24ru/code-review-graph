@@ -307,7 +307,7 @@ def store_flows(store: GraphStore, flows: list[dict]) -> int:
     for flow in flows:
         path_json = json.dumps(flow.get("path", []))
         conn.execute(
-            """INSERT INTO flows
+            """INSERT OR REPLACE INTO flows
                (name, entry_point_id, depth, node_count, file_count,
                 criticality, path_json)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
