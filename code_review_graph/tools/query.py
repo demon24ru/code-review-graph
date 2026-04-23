@@ -502,6 +502,7 @@ import fnmatch
 def find_files_by_pattern(
     patterns: list[str],
     repo_root: str | None = None,
+    limit: int = 50,
 ) -> dict[str, Any]:
     """Find files matching path patterns and retrieve their top-level nodes (classes/functions).
 
@@ -511,6 +512,7 @@ def find_files_by_pattern(
     Args:
         patterns: List of glob patterns (e.g. "*router*", "main.*", "src/**/*.ts")
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of files to return (default: 50).
 
     Returns:
         List of matching files, along with their primary constituent node names.
@@ -574,14 +576,18 @@ def find_files_by_pattern(
         # Sort for deterministic output
         results.sort(key=lambda x: x["file"])
 
-        out: dict[str, Any] = {
+        result: dict[str, Any] = {
             "status": "ok",
             "summary": f"Found {len(results)} file(s) matching patterns: {patterns}",
             "patterns_used": patterns,
-            "results": results,
+            "total_found": len(results),
+            "results": results[:limit],
         }
-        out["_hints"] = generate_hints("find_files_by_pattern", out, get_session())
-        return out
+        if len(results) > limit:
+            result["truncated"] = True
+            result["warning"] = f"Results truncated to {limit}. Use a more specific pattern or increase limit."
+        result["_hints"] = generate_hints("find_files_by_pattern", result, get_session())
+        return result
     finally:
         store.close()
 

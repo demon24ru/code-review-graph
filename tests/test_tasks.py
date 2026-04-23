@@ -628,6 +628,34 @@ class TestDAGEdges(TestTaskBase):
         node_ids = {n["id"] for n in dag["nodes"]}
         assert self.root["id"] in node_ids
 
+    def test_get_dag_compact_mode(self):
+        """Test compact=True returns only {id, title, status, depth, parent_id}."""
+        dag = tasks.get_task_dag(self.conn, self.root["id"], compact=True)
+        assert len(dag["nodes"]) == 4
+        # Check that compact nodes have only the required fields
+        for node in dag["nodes"]:
+            assert set(node.keys()) == {"id", "title", "status", "depth", "parent_id"}
+            # Verify no full task fields are present
+            assert "description" not in node
+            assert "spec" not in node
+            assert "acceptance_criteria" not in node
+
+    def test_get_dag_has_depth_field(self):
+        """Test that default mode includes depth field."""
+        dag = tasks.get_task_dag(self.conn, self.root["id"], compact=False)
+        assert len(dag["nodes"]) == 4
+        # Check that all nodes have depth field
+        for node in dag["nodes"]:
+            assert "depth" in node
+            assert isinstance(node["depth"], int)
+        # Root should have depth 0
+        root_node = next(n for n in dag["nodes"] if n["id"] == self.root["id"])
+        assert root_node["depth"] == 0
+        # Children should have depth 1
+        child_nodes = [n for n in dag["nodes"] if n["parent_id"] == self.root["id"]]
+        for child in child_nodes:
+            assert child["depth"] == 1
+
 
 # ---------------------------------------------------------------------------
 # 5.1.7b — task_create with inline edges
@@ -1664,3 +1692,112 @@ class TestBatchLinkCode(TestTaskBase):
         assert len(refs2) == 2  # no new row added, existing replaced
         node_ids = {r["code_node_id"] for r in refs2}
         assert node_ids == {n1}  # same node, two ref_types
+
+
+# ---------------------------------------------------------------------------
+# Dry-run tests for delete_task and archive_task
+# ---------------------------------------------------------------------------
+
+
+class TestDryRunDelete(TestTaskBase):
+    """Test dry_run=True for delete_task."""
+
+    def test_delete_dry_run_returns_preview_without_deleting(self):
+        """dry_run=True returns would_delete list without deleting."""
+        t = tasks.create_task(self.conn, [{"title": "ToDelete"}])["tasks"][0]
+        
+        # Preview deletion
+        result = tasks.delete_task(self.conn, t["id"], dry_run=True)
+        assert result["dry_run"] is True
+        assert result["count"] == 1
+        assert len(result["would_delete"]) == 1
+        assert result["would_delete"][0]["id"] == t["id"]
+        assert result["would_delete"][0]["title"] == "ToDelete"
+        
+        # Task still exists in DB
+        retrieved = tasks.get_task(self.conn, t["id"])
+        assert retrieved["id"] == t["id"]
+
+    def test_delete_dry_run_cascade_shows_all_affected(self):
+        """dry_run=True with cascade shows all tasks that would be deleted."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        c1 = tasks.create_task(self.conn, [{"title": "Child1"}], parent_id=root["id"])["tasks"][0]
+        c2 = tasks.create_task(self.conn, [{"title": "Child2"}], parent_id=root["id"])["tasks"][0]
+        
+        # Preview cascade deletion
+        result = tasks.delete_task(self.conn, root["id"], cascade=True, dry_run=True)
+        assert result["dry_run"] is True
+        assert result["count"] == 3
+        assert len(result["would_delete"]) == 3
+        
+        # All tasks still exist
+        for tid in [root["id"], c1["id"], c2["id"]]:
+            assert tasks.get_task(self.conn, tid)
+
+    def test_delete_dry_run_false_actually_deletes(self):
+        """dry_run=False (default) actually deletes."""
+        t = tasks.create_task(self.conn, [{"title": "ToDelete"}])["tasks"][0]
+        
+        # Actually delete
+        result = tasks.delete_task(self.conn, t["id"], dry_run=False)
+        assert "deleted_ids" in result
+        assert t["id"] in result["deleted_ids"]
+        
+        # Task is gone
+        with pytest.raises(KeyError):
+            tasks.get_task(self.conn, t["id"])
+
+
+class TestDryRunArchive(TestTaskBase):
+    """Test dry_run=True for archive_task."""
+
+    def test_archive_dry_run_returns_preview_without_archiving(self):
+        """dry_run=True returns would_archive list without archiving."""
+        t = tasks.create_task(self.conn, [{"title": "ToArchive"}])["tasks"][0]
+        
+        # Preview archiving
+        result = tasks.archive_task(
+            self.conn, [t["id"]], reason="Testing", dry_run=True
+        )
+        assert result["dry_run"] is True
+        assert result["reason"] == "Testing"
+        assert result["count"] == 1
+        assert len(result["would_archive"]) == 1
+        assert result["would_archive"][0]["id"] == t["id"]
+        assert result["would_archive"][0]["title"] == "ToArchive"
+        
+        # Task still has original status
+        retrieved = tasks.get_task(self.conn, t["id"])
+        assert retrieved["status"] != "archived"
+
+    def test_archive_dry_run_cascade_shows_all_affected(self):
+        """dry_run=True with cascade shows all tasks that would be archived."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        c1 = tasks.create_task(self.conn, [{"title": "Child1"}], parent_id=root["id"])["tasks"][0]
+        c2 = tasks.create_task(self.conn, [{"title": "Child2"}], parent_id=root["id"])["tasks"][0]
+        
+        # Preview cascade archiving
+        result = tasks.archive_task(
+            self.conn, [root["id"]], reason="Pivot", cascade=True, dry_run=True
+        )
+        assert result["dry_run"] is True
+        assert result["count"] == 3
+        assert len(result["would_archive"]) == 3
+        
+        # All tasks still have original status
+        for tid in [root["id"], c1["id"], c2["id"]]:
+            assert tasks.get_task(self.conn, tid)["status"] != "archived"
+
+    def test_archive_dry_run_false_actually_archives(self):
+        """dry_run=False (default) actually archives."""
+        t = tasks.create_task(self.conn, [{"title": "ToArchive"}])["tasks"][0]
+        
+        # Actually archive
+        result = tasks.archive_task(
+            self.conn, [t["id"]], reason="Testing", dry_run=False
+        )
+        assert "archived_ids" in result
+        assert t["id"] in result["archived_ids"]
+        
+        # Task is archived
+        assert tasks.get_task(self.conn, t["id"])["status"] == "archived"

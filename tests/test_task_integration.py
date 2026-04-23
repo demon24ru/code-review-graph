@@ -359,8 +359,8 @@ class TestCrossLayerIntegration(TestIntegrationBase):
         task = tasks.create_task(self.conn, "Entry task", description="Work on entry")
         tasks.link_task_code(self.conn, task["id"], "modifies", code_node_id=n_entry)
 
-        result_d1 = task_analysis.blast_radius(self.conn, task["id"], depth=1)
-        result_d2 = task_analysis.blast_radius(self.conn, task["id"], depth=2)
+        result_d1 = task_analysis.blast_radius(self.conn, task["id"], depth=1, include_affected_nodes=True)
+        result_d2 = task_analysis.blast_radius(self.conn, task["id"], depth=2, include_affected_nodes=True)
 
         affected_d1_ids = {n["id"] for n in result_d1["affected_nodes"]}
         affected_d2_ids = {n["id"] for n in result_d2["affected_nodes"]}

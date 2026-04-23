@@ -364,6 +364,7 @@ def blast_radius(
     conn: sqlite3.Connection,
     task_id: str,
     depth: int = 2,
+    include_affected_nodes: bool = False,
 ) -> dict[str, Any]:
     """Compute the blast radius of a task through the code graph.
 
@@ -371,12 +372,20 @@ def blast_radius(
     in both directions. Then cross-references which affected nodes are already
     covered by other tasks (via task_code_refs).
 
+    Args:
+        conn: Database connection.
+        task_id: Task ID to analyze.
+        depth: BFS depth (default: 2).
+        include_affected_nodes: If True, include full affected_nodes list.
+            Default False returns only affected_nodes_count (scalar).
+
     Returns::
 
         {
-            direct_nodes: [...],     # task's own code refs
-            affected_nodes: [...],   # reachable within depth
-            uncovered_nodes: [...],  # affected but not in any task's refs
+            direct_nodes: [...],           # task's own code refs
+            affected_nodes_count: int,     # count of reachable nodes (always present)
+            affected_nodes: [...],         # reachable within depth (only if include_affected_nodes=True)
+            uncovered_nodes: [...],        # affected but not in any task's refs
             coverage_ratio: float
         }
     """
@@ -387,7 +396,7 @@ def blast_radius(
             "status": "not_applicable",
             "message": "Task has no code refs linked. Use task_link_code to associate code nodes.",
             "direct_nodes": [],
-            "affected_nodes": [],
+            "affected_nodes_count": 0,
             "uncovered_nodes": [],
             "coverage_ratio": None,
         }
@@ -419,13 +428,16 @@ def blast_radius(
         round((all_count - len(uncovered_ids)) / all_count, 4) if all_count > 0 else 1.0
     )
 
-    return {
+    result = {
         "status": "ok",
         "direct_nodes": _fetch_nodes(internal_ids),
-        "affected_nodes": _fetch_nodes(affected_ids),
+        "affected_nodes_count": len(affected_ids),
         "uncovered_nodes": _fetch_nodes(uncovered_ids),
         "coverage_ratio": coverage_ratio,
     }
+    if include_affected_nodes:
+        result["affected_nodes"] = _fetch_nodes(affected_ids)
+    return result
 
 
 # ---------------------------------------------------------------------------

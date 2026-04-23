@@ -466,13 +466,18 @@ def delete_task(
     conn: sqlite3.Connection,
     task_id: str,
     cascade: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Delete a task.
 
     If *cascade* is True, all subtasks (recursive) are deleted along with
     their edges, code refs, notes, and contracts.
 
-    Returns ``{ deleted_ids: [...], deleted_tasks: [{id, title}, ...] }``.
+    If *dry_run* is True, returns what WOULD be deleted without performing
+    the operation.
+
+    Returns ``{ deleted_ids: [...], deleted_tasks: [{id, title}, ...] }``
+    or ``{ dry_run: True, would_delete: [...], count: ... }`` if dry_run=True.
     """
     get_task(conn, task_id)  # raises KeyError if not found
 
@@ -499,6 +504,17 @@ def delete_task(
         deleted_titles = {r["id"]: r["title"] for r in title_rows}
     else:
         deleted_titles = {}
+
+    # Preview mode: return what WOULD be deleted without doing it
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_delete": [
+                {"id": tid, "title": deleted_titles.get(tid, "<unknown>")}
+                for tid in ids_to_delete
+            ],
+            "count": len(ids_to_delete),
+        }
 
     for tid in ids_to_delete:
         _delete_task_data(conn, tid)
@@ -716,6 +732,7 @@ def archive_task(
     task_ids: list[str],
     reason: str,
     cascade: bool = True,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Archive one or more tasks (and optionally their subtrees).
 
@@ -728,10 +745,14 @@ def archive_task(
     archived tasks remain in the database for historical reference.
     *cascade* applies to each task individually.
 
+    If *dry_run* is True, returns what WOULD be archived without performing
+    the operation.
+
     **Idempotent**: Re-archiving an already-archived task does NOT overwrite
     the original archive_reason. Already-archived tasks are returned separately.
 
-    Returns ``{"archived": [...], "already_archived": [...], "archived_ids": [...]}``.
+    Returns ``{"archived": [...], "already_archived": [...], "archived_ids": [...]}``
+    or ``{ dry_run: True, reason: ..., would_archive: [...], count: ... }`` if dry_run=True.
     """
     if not isinstance(task_ids, list) or not task_ids:
         raise ValueError("task_ids must be a non-empty list of task IDs")
@@ -754,6 +775,22 @@ def archive_task(
         if tid not in seen:
             seen.add(tid)
             unique_ids.append(tid)
+
+    # Collect titles for preview
+    ph = ", ".join("?" * len(unique_ids))
+    rows = conn.execute(  # noqa: S608
+        f"SELECT id, title FROM tasks WHERE id IN ({ph})", unique_ids
+    ).fetchall()
+    would_archive = [{"id": r["id"], "title": r["title"]} for r in rows]
+
+    # Preview mode: return what WOULD be archived without doing it
+    if dry_run:
+        return {
+            "dry_run": True,
+            "reason": reason,
+            "would_archive": would_archive,
+            "count": len(would_archive),
+        }
 
     now = _now()
     
@@ -1007,11 +1044,18 @@ def get_task_edges(
 def get_task_dag(
     conn: sqlite3.Connection,
     root_task_id: str,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """Return the full DAG rooted at *root_task_id*.
 
     Collects all tasks in the subtree plus all task_edges between them.
     Returns ``{ nodes: [...], edges: [...] }`` suitable for visualisation.
+
+    Args:
+        conn: Database connection.
+        root_task_id: Root task ID.
+        compact: If True, return only {id, title, status, depth, parent_id} per node.
+                 If False (default), return full task objects with depth field added.
     """
     get_task(conn, root_task_id)
     subtree_ids = _collect_subtree_ids(conn, root_task_id)
@@ -1031,6 +1075,20 @@ def get_task_dag(
         (*subtree_ids, *subtree_ids),
     ).fetchall()
 
+    # Compute depth of each task from root using BFS
+    depth_map: dict[str, int] = {root_task_id: 0}
+    queue = deque([root_task_id])
+    while queue:
+        current = queue.popleft()
+        children = conn.execute(
+            "SELECT id FROM tasks WHERE parent_id = ?", (current,)
+        ).fetchall()
+        for child in children:
+            cid = child["id"]
+            if cid not in depth_map:
+                depth_map[cid] = depth_map[current] + 1
+                queue.append(cid)
+
     # Include parent→child hierarchy edges
     hierarchy_edges = [
         {
@@ -1043,8 +1101,29 @@ def get_task_dag(
         if row["parent_id"] is not None
     ]
 
+    # Build node list based on compact mode
+    if compact:
+        def _compact_node(row_dict: dict[str, Any], depth: int) -> dict[str, Any]:
+            return {
+                "id": row_dict["id"],
+                "title": row_dict["title"],
+                "status": row_dict["status"],
+                "depth": depth,
+                "parent_id": row_dict.get("parent_id"),
+            }
+        node_list = [
+            _compact_node(_row_to_dict(r), depth_map.get(r["id"], 0))
+            for r in nodes
+        ]
+    else:
+        node_list = []
+        for r in nodes:
+            d = _row_to_dict(r)
+            d["depth"] = depth_map.get(r["id"], 0)
+            node_list.append(d)
+
     return {
-        "nodes": [_row_to_dict(r) for r in nodes],
+        "nodes": node_list,
         "edges": [_row_to_dict(r) for r in edges] + hierarchy_edges,
     }
 

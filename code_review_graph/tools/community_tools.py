@@ -37,10 +37,14 @@ def list_communities_func(
     store, root = _get_store(repo_root)
     try:
         communities = get_communities(store, sort_by=sort_by, min_size=min_size)
+        # Strip 'members' field from each community in the list
+        communities_out = [
+            {k: v for k, v in c.items() if k != "members"} for c in communities
+        ]
         result: dict[str, object] = {
             "status": "ok",
-            "summary": f"Found {len(communities)} communities",
-            "communities": communities,
+            "summary": f"Found {len(communities_out)} communities",
+            "communities": communities_out,
         }
         result["_hints"] = generate_hints("list_communities", result, get_session())
         return result
@@ -113,6 +117,12 @@ def get_community_func(
                 members = [node_to_dict(n) for n in member_nodes]
                 community["member_details"] = members
 
+        # Build a clean community dict — exclude 'members' unless members were requested
+        community_out = {k: v for k, v in community.items() if k != "members"}
+        if not include_members:
+            # Also exclude member_details if it somehow snuck in
+            community_out.pop("member_details", None)
+
         result = {
             "status": "ok",
             "summary": (
@@ -120,7 +130,8 @@ def get_community_func(
                 f"{community['size']} nodes, "
                 f"cohesion {community['cohesion']:.4f}"
             ),
-            "community": community,
+            "community": community_out,
+            "member_count": len(community.get("members", [])),
         }
         result["_hints"] = generate_hints("get_community", result, get_session())
         return result

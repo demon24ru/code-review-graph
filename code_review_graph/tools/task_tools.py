@@ -22,11 +22,12 @@ Groups:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from .. import task_analysis, tasks
-from ._common import _get_store, graph_error
 from ..response import prune_response
+from ._common import _get_store, graph_error
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ def _run(repo_root: Optional[str], fn, *args, **kwargs) -> dict[str, Any]:
       KeyError  → TASK_NOT_FOUND  → next: task_list
       ValueError → TASK_INVALID_PARAMS → next: task_get
       cycle ValueError → TASK_CYCLE → next: task_get_dag
+      single-pipeline ValueError → SINGLE_PIPELINE_VIOLATION → next: task_update/task_archive
       other     → TASK_PARSE_ERROR → next: task_validate
     """
     store, _ = _get_store(repo_root)
@@ -57,7 +59,15 @@ def _run(repo_root: Optional[str], fn, *args, **kwargs) -> dict[str, Any]:
         return graph_error("TASK_NOT_FOUND", str(exc))
     except ValueError as exc:
         msg = str(exc)
-        if "has children" in msg.lower():
+        if "Cannot create a new root task" in msg:
+            # Extract blocking task ID for machine-readable response
+            m = re.search(r"root task '([^']+)'", msg)
+            blocking_id = m.group(1) if m else None
+            err = graph_error("SINGLE_PIPELINE_VIOLATION", msg)
+            if blocking_id:
+                err["blocking_task_id"] = blocking_id
+            return prune_response(err)
+        elif "has children" in msg.lower():
             code = "TASK_HAS_CHILDREN"
         elif "cycle" in msg.lower():
             code = "TASK_CYCLE"
@@ -280,6 +290,7 @@ def task_edit_func(
 def task_delete_func(
     task_id: str,
     cascade: bool = False,
+    dry_run: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Delete a task (and optionally its entire subtree).
@@ -288,19 +299,27 @@ def task_delete_func(
     refs, notes, and contracts. Set *cascade=True* to also delete all subtasks
     recursively. To preserve history, use task_archive instead.
 
+    Set *dry_run=True* to preview what would be deleted without performing
+    the operation.
+
     Args:
         task_id: Task to delete.
         cascade: If True, delete all subtasks recursively.
+        dry_run: If True, preview without deleting.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        List of deleted task IDs.
+        List of deleted task IDs, or preview if dry_run=True.
     """
-    def _fn(conn, task_id, cascade):
-        result = tasks.delete_task(conn, task_id, cascade=cascade)
-        count = len(result["deleted_ids"])
-        return _ok(f"Deleted {count} task(s)", **result)
-    return _run(repo_root, _fn, task_id, cascade)
+    def _fn(conn, task_id, cascade, dry_run):
+        result = tasks.delete_task(conn, task_id, cascade=cascade, dry_run=dry_run)
+        if dry_run:
+            count = result["count"]
+            return _ok(f"Preview: would delete {count} task(s)", **result)
+        else:
+            count = len(result["deleted_ids"])
+            return _ok(f"Deleted {count} task(s)", **result)
+    return _run(repo_root, _fn, task_id, cascade, dry_run)
 
 
 def task_get_func(
@@ -416,6 +435,7 @@ def task_archive_func(
     task_ids: list[str],
     reason: str,
     cascade: bool = True,
+    dry_run: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Archive one or more tasks (and optionally their subtrees).
@@ -430,22 +450,31 @@ def task_archive_func(
     Selective archiving (common when changing approach mid-brainstorm):
         task_archive(reason="Switching to in-app only", task_ids=["t2", "t3", "t6"])
 
+    Set *dry_run=True* to preview what would be archived without performing
+    the operation.
+
     *cascade* applies to each task individually (default: True).
 
     Args:
         task_ids: List of task IDs to archive.
         reason: Why these tasks are being archived (required).
         cascade: If True (default), archive all subtasks of each task too.
+        dry_run: If True, preview without archiving.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        ``{"archived_ids": [...]}`` — all archived task IDs (including cascaded).
+        ``{"archived_ids": [...]}`` — all archived task IDs (including cascaded),
+        or preview if dry_run=True.
     """
-    def _fn(conn, task_ids, reason, cascade):
-        result = tasks.archive_task(conn, task_ids, reason=reason, cascade=cascade)
-        count = len(result["archived_ids"])
-        return _ok(f"Archived {count} task(s)", reason=reason, **result)
-    return _run(repo_root, _fn, task_ids, reason, cascade)
+    def _fn(conn, task_ids, reason, cascade, dry_run):
+        result = tasks.archive_task(conn, task_ids, reason=reason, cascade=cascade, dry_run=dry_run)
+        if dry_run:
+            count = result["count"]
+            return _ok(f"Preview: would archive {count} task(s)", reason=reason, **result)
+        else:
+            count = len(result["archived_ids"])
+            return _ok(f"Archived {count} task(s)", reason=reason, **result)
+    return _run(repo_root, _fn, task_ids, reason, cascade, dry_run)
 
 
 # ===========================================================================
@@ -542,6 +571,7 @@ def task_remove_edge_func(
 
 def task_get_dag_func(
     root_task_id: str,
+    compact: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Get the full DAG rooted at a task.
@@ -552,17 +582,18 @@ def task_get_dag_func(
 
     Args:
         root_task_id: Root of the DAG to retrieve.
+        compact: If True, return only {id, title, status, depth, parent_id} per node.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
         Dict with ``nodes`` (tasks) and ``edges`` (all relationships).
     """
-    def _fn(conn, root_task_id):
-        dag = tasks.get_task_dag(conn, root_task_id)
+    def _fn(conn, root_task_id, compact):
+        dag = tasks.get_task_dag(conn, root_task_id, compact=compact)
         n_nodes = len(dag["nodes"])
         n_edges = len(dag["edges"])
         return _ok(f"DAG: {n_nodes} tasks, {n_edges} edges", **dag)
-    return _run(repo_root, _fn, root_task_id)
+    return _run(repo_root, _fn, root_task_id, compact)
 
 
 def task_topological_sort_func(
@@ -824,6 +855,7 @@ def task_check_isolation_func(
 def task_blast_radius_func(
     task_id: str,
     depth: int = 2,
+    include_affected_nodes: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Compute the blast radius of a task through the code graph.
@@ -835,21 +867,26 @@ def task_blast_radius_func(
     Args:
         task_id: Task ID to analyze.
         depth: BFS depth (default: 2).
+        include_affected_nodes: If True, include full affected_nodes list.
+            Default False returns only affected_nodes_count (scalar).
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        direct_nodes, affected_nodes, uncovered_nodes, coverage_ratio.
+        direct_nodes, affected_nodes_count, affected_nodes (if include_affected_nodes=True),
+        uncovered_nodes, coverage_ratio.
     """
-    def _fn(conn, task_id, depth):
-        result = task_analysis.blast_radius(conn, task_id, depth=depth)
+    def _fn(conn, task_id, depth, include_affected_nodes):
+        result = task_analysis.blast_radius(
+            conn, task_id, depth=depth, include_affected_nodes=include_affected_nodes
+        )
         return _ok(
             f"Blast radius: {len(result['direct_nodes'])} direct, "
-            f"{len(result['affected_nodes'])} affected, "
+            f"{result['affected_nodes_count']} affected, "
             f"{len(result['uncovered_nodes'])} uncovered "
             f"(coverage {result['coverage_ratio']:.0%})",
             **result,
         )
-    return _run(repo_root, _fn, task_id, depth)
+    return _run(repo_root, _fn, task_id, depth, include_affected_nodes)
 
 
 def task_execution_order_func(

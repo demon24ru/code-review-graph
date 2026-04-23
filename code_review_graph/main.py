@@ -315,6 +315,7 @@ def get_docs_section_tool(
 def find_files_by_pattern_tool(
     patterns: list[str],
     repo_root: Optional[str] = None,
+    limit: int = 50,
 ) -> dict:
     """Find files matching path patterns and retrieve their top-level nodes.
 
@@ -324,8 +325,9 @@ def find_files_by_pattern_tool(
     Args:
         patterns: List of glob patterns (e.g. ["*router*", "main.*", "src/**/*.ts"])
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of files to return (default: 50).
     """
-    return find_files_by_pattern(patterns=patterns, repo_root=repo_root)
+    return find_files_by_pattern(patterns=patterns, repo_root=repo_root, limit=limit)
 
 
 @mcp.tool()
@@ -1197,6 +1199,7 @@ def task_remove_edge(
 @mcp.tool()
 def task_get_dag(
     root_task_id: str,
+    compact: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Get the full DAG rooted at a task.
@@ -1205,9 +1208,10 @@ def task_get_dag(
 
     Args:
         root_task_id: Root of the DAG to retrieve.
+        compact: If True, return only {id, title, status, depth, parent_id} per node.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_get_dag_func(root_task_id=root_task_id, repo_root=repo_root)
+    return task_get_dag_func(root_task_id=root_task_id, compact=compact, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -1381,6 +1385,7 @@ def task_check_isolation(
 def task_blast_radius(
     task_id: str,
     depth: int = 2,
+    include_affected_nodes: bool = False,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Compute the code graph blast radius of a task.
@@ -1391,9 +1396,16 @@ def task_blast_radius(
     Args:
         task_id: Task ID to analyze.
         depth: BFS depth (default: 2).
+        include_affected_nodes: If True, include full affected_nodes list.
+            Default False returns only affected_nodes_count (scalar).
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_blast_radius_func(task_id=task_id, depth=depth, repo_root=repo_root)
+    return task_blast_radius_func(
+        task_id=task_id,
+        depth=depth,
+        include_affected_nodes=include_affected_nodes,
+        repo_root=repo_root,
+    )
 
 
 @mcp.tool()

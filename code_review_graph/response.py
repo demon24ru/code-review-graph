@@ -97,6 +97,7 @@ _ERROR_NEXT_ACTION: dict[str, str] = {
     "TASK_HAS_CHILDREN": "task_delete",
     "TASK_PARSE_ERROR": "task_validate",
     "CODE_REF_NOT_FOUND": "task_get_code_refs",
+    "SINGLE_PIPELINE_VIOLATION": "task_update",
     # Contract errors — route to contract-specific tools
     "CONTRACT_NOT_FOUND": "contract_list",
     "CONTRACT_INVALID_PARAMS": "contract_list",
@@ -125,7 +126,12 @@ _ERROR_RECOVERY: dict[str, str] = {
     "TASK_CYCLE": "Use task_get_dag to visualise the dependency graph and identify the cycle.",
     "TASK_HAS_CHILDREN": "Pass cascade=True to delete the task and all its subtasks.",
     "TASK_PARSE_ERROR": "Verify task_id exists via task_get, then retry the operation.",
-    "CODE_REF_NOT_FOUND": "Use task_get_code_refs(task_id=...) to list which code nodes are linked to the task.",
+    "CODE_REF_NOT_FOUND": (
+        "Use task_get_code_refs(task_id=...) to list which code nodes are linked to the task."
+    ),
+    "SINGLE_PIPELINE_VIOLATION": (
+        "Use task_update(status='done') or task_archive() to close the blocking root task, then retry."
+    ),
     # Contract errors
     "CONTRACT_NOT_FOUND": "Use contract_list(scope_task_id=...) to browse existing contracts.",
     "CONTRACT_INVALID_PARAMS": (

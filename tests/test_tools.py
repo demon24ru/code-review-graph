@@ -1170,6 +1170,59 @@ class TestCommunityTools:
         assert "nodes" in result["summary"]
         assert "cohesion" in result["summary"]
 
+    def test_get_community_excludes_members_by_default(self):
+        """Verify that 'members' field is excluded when include_members=False."""
+        comms_result = list_communities_func(repo_root=str(self.root))
+        assert len(comms_result["communities"]) >= 1
+        cid = comms_result["communities"][0]["id"]
+
+        result = get_community_func(
+            community_id=cid, include_members=False, repo_root=str(self.root)
+        )
+        assert result["status"] == "ok"
+        assert "community" in result
+        # The 'members' field should NOT be present
+        assert "members" not in result["community"]
+        # But member_count should be present
+        assert "member_count" in result
+        assert isinstance(result["member_count"], int)
+
+    def test_get_community_has_member_count(self):
+        """Verify that member_count is always present in response."""
+        comms_result = list_communities_func(repo_root=str(self.root))
+        cid = comms_result["communities"][0]["id"]
+
+        # Test with include_members=False
+        result = get_community_func(
+            community_id=cid, include_members=False, repo_root=str(self.root)
+        )
+        assert "member_count" in result
+        assert isinstance(result["member_count"], int)
+        assert result["member_count"] >= 0
+
+        # Test with include_members=True
+        result = get_community_func(
+            community_id=cid, include_members=True, repo_root=str(self.root)
+        )
+        assert "member_count" in result
+        assert isinstance(result["member_count"], int)
+
+    def test_list_communities_excludes_members(self):
+        """Verify that 'members' field is excluded from list_communities response."""
+        result = list_communities_func(repo_root=str(self.root))
+        assert result["status"] == "ok"
+        assert "communities" in result
+        assert len(result["communities"]) >= 1
+
+        # Check that no community in the list has a 'members' field
+        for community in result["communities"]:
+            assert "members" not in community
+            # But should have other expected fields
+            assert "id" in community
+            assert "name" in community
+            assert "size" in community
+            assert "cohesion" in community
+
     def test_get_architecture_overview_returns_ok(self):
         result = get_architecture_overview_func(repo_root=str(self.root))
         assert result["status"] == "ok"
@@ -1861,3 +1914,122 @@ class TestListGraphStats:
         # Check that summary contains the warning hint
         assert "⚠️" in result["summary"], "Summary should contain warning emoji"
         assert "embed_graph_tool" in result["summary"]
+
+
+# ---------------------------------------------------------------------------
+# I-18: find_files_by_pattern with limit parameter
+# ---------------------------------------------------------------------------
+
+
+class TestFindFilesByPatternLimit:
+    """Tests for the limit parameter of find_files_by_pattern."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+        self._seed_many_files()
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _seed_many_files(self):
+        """Seed the store with many test files."""
+        # Create 60 Python files matching "test_*.py" pattern
+        for i in range(60):
+            self.store.upsert_node(
+                NodeInfo(
+                    kind="File",
+                    name=f"/repo/test_{i:03d}.py",
+                    file_path=f"/repo/test_{i:03d}.py",
+                    line_start=1,
+                    line_end=10,
+                    language="python",
+                )
+            )
+        self.store.commit()
+
+    def test_find_files_limit_truncates(self):
+        """Test that limit parameter truncates results and adds truncated flag."""
+        from code_review_graph.tools.query import find_files_by_pattern
+
+        result = find_files_by_pattern(
+            patterns=["test_*.py"],
+            repo_root=None,  # Will use the store's root
+            limit=10,
+        )
+
+        assert result["status"] == "ok"
+        # Check that we got at least 10 results (we created 60)
+        assert result["total_found"] >= 10
+        # Check that results are truncated to limit
+        assert len(result["results"]) == 10
+        assert result["truncated"] is True
+        assert "Results truncated to 10" in result["warning"]
+
+    def test_find_files_no_truncation_when_under_limit(self):
+        """Test that truncated flag is not set when results are under limit."""
+        from code_review_graph.tools.query import find_files_by_pattern
+
+        result = find_files_by_pattern(
+            patterns=["test_*.py"],
+            repo_root=None,  # Will use the store's root
+            limit=100,
+        )
+
+        assert result["status"] == "ok"
+        # Check that we got results
+        assert result["total_found"] > 0
+        # Check that results are not truncated (all results fit in limit)
+        assert len(result["results"]) == result["total_found"]
+        # Truncated flag should not be present or be False
+        assert result.get("truncated") is not True
+        assert "warning" not in result or result.get("warning") is None
+
+
+# ---------------------------------------------------------------------------
+# I-19: task_create single-pipeline error with blocking_task_id
+# ---------------------------------------------------------------------------
+
+
+class TestSinglePipelineViolation:
+    """Tests for single-pipeline discipline error handling."""
+
+    def setup_method(self):
+        import shutil
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        # Create .code-review-graph directory to make it a valid project root
+        (self.root / ".code-review-graph").mkdir(parents=True, exist_ok=True)
+        self.db_path = self.root / ".code-review-graph" / "graph.db"
+        self.store = GraphStore(str(self.db_path))
+        self.conn = self.store._conn
+
+    def teardown_method(self):
+        import shutil
+        self.store.close()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_create_root_blocked_response_has_blocking_task_id(self):
+        """Test that single-pipeline error includes blocking_task_id field."""
+        from code_review_graph.tools.task_tools import task_create_func
+        from code_review_graph import tasks
+
+        # Create first root task
+        root1 = tasks.create_task(self.conn, [{"title": "Root 1"}])["tasks"][0]
+
+        # Try to create second root task (should fail)
+        result = task_create_func(
+            tasks_list=[{"title": "Root 2"}],
+            parent_id=None,
+            edges_list=None,
+            repo_root=str(self.root),
+        )
+
+        # Check error response
+        assert result["status"] == "error"
+        assert result["code"] == "SINGLE_PIPELINE_VIOLATION"
+        assert "blocking_task_id" in result
+        assert result["blocking_task_id"] == root1["id"]
+        assert "next_action" in result
+        assert result["next_action"] == "task_update"

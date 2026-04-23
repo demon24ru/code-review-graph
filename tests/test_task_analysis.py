@@ -266,14 +266,15 @@ class TestBlastRadius(TestAnalysisBase):
         self._code_edge("entry", "helper")
         result = task_analysis.blast_radius(self.conn, t["id"], depth=1)
         assert len(result["direct_nodes"]) == 1
-        assert len(result["affected_nodes"]) >= 1  # helper reached
+        assert result["affected_nodes_count"] >= 1  # helper reached
+        assert "affected_nodes" not in result  # not included by default
 
     def test_empty_refs_returns_empty(self):
         t = self._task("T")
         result = task_analysis.blast_radius(self.conn, t["id"])
         assert result["status"] == "not_applicable"
         assert result["direct_nodes"] == []
-        assert result["affected_nodes"] == []
+        assert result["affected_nodes_count"] == 0
         assert result["coverage_ratio"] is None
 
     def test_blast_radius_not_applicable_when_no_code_refs(self):
@@ -282,7 +283,7 @@ class TestBlastRadius(TestAnalysisBase):
         assert result["status"] == "not_applicable"
         assert result["message"] == "Task has no code refs linked. Use task_link_code to associate code nodes."
         assert result["direct_nodes"] == []
-        assert result["affected_nodes"] == []
+        assert result["affected_nodes_count"] == 0
         assert result["uncovered_nodes"] == []
         assert result["coverage_ratio"] is None
 
@@ -299,6 +300,24 @@ class TestBlastRadius(TestAnalysisBase):
         result = task_analysis.blast_radius(self.conn, t1["id"], depth=1)
         assert result["coverage_ratio"] == 1.0
         assert result["uncovered_nodes"] == []
+
+    def test_blast_radius_includes_affected_when_flag_true(self):
+        t = self._task("T")
+        n1 = self._node("entry", "e.py")
+        n2 = self._node("helper", "h.py")
+        self._link(t["id"], n1)
+        self._code_edge("entry", "helper")
+        # Default: no affected_nodes list
+        result_default = task_analysis.blast_radius(self.conn, t["id"], depth=1)
+        assert "affected_nodes" not in result_default
+        assert result_default["affected_nodes_count"] >= 1
+        # With flag: includes affected_nodes list
+        result_with_flag = task_analysis.blast_radius(
+            self.conn, t["id"], depth=1, include_affected_nodes=True
+        )
+        assert "affected_nodes" in result_with_flag
+        assert len(result_with_flag["affected_nodes"]) >= 1
+        assert result_with_flag["affected_nodes_count"] == len(result_with_flag["affected_nodes"])
 
 
 # ---------------------------------------------------------------------------
