@@ -258,13 +258,13 @@ Your AI assistant uses these automatically once the graph is built.
 | `embed_graph_tool` | Compute vector embeddings for semantic search |
 | `list_graph_stats_tool` | Graph size and health |
 | `get_docs_section_tool` | Retrieve documentation sections |
-| `find_files_by_pattern_tool` | Find files by glob patterns and get their node summaries |
-| `find_large_functions_tool` | Find functions/classes exceeding a line-count threshold |
-| `list_flows_tool` | List execution flows sorted by criticality |
+| `find_files_by_pattern_tool` | Find files by glob patterns — `limit` param caps results; `truncated: true` when exceeded |
+| `find_large_functions_tool` | Find functions/classes exceeding a line-count threshold; summary tip when kind=None mixes File/Class/Function nodes |
+| `list_flows_tool` | List execution flows sorted by criticality; `is_test` filter to hide test flows; `total_count` in response |
 | `get_flow_tool` | Get details of a single execution flow |
 | `get_affected_flows_tool` | Find flows affected by changed files |
 | `list_communities_tool` | List detected code communities |
-| `get_community_tool` | Get details of a single community |
+| `get_community_tool` | Get details of a single community; `include_members=False` hides QN list (only `member_count` scalar returned); `include_members=True` adds full `member_details` |
 | `get_architecture_overview_tool` | Architecture overview from community structure |
 | `detect_changes_tool` | Risk-scored change impact analysis for code review |
 | `refactor_tool` | Rename preview, dead code detection, suggestions |
@@ -293,28 +293,27 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]`; optional `edges=[{from, to, type?}]` for atomic decomposition + wiring |
 | `task_update` | Update title, description, status, spec, acceptance_criteria |
 | `task_edit` | Surgically edit a text field: search/replace or line-range |
-| `task_delete` | Delete a task. Without `cascade=True`, raises error if task has children |
+| `task_delete` | Delete a task. `cascade=True` deletes subtree. `dry_run=True` previews `would_delete` list without executing. Response echoes `deleted_tasks: [{id, title}]` |
 | `task_get` | Get a task by ID |
 | `task_list` | List tasks with filters: parent_id, status, root_only |
 | `task_move` | Move tasks to a shared new parent — batch list API: `task_ids=[...]` |
 | `task_search` | Keyword search within a task subtree |
-| `task_archive` | Archive tasks with shared reason — batch list API: `task_ids=[...]` |
+| `task_archive` | Archive tasks — batch list API: `task_ids=[...]`. `dry_run=True` previews `would_archive` list. Response includes `reason` as a top-level field |
 | `task_add_edge` | Add edges between tasks — batch list API: `edges=[{source_id, target_id, edge_type?}]` |
 | `task_remove_edge` | Remove an edge between tasks |
-| `task_get_dag` | Full DAG for a subtree (nodes + all edges) |
+| `task_get_dag` | Full DAG for a subtree (nodes + all edges). `compact=True` returns only `{id, title, status, depth, parent_id}`. All nodes include `depth` field |
 | `task_topological_sort` | Topological order of leaf tasks by depends_on |
 | `task_link_code` | Link a task to code nodes — batch list API: `links=[{ref_type, code_node_id\|qualified_name}]` |
 | `task_unlink_code` | Remove code node association |
 | `task_get_code_refs` | Get code nodes linked to a task |
 | `task_find_by_code_node` | Find open tasks referencing a code node (`open_only=True` by default) |
-| `task_suggest_code_links` | Keyword-based code node suggestions (no auto-linking) |
+| `task_suggest_code_links` | Keyword-based code node suggestions — scored by match count, already-linked nodes excluded, `limit` param (default 20) |
 | `task_find_conflicts` | Leaf tasks with overlapping code refs |
-| `task_check_isolation` | Isolation score: internal / (internal + external) |
-| `task_blast_radius` | BFS impact from task's code refs through code graph |
+| `task_check_isolation` | Isolation score: internal / (internal + external). Returns `status: not_applicable` with null score if task has no code refs |
+| `task_blast_radius` | BFS impact from task's code refs. Returns `affected_nodes_count` + full `uncovered_nodes`. Use `include_affected_nodes=True` for full list. Returns `status: not_applicable` if no code refs |
 | `task_execution_order` | Parallelism-aware execution levels from depends_on |
 | `task_validate` | Gate-check: 8 algorithmic checks before coder handoff |
-| `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts |
-| `task_export` | Flat handoff structure for design/coder workflows |
+| `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts; `pipeline_state.summary` explains all blockers (questions, assumptions, contracts) |
 | `note_add` | Add notes to a task — batch list API: `notes=[{note_type, content, status?, resolution?}]` |
 | `note_update` | Resolve or update a note |
 | `note_list` | List notes (with optional ancestor chain) |

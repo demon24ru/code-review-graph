@@ -243,7 +243,7 @@ Duplicate edges are idempotent — adding the same edge twice returns `already_e
 ```
 task_find_conflicts(root_task_id)     # tasks sharing same code nodes
 task_check_isolation(task_id)         # isolation_score < 0.5 → too coupled, split
-task_blast_radius(task_id, depth=2)   # code impact radius
+task_blast_radius(task_id, depth=2)   # code impact radius (affected_nodes_count + uncovered_nodes)
 task_execution_order(root_task_id)    # parallelism-aware order (levels)
 task_suggest_contracts(root_task_id)  # hidden code dependencies without contracts
 task_find_for_impact(file_paths)      # open tasks in blast radius of changed files
@@ -253,8 +253,15 @@ task_find_for_impact(file_paths)      # open tasks in blast radius of changed fi
 - score > 0.7 → well isolated, safe to implement independently
 - score 0.4–0.7 → moderate coupling, coordinate with related tasks
 - score < 0.4 → highly coupled, consider splitting or adding contracts
+- `status: "not_applicable"` → task has no code refs yet (link code first)
 
 Summary includes both `external_dependencies` (callees this task calls) and `external_dependents` (callers of this task).
+
+**`task_blast_radius` response:**
+- `affected_nodes_count` — scalar count of BFS-reachable nodes (always present)
+- `uncovered_nodes` — actionable list: nodes in blast radius not covered by any task
+- `include_affected_nodes=True` — opt-in to get full `affected_nodes` list (can be large)
+- `status: "not_applicable"` → task has no code refs linked yet
 
 ## Phase 7: Validate Before Implementation
 
@@ -303,6 +310,12 @@ task_archive(task_ids=[root_task_id], reason="Completed successfully")
 task_archive(reason="Switching to in-app only", task_ids=["t2", "t3", "t6"])
 ```
 
+**Preview before destructive operations** — `dry_run=True` returns what WOULD be affected without executing:
+```
+task_delete(task_id, cascade=True, dry_run=True)   # → {would_delete: [{id, title}], count: N}
+task_archive(task_ids=[...], reason="...", dry_run=True)  # → {would_archive: [{id, title}], count: N}
+```
+
 **Restructuring** — move a group of tasks to a new parent in one call:
 ```
 task_move(new_parent_id=auth_group_id, task_ids=["t2", "t3", "t4"])
@@ -344,7 +357,9 @@ task_execution_order(root_task_id)   # returns parallel levels
 - **Handoff**: designer gets `task_export(mid_task_id)`, coder gets `task_export(leaf_task_id, include_analysis=True)`
 - Always link leaf tasks to code before `task_validate` — unlisted code refs are a warning
 - Use `note_list(include_children=True)` to search decisions across the whole brainstorm
-- `task_suggest_code_links(task_id)` auto-suggests nodes from task title/description keywords
+- `task_suggest_code_links(task_id)` — scored by keyword match count, already-linked nodes excluded, `limit=20` default
 - `task_search(root_task_id, query="auth")` finds tasks by title/description text
-- `task_get_dag(root_task_id)` returns the full tree with all edges in one call
+- `task_get_dag(root_task_id)` returns the full tree with all edges; use `compact=True` for `{id, title, status, depth, parent_id}` nodes (faster for large trees)
+- `task_delete(task_id)` response includes `deleted_tasks: [{id, title}]` — confirm what was deleted
+- Pipeline error on `task_create` includes `blocking_task_id` for direct navigation to the blocking root
 - Contract `status` auto-upgrades when provider task status changes (draft→proposed→acknowledged→implemented)
