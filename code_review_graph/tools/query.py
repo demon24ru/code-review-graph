@@ -593,6 +593,10 @@ def find_large_functions(
     Useful for identifying decomposition targets, code-quality audits,
     and enforcing size limits during code review.
 
+    When ``kind`` is not specified, results include File, Class, Function, and
+    Test nodes ordered by size descending. File nodes span entire files and
+    will appear first; use ``kind="Function"`` to focus on functions only.
+
     Args:
         min_lines: Minimum line count to flag (default: 50).
         kind: Filter by node kind: Function, Class, File, or Test.
@@ -636,6 +640,18 @@ def find_large_functions(
             )
         if len(results) > 10:
             summary_parts.append(f"  ... and {len(results) - 10} more")
+
+        if not kind and results:
+            # Count results by kind
+            by_kind: dict[str, int] = {}
+            for r in results:
+                by_kind[r["kind"]] = by_kind.get(r["kind"], 0) + 1
+            if by_kind:
+                kind_summary = ", ".join(f"{k}: {v}" for k, v in sorted(by_kind.items()))
+                summary_parts.append(
+                    f"  Tip: results include all kinds ({kind_summary}). "
+                    f"Use kind='Function' to see only functions."
+                )
 
         result: dict[str, Any] = {
             "status": "ok",

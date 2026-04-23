@@ -866,10 +866,10 @@ def export_task(
 
     # Code refs
     code_refs = get_task_code_refs(conn, task_id,
-                                   include_source=include_source, repo_root=repo_root)
+                                   include_source=include_source, repo_root=repo_root) or []
 
     # Notes from task + ancestor chain
-    all_notes = list_notes(conn, task_id, include_parent=True)
+    all_notes = list_notes(conn, task_id, include_parent=True) or []
 
     # Contracts — use new list_contracts(task_id=...) for participant-based lookup
     try:
@@ -925,13 +925,27 @@ def export_task(
         # Conflicts with sibling tasks
         result["conflicts"] = _find_sibling_conflicts(conn, task_id, task.get("parent_id"))
         # Pipeline state
+        is_ready = (
+            open_questions == 0 and unverified_assumptions == 0 and pending_contracts == 0
+        )
+        if is_ready:
+            summary = "Ready for handoff"
+        else:
+            reasons = []
+            if open_questions:
+                reasons.append(f"{open_questions} open question(s)")
+            if unverified_assumptions:
+                reasons.append(f"{unverified_assumptions} unverified assumption(s)")
+            if pending_contracts:
+                reasons.append(f"{pending_contracts} pending contract(s)")
+            summary = f"NOT ready — {', '.join(reasons)}"
+        
         result["pipeline_state"] = {
             "open_questions": open_questions,
             "open_assumptions": unverified_assumptions,
             "pending_contracts": pending_contracts,
-            "ready_for_coder": (
-                open_questions == 0 and unverified_assumptions == 0 and pending_contracts == 0
-            ),
+            "ready_for_coder": is_ready,
+            "summary": summary,
         }
 
     return result

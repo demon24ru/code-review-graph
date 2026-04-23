@@ -1067,25 +1067,65 @@ class TestAutoDetectRoot(TestAnalysisBase):
     def test_export_task_no_active_root_raises(self):
         """export_task() with no active root raises KeyError."""
         with pytest.raises(KeyError, match="no open root"):
-            task_analysis.export_task(self.conn)
+             task_analysis.export_task(self.conn)
 
     def test_roadmap_no_arg_uses_active_root(self):
-        """roadmap() with no args uses the active root."""
-        root, _ = self._make_root_with_leaf()
-        result = task_analysis.roadmap(self.conn)
-        assert result["root"]["id"] == root["id"]
+         """roadmap() with no args uses the active root."""
+         root, _ = self._make_root_with_leaf()
+         result = task_analysis.roadmap(self.conn)
+         assert result["root"]["id"] == root["id"]
 
     def test_roadmap_no_active_root_raises(self):
-        """roadmap() with no active root raises KeyError."""
-        with pytest.raises(KeyError, match="no open root"):
+         """roadmap() with no active root raises KeyError."""
+         with pytest.raises(KeyError, match="no open root"):
             task_analysis.roadmap(self.conn)
 
     def test_after_closing_root_no_active(self):
-        """After marking root done, auto-detect raises KeyError."""
-        root, _ = self._make_root_with_leaf()
-        tasks.update_task(self.conn, root["id"], status="done")
-        with pytest.raises(KeyError, match="no open root"):
+         """After marking root done, auto-detect raises KeyError."""
+         root, _ = self._make_root_with_leaf()
+         tasks.update_task(self.conn, root["id"], status="done")
+         with pytest.raises(KeyError, match="no open root"):
             task_analysis.roadmap(self.conn)
+
+    def test_export_task_notes_is_list_when_empty(self):
+         """export_task() returns notes as empty list, never None."""
+         root, _ = self._make_root_with_leaf()
+         result = task_analysis.export_task(self.conn)
+         assert "notes" in result
+         assert isinstance(result["notes"], list)
+         assert result["notes"] == []
+
+    def test_export_task_code_refs_is_list_when_empty(self):
+         """export_task() returns code_refs as empty list, never None."""
+         root = tasks.create_task(self.conn, "Root")
+         result = task_analysis.export_task(self.conn, root["id"])
+         assert "code_refs" in result
+         assert isinstance(result["code_refs"], list)
+         assert result["code_refs"] == []
+
+    def test_export_task_pipeline_state_mentions_assumptions(self):
+         """export_task(include_analysis=True) summary mentions assumptions."""
+         root, leaf = self._make_root_with_leaf()
+         # Add an open assumption to the leaf
+         tasks.add_note(self.conn, leaf["id"], note_type="assumption",
+                       content="User model exists", status="open")
+         # Export the leaf (which has the assumption)
+         result = task_analysis.export_task(self.conn, leaf["id"],
+                                           include_analysis=True)
+         assert "pipeline_state" in result
+         assert "summary" in result["pipeline_state"]
+         assert "assumption" in result["pipeline_state"]["summary"].lower()
+         assert result["pipeline_state"]["ready_for_coder"] is False
+
+    def test_export_task_pipeline_state_ready_summary(self):
+         """export_task(include_analysis=True) summary says 'Ready' when all clear."""
+         root, leaf = self._make_root_with_leaf()
+         result = task_analysis.export_task(self.conn, root["id"],
+                                          include_analysis=True)
+         assert "pipeline_state" in result
+         assert "summary" in result["pipeline_state"]
+         assert result["pipeline_state"]["summary"] == "Ready for handoff"
+         assert result["pipeline_state"]["ready_for_coder"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1100,10 +1140,10 @@ class TestPathNormalisation(TestAnalysisBase):
         """Insert a node with Windows-style paths directly into nodes table."""
         import time
         cur = self.conn.execute(
-            "INSERT INTO nodes(kind, name, qualified_name, file_path, "
-            "line_start, line_end, language, updated_at) "
-            "VALUES('Function',?,?,?,1,20,'python',?)",
-            (name, win_qname, win_fpath, time.time()),
+           "INSERT INTO nodes(kind, name, qualified_name, file_path, "
+           "line_start, line_end, language, updated_at) "
+           "VALUES('Function',?,?,?,1,20,'python',?)",
+           (name, win_qname, win_fpath, time.time()),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -1113,45 +1153,45 @@ class TestPathNormalisation(TestAnalysisBase):
     def test_resolve_forward_slash_path(self):
         """Forward-slash path (POSIX) resolves even when DB has backslash."""
         nid = self._win_node(
-            "auth_fn",
-            "C:\\proj\\auth.py::auth_fn",
-            "C:\\proj\\auth.py",
+           "auth_fn",
+           "C:\\proj\\auth.py::auth_fn",
+           "C:\\proj\\auth.py",
         )
         root = self._task("Root")
         t = self._task("T", parent_id=root["id"])
         ref = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            qualified_name="C:/proj/auth.py::auth_fn",
+           self.conn, t["id"], "modifies",
+           qualified_name="C:/proj/auth.py::auth_fn",
         )
         assert ref["code_node_id"] == nid
 
     def test_resolve_double_backslash_json_escaped(self):
         """Double-backslash (JSON-escaped, as LLM receives from MCP) resolves."""
         nid = self._win_node(
-            "parse_fn",
-            "C:\\proj\\parser.py::parse_fn",
-            "C:\\proj\\parser.py",
+           "parse_fn",
+           "C:\\proj\\parser.py::parse_fn",
+           "C:\\proj\\parser.py",
         )
         root = self._task("Root")
         t = self._task("T", parent_id=root["id"])
         ref = tasks.link_task_code(
-            self.conn, t["id"], "reads",
-            qualified_name="C:\\\\proj\\\\parser.py::parse_fn",
+           self.conn, t["id"], "reads",
+           qualified_name="C:\\\\proj\\\\parser.py::parse_fn",
         )
         assert ref["code_node_id"] == nid
 
     def test_resolve_mixed_separators(self):
         """Mixed separators C:/proj\\fn.py resolve correctly."""
         nid = self._win_node(
-            "mixed_fn",
-            "C:/proj/mixed.py::mixed_fn",
-            "C:/proj/mixed.py",
+           "mixed_fn",
+           "C:/proj/mixed.py::mixed_fn",
+           "C:/proj/mixed.py",
         )
         root = self._task("Root")
         t = self._task("T", parent_id=root["id"])
         ref = tasks.link_task_code(
-            self.conn, t["id"], "modifies",
-            qualified_name="C:\\proj\\mixed.py::mixed_fn",
+           self.conn, t["id"], "modifies",
+           qualified_name="C:\\proj\\mixed.py::mixed_fn",
         )
         assert ref["code_node_id"] == nid
 
@@ -1161,10 +1201,10 @@ class TestPathNormalisation(TestAnalysisBase):
         """Insert a node with given file_path (absolute Windows-style)."""
         import time
         cur = self.conn.execute(
-            "INSERT INTO nodes(kind, name, qualified_name, file_path, "
-            "line_start, line_end, language, updated_at) "
-            "VALUES('Function',?,?,?,1,10,'python',?)",
-            (name, f"{fpath}::{name}", fpath, time.time()),
+           "INSERT INTO nodes(kind, name, qualified_name, file_path, "
+           "line_start, line_end, language, updated_at) "
+           "VALUES('Function',?,?,?,1,10,'python',?)",
+           (name, f"{fpath}::{name}", fpath, time.time()),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -1181,7 +1221,7 @@ class TestPathNormalisation(TestAnalysisBase):
         nid = self._node_for_file("do_thing", fpath)
         t = self._linked_task("T", nid, root["id"])
         result = task_analysis.find_tasks_for_impact(
-            self.conn, ["pkg/module.py"]
+           self.conn, ["pkg/module.py"]
         )
         found_ids = [x["id"] for x in result["tasks"]]
         assert t["id"] in found_ids
@@ -1193,7 +1233,7 @@ class TestPathNormalisation(TestAnalysisBase):
         nid = self._node_for_file("helper", fpath)
         t = self._linked_task("T", nid, root["id"])
         result = task_analysis.find_tasks_for_impact(
-            self.conn, ["module.py"]
+           self.conn, ["module.py"]
         )
         found_ids = [x["id"] for x in result["tasks"]]
         assert t["id"] in found_ids
@@ -1205,7 +1245,7 @@ class TestPathNormalisation(TestAnalysisBase):
         nid = self._node_for_file("compute", fpath)
         t = self._linked_task("T", nid, root["id"])
         result = task_analysis.find_tasks_for_impact(
-            self.conn, ["/project/pkg/mod.py"]
+           self.conn, ["/project/pkg/mod.py"]
         )
         found_ids = [x["id"] for x in result["tasks"]]
         assert t["id"] in found_ids
@@ -1217,7 +1257,7 @@ class TestPathNormalisation(TestAnalysisBase):
         nid = self._node_for_file("exact_fn", fpath)
         t = self._linked_task("T", nid, root["id"])
         result = task_analysis.find_tasks_for_impact(
-            self.conn, ["C:\\project\\exact.py"]
+           self.conn, ["C:\\project\\exact.py"]
         )
         found_ids = [x["id"] for x in result["tasks"]]
         assert t["id"] in found_ids
@@ -1225,7 +1265,7 @@ class TestPathNormalisation(TestAnalysisBase):
     def test_nonexistent_path_returns_empty(self):
         """Non-existent file path returns empty result gracefully."""
         result = task_analysis.find_tasks_for_impact(
-            self.conn, ["totally/nonexistent/file.py"]
+           self.conn, ["totally/nonexistent/file.py"]
         )
         assert result["tasks"] == []
         assert "note" in result

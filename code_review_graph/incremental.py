@@ -307,7 +307,11 @@ def run_post_build_hooks(store: GraphStore) -> dict:
         for row in rows:
             node_id, name, kind, params, ret = row[0], row[1], row[2], row[3], row[4]
             if kind in ("Function", "Test"):
-                sig = f"def {name}({params or ''})"
+                # Strip outer parens from params if already parenthesized (from AST extraction)
+                params_str = params or ""
+                if params_str.startswith("(") and params_str.endswith(")"):
+                    params_str = params_str[1:-1]
+                sig = f"def {name}({params_str})"
                 if ret:
                     sig += f" -> {ret}"
             elif kind == "Class":

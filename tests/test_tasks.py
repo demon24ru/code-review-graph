@@ -221,6 +221,22 @@ class TestMoveTask(TestTaskBase):
         with pytest.raises(ValueError, match="cycle"):
             tasks.move_task(self.conn, [root["id"]], new_parent_id=grandchild["id"])
 
+    def test_move_task_cycle_error_shows_title(self):
+        """Verify cycle error message contains task titles, not UUIDs."""
+        root = tasks.create_task(self.conn, [{"title": "Auth module"}])["tasks"][0]
+        child = tasks.create_task(self.conn, [{"title": "JWT service"}], parent_id=root["id"])["tasks"][0]
+        grandchild = tasks.create_task(self.conn, [{"title": "Token model"}], parent_id=child["id"])["tasks"][0]
+        
+        with pytest.raises(ValueError) as exc_info:
+            tasks.move_task(self.conn, [root["id"]], new_parent_id=grandchild["id"])
+        
+        error_msg = str(exc_info.value)
+        # Should contain titles, not UUIDs
+        assert "Auth module" in error_msg
+        assert "Token model" in error_msg
+        assert root["id"] not in error_msg  # UUID should not appear
+        assert "would create a hierarchy cycle" in error_msg
+
 
 # ---------------------------------------------------------------------------
 # 5.1.5 — archive_task (cascade)
@@ -375,6 +391,30 @@ class TestDeleteCascade(TestTaskBase):
         rows = self.conn.execute("SELECT * FROM contracts").fetchall()
         assert len(rows) == 0
 
+    def test_delete_task_response_includes_title(self):
+        """Deleting a task includes title in response for confirmation."""
+        t = tasks.create_task(self.conn, [{"title": "My Task"}])["tasks"][0]
+        result = tasks.delete_task(self.conn, t["id"])
+        assert "deleted_tasks" in result
+        assert len(result["deleted_tasks"]) == 1
+        assert result["deleted_tasks"][0]["id"] == t["id"]
+        assert result["deleted_tasks"][0]["title"] == "My Task"
+        # Backward compat: deleted_ids still present
+        assert t["id"] in result["deleted_ids"]
+
+    def test_delete_cascade_response_includes_all_titles(self):
+        """Cascade delete includes all subtask titles in response."""
+        root = tasks.create_task(self.conn, [{"title": "Root Task"}])["tasks"][0]
+        c1 = tasks.create_task(self.conn, [{"title": "Child 1"}], parent_id=root["id"])["tasks"][0]
+        c2 = tasks.create_task(self.conn, [{"title": "Child 2"}], parent_id=root["id"])["tasks"][0]
+        result = tasks.delete_task(self.conn, root["id"], cascade=True)
+        assert len(result["deleted_tasks"]) == 3
+        titles = {dt["title"] for dt in result["deleted_tasks"]}
+        assert titles == {"Root Task", "Child 1", "Child 2"}
+        # All IDs present in both lists
+        assert len(result["deleted_ids"]) == 3
+        assert set(dt["id"] for dt in result["deleted_tasks"]) == set(result["deleted_ids"])
+
 
 # ---------------------------------------------------------------------------
 # 5.1.7 — DAG edges: add + cycle detection for depends_on
@@ -406,6 +446,22 @@ class TestDAGEdges(TestTaskBase):
         tasks.add_task_edge(self.conn, [{"source_id": self.t2["id"], "target_id": self.t3["id"]}], edge_type="depends_on")
         with pytest.raises(ValueError, match="cycle"):
             tasks.add_task_edge(self.conn, [{"source_id": self.t3["id"], "target_id": self.t1["id"]}], edge_type="depends_on")
+
+    def test_add_edge_cycle_error_shows_title(self):
+        """Verify cycle error message contains task titles, not UUIDs."""
+        # Create a cycle scenario: T1 -> T2 -> T3, then try T3 -> T1
+        tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")
+        tasks.add_task_edge(self.conn, [{"source_id": self.t2["id"], "target_id": self.t3["id"]}], edge_type="depends_on")
+        
+        with pytest.raises(ValueError) as exc_info:
+            tasks.add_task_edge(self.conn, [{"source_id": self.t3["id"], "target_id": self.t1["id"]}], edge_type="depends_on")
+        
+        error_msg = str(exc_info.value)
+        # Should contain titles, not UUIDs
+        assert "T3" in error_msg
+        assert "T1" in error_msg
+        assert self.t3["id"] not in error_msg  # UUID should not appear
+        assert "would create a cycle in the task dependency graph" in error_msg
 
     def test_intra_batch_cycle_detected(self):
         # A→B and B→A in the same batch call must raise, even though neither
@@ -552,9 +608,9 @@ class TestCreateTaskWithInlineEdges(TestTaskBase):
         assert len(result["tasks"]) == 2
         assert len(result["edges"]) == 1
         e = result["edges"][0]
-        assert e["source_id"] == result["tasks"][1]["id"]
-        assert e["target_id"] == result["tasks"][0]["id"]
-        assert e["edge_type"] == "depends_on"
+        assert e["source_task_id"] == result["tasks"][1]["id"]
+        assert e["target_task_id"] == result["tasks"][0]["id"]
+        assert e["type"] == "depends_on"
 
     def test_inline_edges_default_type_is_depends_on(self):
         result = tasks.create_task(
@@ -563,7 +619,7 @@ class TestCreateTaskWithInlineEdges(TestTaskBase):
             tasks=[{"title": "A"}, {"title": "B"}],
             edges=[{"from": 1, "to": 0}],  # no "type"
         )
-        assert result["edges"][0]["edge_type"] == "depends_on"
+        assert result["edges"][0]["type"] == "depends_on"
 
     def test_inline_edges_non_ordering_type(self):
         result = tasks.create_task(
@@ -572,7 +628,7 @@ class TestCreateTaskWithInlineEdges(TestTaskBase):
             tasks=[{"title": "A"}, {"title": "B"}],
             edges=[{"from": 0, "to": 1, "type": "shares_context"}],
         )
-        assert result["edges"][0]["edge_type"] == "shares_context"
+        assert result["edges"][0]["type"] == "shares_context"
 
     def test_inline_edges_persisted_in_db(self):
         """Edges created inline must be queryable afterwards."""

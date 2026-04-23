@@ -237,9 +237,9 @@ def create_task(
                 )
                 created_edges.append(
                     {
-                        "source_id": src_id,
-                        "target_id": tgt_id,
-                        "edge_type": etype,
+                        "source_task_id": src_id,
+                        "target_task_id": tgt_id,
+                        "type": etype,
                         "description": desc,
                     }
                 )
@@ -468,7 +468,7 @@ def delete_task(
     If *cascade* is True, all subtasks (recursive) are deleted along with
     their edges, code refs, notes, and contracts.
 
-    Returns ``{ deleted_ids: [...] }``.
+    Returns ``{ deleted_ids: [...], deleted_tasks: [{id, title}, ...] }``.
     """
     get_task(conn, task_id)  # raises KeyError if not found
 
@@ -486,11 +486,27 @@ def delete_task(
     else:
         ids_to_delete = [task_id]
 
+    # Collect titles BEFORE deletion for confirmation in response
+    if ids_to_delete:
+        ph = ", ".join("?" * len(ids_to_delete))
+        title_rows = conn.execute(  # noqa: S608
+            f"SELECT id, title FROM tasks WHERE id IN ({ph})", ids_to_delete
+        ).fetchall()
+        deleted_titles = {r["id"]: r["title"] for r in title_rows}
+    else:
+        deleted_titles = {}
+
     for tid in ids_to_delete:
         _delete_task_data(conn, tid)
 
     conn.commit()
-    return {"deleted_ids": ids_to_delete}
+    return {
+        "deleted_ids": ids_to_delete,
+        "deleted_tasks": [
+            {"id": tid, "title": deleted_titles.get(tid, "<unknown>")}
+            for tid in ids_to_delete
+        ],
+    }
 
 
 def _collect_subtree_ids(conn: sqlite3.Connection, root_id: str) -> list[str]:
@@ -603,8 +619,14 @@ def move_task(
         for tid in task_ids:
             subtree_ids = set(_collect_subtree_ids(conn, tid))
             if new_parent_id in subtree_ids:
+                # Use titles in error message for human readability
+                try:
+                    tid_title = get_task(conn, tid).get("title", tid)
+                    parent_title = get_task(conn, new_parent_id).get("title", new_parent_id)
+                except KeyError:
+                    tid_title, parent_title = tid, new_parent_id
                 raise ValueError(
-                    f"Cannot move task '{tid}' under '{new_parent_id}': "
+                    f"Cannot move task '{tid_title}' under '{parent_title}': "
                     "would create a hierarchy cycle"
                 )
 
@@ -908,8 +930,14 @@ def _assert_no_cycle_after_edge(
     while stack:
         node = stack.pop()
         if node == source_id:
+            # Try to get human-readable titles, fall back to IDs
+            try:
+                src_title = get_task(conn, source_id).get("title", source_id)
+                tgt_title = get_task(conn, target_id).get("title", target_id)
+            except (KeyError, Exception):
+                src_title, tgt_title = source_id, target_id
             raise ValueError(
-                f"Adding edge {source_id} --{edge_type}--> {target_id} "
+                f"Adding edge '{src_title}' --{edge_type}--> '{tgt_title}' "
                 "would create a cycle in the task dependency graph"
             )
         if node in visited:
