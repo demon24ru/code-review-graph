@@ -241,12 +241,12 @@ code-review-graph serve            # Start MCP server
 </details>
 
 <details>
-<summary><strong>68 MCP tools (28 code-graph + 40 task DAG)</strong></summary>
+<summary><strong>69 MCP tools (30 code-graph + 39 task DAG)</strong></summary>
 <br>
 
 Your AI assistant uses these automatically once the graph is built.
 
-**Code-graph tools (28):**
+**Code-graph tools (30):**
 
 | Tool | Description |
 |------|-------------|
@@ -281,7 +281,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `export_scip_tool` | Export graph to SCIP-compatible JSON |
 | `import_scip_tool` | Import SCIP JSON document into the graph |
 
-**Task DAG tools (40) — brainstorm-driven task planning:**
+**Task DAG tools (39) — brainstorm-driven task planning:**
 
 > **Single-pipeline discipline**: at most one root task may be open at a time.
 > Workflow: brainstorm fully → validate → implement → close → next task.
