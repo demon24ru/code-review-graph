@@ -129,6 +129,7 @@ def get_impact_radius_tool(
     max_depth: int = 2,
     repo_root: Optional[str] = None,
     base: str = "HEAD~1",
+    summary_only: bool = False,
 ) -> dict:
     """Analyze the blast radius of changed files in the codebase.
 
@@ -140,12 +141,15 @@ def get_impact_radius_tool(
         max_depth: Number of hops to traverse in the dependency graph. Default: 2.
         repo_root: Repository root path. Auto-detected if omitted.
         base: Git ref for auto-detecting changes. Default: HEAD~1.
+        summary_only: If True, return only counts and summary (no full node/edge arrays).
+                      Keeps response under 1KB. Default: False.
     """
     return get_impact_radius(
         changed_files=changed_files,
         max_depth=max_depth,
         repo_root=repo_root,
         base=base,
+        summary_only=summary_only,
     )
 
 
@@ -193,6 +197,7 @@ def get_review_context_tool(
     max_lines_per_file: int = 200,
     repo_root: Optional[str] = None,
     base: str = "HEAD~1",
+    summary_only: bool = False,
 ) -> dict:
     """Generate a focused, token-efficient review context for code changes.
 
@@ -206,6 +211,8 @@ def get_review_context_tool(
         max_lines_per_file: Max source lines per file. Default: 200.
         repo_root: Repository root path. Auto-detected if omitted.
         base: Git ref for change detection. Default: HEAD~1.
+        summary_only: If True, return only counts and summary (no full node/edge arrays).
+                      Keeps response under 1KB. Default: False.
     """
     return get_review_context(
         changed_files=changed_files,
@@ -214,6 +221,7 @@ def get_review_context_tool(
         max_lines_per_file=max_lines_per_file,
         repo_root=repo_root,
         base=base,
+        summary_only=summary_only,
     )
 
 
@@ -524,6 +532,7 @@ def detect_changes_tool(
     include_source: bool = False,
     max_depth: int = 2,
     repo_root: Optional[str] = None,
+    summary_only: bool = False,
 ) -> dict:
     """Detect changes and produce risk-scored, priority-ordered review guidance.
 
@@ -537,6 +546,8 @@ def detect_changes_tool(
         include_source: Include source code snippets for changed functions. Default: False.
         max_depth: Impact radius depth for BFS traversal. Default: 2.
         repo_root: Repository root path. Auto-detected if omitted.
+        summary_only: If True, return only counts and summary (no full node/edge arrays).
+                      Keeps response under 1KB. Default: False.
     """
     return detect_changes_func(
         base=base,
@@ -544,6 +555,7 @@ def detect_changes_tool(
         include_source=include_source,
         max_depth=max_depth,
         repo_root=repo_root,
+        summary_only=summary_only,
     )
 
 
@@ -685,6 +697,7 @@ def analyze_edit_region_tool(
     line_start: int,
     line_end: int,
     repo_root: Optional[str] = None,
+    summary_only: bool = False,
 ) -> dict:
     """Analyze the blast radius of a specific line range within a file.
 
@@ -697,12 +710,15 @@ def analyze_edit_region_tool(
         line_start: First line of the edit region (1-indexed).
         line_end: Last line of the edit region (1-indexed, inclusive).
         repo_root: Repository root path. Auto-detected if omitted.
+        summary_only: If True, return only counts and summary (no full node/edge arrays).
+                      Keeps response under 1KB. Default: False.
     """
     return analyze_edit_region(
         file_path=file_path,
         line_start=line_start,
         line_end=line_end,
         repo_root=repo_root,
+        summary_only=summary_only,
     )
 
 

@@ -33,6 +33,7 @@ def get_review_context(
     max_lines_per_file: int = 200,
     repo_root: str | None = None,
     base: str = "HEAD~1",
+    summary_only: bool = False,
 ) -> dict[str, Any]:
     """Generate a focused review context from changed files.
 
@@ -45,6 +46,8 @@ def get_review_context(
         max_lines_per_file: Max source lines per file in output (default: 200).
         repo_root: Repository root path. Auto-detected if omitted.
         base: Git ref for change detection (default: HEAD~1).
+        summary_only: If True, return only counts and summary (no full node/edge arrays).
+                      Keeps response under 1KB. Default: False.
 
     Returns:
         Structured review context with subgraph, source snippets, and
@@ -67,6 +70,22 @@ def get_review_context(
 
         abs_files = [str(root / f) for f in changed_files]
         impact = store.get_impact_radius(abs_files, max_depth=max_depth)
+
+        if summary_only:
+            return {
+                "status": "ok",
+                "summary": (
+                    f"Review context for {len(changed_files)} changed file(s):\n"
+                    f"  - {len(impact['changed_nodes'])} directly changed nodes\n"
+                    f"  - {len(impact['impacted_nodes'])} impacted nodes"
+                    f" in {len(impact['impacted_files'])} files"
+                ),
+                "changed_files": changed_files,
+                "impacted_files": impact["impacted_files"],
+                "changed_nodes_count": len(impact["changed_nodes"]),
+                "impacted_nodes_count": len(impact["impacted_nodes"]),
+                "edges_count": len(impact["edges"]),
+            }
 
         # Build review context
         context: dict[str, Any] = {
@@ -292,6 +311,7 @@ def detect_changes_func(
     include_source: bool = False,
     max_depth: int = 2,
     repo_root: str | None = None,
+    summary_only: bool = False,
 ) -> dict[str, Any]:
     """Detect changes and produce risk-scored review guidance.
 
@@ -307,6 +327,8 @@ def detect_changes_func(
             functions.  Default: False.
         max_depth: Impact radius depth for BFS traversal.  Default: 2.
         repo_root: Repository root path.  Auto-detected if omitted.
+        summary_only: If True, return only counts and summary (no full node/edge arrays).
+                      Keeps response under 1KB. Default: False.
 
     Returns:
         Risk-scored analysis with changed functions, affected flows,
@@ -350,6 +372,20 @@ def detect_changes_func(
             base=base,
         )
 
+        if summary_only:
+            result = {
+                "status": "ok",
+                "changed_files": changed_files,
+                "summary": analysis.get("summary", ""),
+                "risk_score": analysis.get("risk_score", 0.0),
+                "changed_functions_count": len(analysis.get("changed_functions", [])),
+                "affected_flows_count": len(analysis.get("affected_flows", [])),
+                "test_gaps_count": len(analysis.get("test_gaps", [])),
+                "review_priorities_count": len(analysis.get("review_priorities", [])),
+            }
+            result["_hints"] = generate_hints("detect_changes", result, get_session())
+            return result
+
         # Optionally include source snippets for changed functions.
         if include_source:
             for func in analysis.get("changed_functions", []):
@@ -392,6 +428,7 @@ def analyze_edit_region(
     line_start: int,
     line_end: int,
     repo_root: str | None = None,
+    summary_only: bool = False,
 ) -> dict[str, Any]:
     """Analyze the blast radius of edits within a specific line range of a file.
 
@@ -405,6 +442,8 @@ def analyze_edit_region(
         line_start: First line of the edited region (1-indexed, inclusive).
         line_end: Last line of the edited region (1-indexed, inclusive).
         repo_root: Repository root path.  Auto-detected if omitted.
+        summary_only: If True, return only counts and summary (no full node/edge arrays).
+                      Keeps response under 1KB. Default: False.
 
     Returns:
         Dict with:
@@ -539,7 +578,24 @@ def analyze_edit_region(
                 "Consider adding tests before merging."
             )
 
-        result: dict[str, Any] = {
+        if summary_only:
+            result: dict[str, Any] = {
+                "status": "ok",
+                "summary": "\n".join(summary_parts),
+                "file_path": file_path,
+                "line_start": line_start,
+                "line_end": line_end,
+                "impact_summary": {
+                    "edited_symbol_count": len(overlapping),
+                    "external_callers": len(external_callers),
+                    "downstream_calls": len(downstream_calls),
+                    "test_coverage": len(test_coverage),
+                },
+            }
+            result["_hints"] = generate_hints("analyze_edit_region", result, get_session())
+            return result
+
+        result = {
             "status": "ok",
             "summary": "\n".join(summary_parts),
             "file_path": file_path,
