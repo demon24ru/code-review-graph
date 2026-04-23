@@ -44,14 +44,16 @@ from .tools import (
     list_repos_func,
     query_graph,
     refactor_func,
+    register_repo_func,
     semantic_search_nodes,
     trace_dataflow,
+    unregister_repo_func,
 )
 from .tools.task_tools import (
     contract_add_func,
     contract_link_func,
-    contract_unlink_func,
     contract_list_func,
+    contract_unlink_func,
     contract_update_func,
     note_add_func,
     note_delete_func,
@@ -61,17 +63,19 @@ from .tools.task_tools import (
     task_archive_func,
     task_blast_radius_func,
     task_check_isolation_func,
+    task_check_rollup_func,
     task_create_func,
-    task_get_active_root_func,
     task_delete_func,
     task_edit_func,
     task_execution_order_func,
     task_export_func,
     task_find_by_code_node_func,
     task_find_conflicts_func,
+    task_find_for_impact_func,
+    task_get_active_root_func,
+    task_get_code_refs_func,
     task_get_dag_func,
     task_get_func,
-    task_get_code_refs_func,
     task_link_code_func,
     task_list_func,
     task_move_func,
@@ -80,13 +84,11 @@ from .tools.task_tools import (
     task_roadmap_func,
     task_search_func,
     task_suggest_code_links_func,
+    task_suggest_contracts_func,
     task_topological_sort_func,
     task_unlink_code_func,
     task_update_func,
     task_validate_func,
-    task_find_for_impact_func,
-    task_suggest_contracts_func,
-    task_check_rollup_func,
 )
 
 # NOTE: Thread-safe for stdio MCP (single-threaded). If adding HTTP/SSE
@@ -689,6 +691,33 @@ def cross_repo_search_tool(
         limit: Maximum results per repo. Default: 20.
     """
     return cross_repo_search_func(query=query, kind=kind, limit=limit)
+
+
+@mcp.tool()
+def register_repo_tool(path: str, alias: Optional[str] = None) -> dict:
+    """Register a repository in the multi-repo registry.
+
+    Adds a repository to the global registry so it can be searched via
+    cross_repo_search_tool. The repository must have a built graph first.
+
+    Args:
+        path: Absolute path to the repository root.
+        alias: Optional short name (defaults to directory name).
+    """
+    return register_repo_func(path, alias=alias)
+
+
+@mcp.tool()
+def unregister_repo_tool(path_or_alias: str) -> dict:
+    """Remove a repository from the multi-repo registry.
+
+    Removes the registry entry only — does NOT delete any files.
+    Use list_repos_tool to see registered repos.
+
+    Args:
+        path_or_alias: Repository path or alias to remove.
+    """
+    return unregister_repo_func(path_or_alias)
 
 
 @mcp.tool()
@@ -1867,7 +1896,7 @@ def task_find_for_impact(
 
 @mcp.tool()
 def task_suggest_contracts(
-    root_task_id: str,
+    root_task_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Suggest contracts between tasks with implicit code-level dependencies.
@@ -1877,7 +1906,7 @@ def task_suggest_contracts(
     contract between them. These hidden dependencies need interface contracts.
 
     Args:
-        root_task_id: Root of the subtree to analyze.
+        root_task_id: Root of the subtree to analyze. Auto-detected if omitted (uses active root task).
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return task_suggest_contracts_func(root_task_id=root_task_id, repo_root=repo_root)

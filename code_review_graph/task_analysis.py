@@ -1677,7 +1677,7 @@ def find_tasks_for_impact(
 
 def suggest_contracts(
     conn: sqlite3.Connection,
-    root_task_id: str,
+    root_task_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Suggest contracts between leaf tasks that have implicit code dependencies.
 
@@ -1686,6 +1686,8 @@ def suggest_contracts(
     2. No ``task_edge`` and no ``contract`` already exists between A and B.
 
     This answers: *"Between which tasks should we define interface contracts?"*
+
+    If *root_task_id* is None, auto-detects the active root task.
 
     Algorithm:
         - Collect leaf tasks in the subtree.
@@ -1701,6 +1703,7 @@ def suggest_contracts(
           ``crossing_edges`` (count of code edges A→B + B→A),
           ``edge_details`` (list of {source_node, target_node, edge_type}).
     """
+    root_task_id = _resolve_root(conn, root_task_id, "suggest_contracts")
     get_task(conn, root_task_id)
     subtree_ids = _collect_subtree_ids(conn, root_task_id)
 

@@ -273,6 +273,8 @@ Your AI assistant uses these automatically once the graph is built.
 | `get_wiki_page_tool` | Retrieve a specific wiki page |
 | `list_repos_tool` | List registered repositories |
 | `cross_repo_search_tool` | Search across all registered repositories |
+| `register_repo_tool` | Register a repository in the multi-repo registry (MCP alternative to CLI `register`) |
+| `unregister_repo_tool` | Remove a repository from the multi-repo registry |
 | `analyze_edit_region_tool` | Blast radius of a specific line range in a file. `summary_only=True` returns counts only (<1 KB) |
 | `audit_workspace_tool` | Consolidated dead code + large functions + cycle audit |
 | `trace_dataflow_tool` | Forward BFS data-flow tracing from source to sink |

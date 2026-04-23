@@ -252,7 +252,8 @@ _SKILLS: dict[str, dict[str, str]] = {
             "1. `analyze_edit_region_tool(file, line_start, line_end)` — line-level blast radius.\n"
             "2. `trace_dataflow_tool(source, sink)` — can data flow from A to B?\n"
             "3. `get_affected_flows_tool(changed_files)` — impacted execution paths.\n"
-            "4. `cross_repo_search_tool(query)` — search across registered repos.\n"
+            "4. `register_repo_tool(path)` — register a repo for cross-repo search (MCP alternative to CLI).\n"
+            "5. `cross_repo_search_tool(query)` — search across all registered repos.\n"
             "5. `task_find_for_impact(file_paths)` — open tasks in blast radius.\n\n"
             "See the full workflow in `skills/trace-impact/SKILL.md`."
         ),

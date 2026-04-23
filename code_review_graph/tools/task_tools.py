@@ -1543,7 +1543,7 @@ def task_check_rollup_func(
 
 
 def task_suggest_contracts_func(
-    root_task_id: str,
+    root_task_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Suggest contracts between tasks with implicit code-level dependencies.
@@ -1554,7 +1554,7 @@ def task_suggest_contracts_func(
     interface contracts for safe parallel development.
 
     Args:
-        root_task_id: Root of the subtree to analyze.
+        root_task_id: Root of the subtree to analyze. Auto-detected if omitted (uses active root task).
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:

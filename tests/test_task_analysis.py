@@ -860,6 +860,32 @@ class TestSuggestContracts(TestAnalysisBase):
         # First result should have more crossing edges
         assert result[0]["crossing_edges"] >= result[1]["crossing_edges"]
 
+    def test_suggest_contracts_auto_detect_root(self):
+        """suggest_contracts() without root_task_id auto-detects active root."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        t2 = self._task("T2", parent_id=root["id"])
+        n1 = self._node("fn_a", "a.py")
+        n2 = self._node("fn_b", "b.py")
+        self._link(t1["id"], n1, "modifies")
+        self._link(t2["id"], n2, "modifies")
+        self._code_edge("fn_a", "fn_b")
+        # Call without root_task_id — should auto-detect
+        result = task_analysis.suggest_contracts(self.conn)
+        assert len(result) == 1
+        # Verify it's the same as calling with explicit root_task_id
+        result_explicit = task_analysis.suggest_contracts(self.conn, root["id"])
+        assert result == result_explicit
+
+    def test_suggest_contracts_no_active_root_raises(self):
+        """suggest_contracts() with no active root raises KeyError."""
+        # Create a root but mark it as done (not active)
+        root = self._task("Root")
+        tasks.update_task(self.conn, root["id"], status="done")
+        # Now calling without root_task_id should raise KeyError
+        with pytest.raises(KeyError, match="no open root task found"):
+            task_analysis.suggest_contracts(self.conn)
+
 
 # ---------------------------------------------------------------------------
 # find_tasks_for_impact tests (cross-query #2)

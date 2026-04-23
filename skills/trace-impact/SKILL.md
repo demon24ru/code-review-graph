@@ -71,10 +71,18 @@ Use `summary_only=True` first to gauge scale, then omit it to get full node/edge
 
 ## Multi-Repository Cross-Search
 
-First, register repositories:
+Register repositories via MCP (preferred from an agent) or CLI:
+```
+# MCP — use directly from the agent
+register_repo_tool(path="/path/to/repo-a")
+register_repo_tool(path="/path/to/repo-b", alias="auth-service")  # optional alias
+list_repos_tool()                              # verify registered repos
+unregister_repo_tool(path_or_alias="auth-service")  # remove when done
+```
+
 ```bash
+# CLI alternative
 code-review-graph register /path/to/repo-a
-code-review-graph register /path/to/repo-b
 code-review-graph repos    # list registered repos
 ```
 
@@ -142,6 +150,6 @@ ends bloats input context while yielding no extra output — always scope your r
 
 - `analyze_edit_region_tool` uses 1-indexed line numbers matching your editor
 - `trace_dataflow_tool` traverses CALLS and IMPORTS_FROM edges — not data types
-- For `cross_repo_search_tool` to work, repos must first be registered via CLI: `code-review-graph register <path>`
+- For `cross_repo_search_tool` to work, repos must first be registered — use `register_repo_tool(path=...)` from MCP or `code-review-graph register <path>` from CLI
 - `task_find_for_impact` bridges code graph and task DAG — shows open tasks for the same blast radius
 - Use `trace_dataflow_tool(source=X, sink=Y)` for security reviews to check injection paths

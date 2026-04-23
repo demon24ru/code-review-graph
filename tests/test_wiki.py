@@ -187,3 +187,19 @@ class TestWiki:
         index_content = (Path(self.wiki_dir) / "index.md").read_text()
         assert "Total communities" in index_content
         assert "0" in index_content  # 0 communities
+
+    def test_wiki_page_deterministic(self):
+        """_generate_community_page produces identical output on consecutive calls."""
+        communities = self._seed_communities()
+        assert len(communities) > 0
+
+        from code_review_graph.communities import get_communities
+        stored = get_communities(self.store)
+        assert len(stored) > 0
+
+        # Generate the same page twice
+        page1 = _generate_community_page(self.store, stored[0])
+        page2 = _generate_community_page(self.store, stored[0])
+
+        # Both should be identical
+        assert page1 == page2, "Community page generation is non-deterministic"

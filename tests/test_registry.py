@@ -238,3 +238,115 @@ class TestCrossRepoSearch:
 
         import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class TestRegisterRepoFunc:
+    """Tests for register_repo_func and unregister_repo_func."""
+
+    def setup_method(self):
+        self.tmp_dir = tempfile.mkdtemp()
+        self.registry_path = Path(self.tmp_dir) / "registry.json"
+
+        # Create fake repos
+        self.repo1 = Path(self.tmp_dir) / "repo1"
+        self.repo1.mkdir()
+        (self.repo1 / ".git").mkdir()
+
+        self.repo2 = Path(self.tmp_dir) / "repo2"
+        self.repo2.mkdir()
+        (self.repo2 / ".code-review-graph").mkdir()
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_register_repo_func_success(self):
+        """register_repo_func registers a repo and returns status ok."""
+        from code_review_graph.tools import register_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.register.return_value = {
+                "path": str(self.repo1.resolve()),
+                "alias": "myrepo",
+            }
+            mock_registry_cls.return_value = mock_instance
+
+            result = register_repo_func(str(self.repo1), alias="myrepo")
+
+            assert result["status"] == "ok"
+            assert result["repo"]["alias"] == "myrepo"
+            assert "next_actions" in result
+            assert "list_repos_tool" in result["next_actions"]
+
+    def test_register_repo_func_no_alias(self):
+        """register_repo_func uses directory name when no alias provided."""
+        from code_review_graph.tools import register_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.register.return_value = {
+                "path": str(self.repo1.resolve()),
+            }
+            mock_registry_cls.return_value = mock_instance
+
+            result = register_repo_func(str(self.repo1))
+
+            assert result["status"] == "ok"
+            assert "repo" in result
+
+    def test_register_repo_func_error(self):
+        """register_repo_func returns error on exception."""
+        from code_review_graph.tools import register_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.register.side_effect = ValueError("Invalid path")
+            mock_registry_cls.return_value = mock_instance
+
+            result = register_repo_func("/invalid/path")
+
+            assert result["status"] == "error"
+            assert result["code"] == "REGISTRY_ERROR"
+
+    def test_unregister_repo_func_success(self):
+        """unregister_repo_func removes a repo and returns removed: True."""
+        from code_review_graph.tools import unregister_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.unregister.return_value = True
+            mock_registry_cls.return_value = mock_instance
+
+            result = unregister_repo_func("myrepo")
+
+            assert result["status"] == "ok"
+            assert result["removed"] is True
+
+    def test_unregister_repo_func_not_found(self):
+        """unregister_repo_func returns error when repo not found."""
+        from code_review_graph.tools import unregister_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.unregister.return_value = False
+            mock_registry_cls.return_value = mock_instance
+
+            result = unregister_repo_func("nonexistent")
+
+            assert result["status"] == "error"
+            assert result["code"] == "REGISTRY_NOT_FOUND"
+
+    def test_unregister_repo_func_error(self):
+        """unregister_repo_func returns error on exception."""
+        from code_review_graph.tools import unregister_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.unregister.side_effect = Exception("DB error")
+            mock_registry_cls.return_value = mock_instance
+
+            result = unregister_repo_func("myrepo")
+
+            assert result["status"] == "error"
+            assert result["code"] == "REGISTRY_ERROR"

@@ -23,20 +23,22 @@ Exposes 68 tools (28 code-graph + 40 task DAG):
 20. get_wiki_page            - retrieve a specific wiki page
 21. list_repos               - list registered repositories
 22. cross_repo_search        - search across all registered repositories
-23. find_files_by_pattern    - find files matching glob patterns
-24. analyze_edit_region      - blast radius of a specific line range in a file
-25. audit_workspace          - consolidated dead code + large functions + cycles audit
-26. trace_dataflow           - forward BFS data-flow tracing (source to sink)
-27. export_scip              - export graph to SCIP JSON
-28. import_scip              - import SCIP JSON into the graph
+23. register_repo            - register a repository in the multi-repo registry
+24. unregister_repo          - remove a repository from the multi-repo registry
+25. find_files_by_pattern    - find files matching glob patterns
+26. analyze_edit_region      - blast radius of a specific line range in a file
+27. audit_workspace          - consolidated dead code + large functions + cycles audit
+28. trace_dataflow           - forward BFS data-flow tracing (source to sink)
+29. export_scip              - export graph to SCIP JSON
+30. import_scip              - import SCIP JSON into the graph
 
 Task DAG tools (40):
-29-63. (see task_tools.py) — CRUD, DAG edges, code links, analysis, notes, contracts, roadmap
-64. task_find_for_impact     - cross-query: open tasks in blast radius of changed files
-65. task_suggest_contracts   - implicit code deps between tasks needing interface contracts
-66. task_check_rollup        - check if parent/ancestors can be closed or archived after subtask completes
-67. contract_link            - attach a task to an existing contract as provider/consumer
-68. contract_unlink          - remove all links between a task and a contract
+31-64. (see task_tools.py) — CRUD, DAG edges, code links, analysis, notes, contracts, roadmap
+65. task_find_for_impact     - cross-query: open tasks in blast radius of changed files
+66. task_suggest_contracts   - implicit code deps between tasks needing interface contracts
+67. task_check_rollup        - check if parent/ancestors can be closed or archived after subtask completes
+68. contract_link            - attach a task to an existing contract as provider/consumer
+69. contract_unlink          - remove all links between a task and a contract
 """
 
 from __future__ import annotations
@@ -87,7 +89,12 @@ from .query import (
 from .refactor_tools import apply_refactor_func, refactor_func
 
 # -- registry_tools ---------------------------------------------------------
-from .registry_tools import cross_repo_search_func, list_repos_func
+from .registry_tools import (
+    cross_repo_search_func,
+    list_repos_func,
+    register_repo_func,
+    unregister_repo_func,
+)
 
 # -- review -----------------------------------------------------------------
 from .review import (
@@ -114,16 +121,16 @@ from .task_tools import (
     task_add_edge_func,
     task_archive_func,
     task_blast_radius_func,
-
     task_check_isolation_func,
     task_create_func,
-    task_get_active_root_func,
     task_delete_func,
     task_edit_func,
     task_execution_order_func,
     task_export_func,
     task_find_by_code_node_func,
     task_find_conflicts_func,
+    task_find_for_impact_func,
+    task_get_active_root_func,
     task_get_code_refs_func,
     task_get_dag_func,
     task_get_func,
@@ -135,12 +142,11 @@ from .task_tools import (
     task_roadmap_func,
     task_search_func,
     task_suggest_code_links_func,
+    task_suggest_contracts_func,
     task_topological_sort_func,
     task_unlink_code_func,
     task_update_func,
     task_validate_func,
-    task_find_for_impact_func,
-    task_suggest_contracts_func,
 )
 
 __all__ = [
@@ -175,6 +181,8 @@ __all__ = [
     # registry_tools
     "cross_repo_search_func",
     "list_repos_func",
+    "register_repo_func",
+    "unregister_repo_func",
     # review
     "analyze_edit_region",
     "audit_workspace",
@@ -199,6 +207,7 @@ __all__ = [
 
     "task_check_isolation_func",
     "task_create_func",
+    "task_get_active_root_func",
     "task_delete_func",
     "task_edit_func",
     "task_execution_order_func",

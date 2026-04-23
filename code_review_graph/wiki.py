@@ -469,7 +469,7 @@ def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> st
             # Dependencies / Outgoing edges for this specific node
             try:
                 targets = store.get_outgoing_targets([qn])
-                local_deps = [t for t in targets if t != qn]
+                local_deps = sorted(t for t in targets if t != qn)
                 if local_deps:
                     lines.append("**Dependencies (Calls/Imports):**")
                     for t in local_deps[:15]:
@@ -496,6 +496,9 @@ def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> st
             flow_qns = store.get_flow_qualified_names(flow["id"])
             if flow_qns & member_set:
                 community_flows.append(flow)
+
+        # Sort by criticality (descending) then by id (ascending) for determinism
+        community_flows.sort(key=lambda f: (-f.get("criticality", 0.0), f.get("id", 0)))
 
         if community_flows:
             for flow in community_flows[:10]:
@@ -533,14 +536,14 @@ def _generate_community_page(store: GraphStore, community: dict[str, Any]) -> st
         if outgoing_targets:
             lines.append("### Outgoing")
             lines.append("")
-            for target, count in outgoing_targets.most_common(15):
+            for target, count in sorted(outgoing_targets.most_common(15), key=lambda x: (-x[1], x[0])):
                 lines.append(f"- `{_sanitize_name(target)}` ({count} edge(s))")
             lines.append("")
 
         if incoming_sources:
             lines.append("### Incoming")
             lines.append("")
-            for source, count in incoming_sources.most_common(15):
+            for source, count in sorted(incoming_sources.most_common(15), key=lambda x: (-x[1], x[0])):
                 lines.append(f"- `{_sanitize_name(source)}` ({count} edge(s))")
             lines.append("")
 
