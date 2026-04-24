@@ -131,7 +131,7 @@ def get_impact_radius_tool(
     max_depth: int = 2,
     repo_root: Optional[str] = None,
     base: str = "HEAD~1",
-    summary_only: bool = False,
+    summary_only: bool = True,
 ) -> dict:
     """Analyze the blast radius of changed files in the codebase.
 
@@ -534,7 +534,7 @@ def detect_changes_tool(
     include_source: bool = False,
     max_depth: int = 2,
     repo_root: Optional[str] = None,
-    summary_only: bool = False,
+    summary_only: bool = True,
 ) -> dict:
     """Detect changes and produce risk-scored, priority-ordered review guidance.
 
