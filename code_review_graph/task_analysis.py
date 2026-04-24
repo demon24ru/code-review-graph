@@ -33,7 +33,6 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections import defaultdict
-from pathlib import Path
 from typing import Any, Optional
 
 from .tasks import (
@@ -933,11 +932,12 @@ def export_task(
             related.append({
                 "id": other_id,
                 "title": other.get("title"),
+                "status": other.get("status", "draft"),
                 "edge_type": e.get("type"),
                 "direction": direction,
             })
         except (KeyError, TypeError):
-            related.append({"id": other_id, "edge_type": e.get("type"), "direction": direction})
+            related.append({"id": other_id, "status": "draft", "edge_type": e.get("type"), "direction": direction})
 
     # Code refs
     code_refs = get_task_code_refs(conn, task_id,

@@ -20,6 +20,7 @@ def list_flows(
     limit: int = 50,
     kind: str | None = None,
     is_test: bool | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     """List execution flows in the codebase, sorted by criticality.
 
@@ -36,6 +37,8 @@ def list_flows(
         is_test: Filter by test status. True=only test flows, False=only
                  production flows (excludes Test-kind entry points).
                  Default None shows all.
+        language: Optional language filter (case-insensitive). Only flows
+                  whose entry-point node has matching language are returned.
 
     Returns:
         List of flows with criticality scores and total_count.
@@ -44,7 +47,7 @@ def list_flows(
     try:
         # When filtering is active, fetch ALL flows so the final count is
         # independent of sort order (H-01 fix).
-        fetch_limit: int | None = None if (kind or is_test is not None) else limit
+        fetch_limit: int | None = None if (kind or is_test is not None or language) else limit
         flows = get_flows(store, sort_by=sort_by, limit=fetch_limit)
         total_before_filter = len(flows)
 
@@ -74,6 +77,16 @@ def list_flows(
                     # No entry_point → treat as non-test
                     test_flows.append(f)
             flows = test_flows
+
+        if language:
+            lang_flows = []
+            for f in flows:
+                ep_id = f.get("entry_point_id")
+                if ep_id is not None:
+                    node = store.get_node_by_id(ep_id)
+                    if node and (node.language or "").lower() == language.lower():
+                        lang_flows.append(f)
+            flows = lang_flows
 
         flows = flows[:limit]
 

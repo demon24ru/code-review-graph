@@ -32,6 +32,7 @@ def refactor_func(
     file_pattern: str | None = None,
     exclude_paths: list[str] | None = None,
     repo_root: str | None = None,
+    limit: int = 50,
 ) -> dict[str, Any]:
     """Unified refactoring entry point.
 
@@ -50,6 +51,8 @@ def refactor_func(
         exclude_paths: (dead_code mode) List of path substrings to exclude.
             Nodes in matching files are omitted from results.
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of results to return. Default: 50.
+            Use smaller values (10-20) for initial exploration.
 
     Returns:
         Mode-specific results dict.
@@ -92,22 +95,39 @@ def refactor_func(
             dead = find_dead_code(
                 store, kind=kind, file_pattern=file_pattern, exclude_paths=exclude_paths
             )
+            total = len(dead)
+            dead = dead[:limit]
+            summary = (
+                f"Found {len(dead)} dead code symbol(s) (of {total} total, "
+                f"showing first {limit})."
+                if total > limit
+                else f"Found {total} dead code symbol(s)."
+            )
             result = {
                 "status": "ok",
-                "summary": f"Found {len(dead)} dead code symbol(s).",
+                "summary": summary,
                 "dead_code": dead,
-                "total": len(dead),
+                "total": total,
+                "truncated": total > limit,
             }
             result["_hints"] = generate_hints("refactor", result, get_session())
             return result
 
         else:  # suggest
             suggestions = suggest_refactorings(store)
+            total = len(suggestions)
+            suggestions = suggestions[:limit]
             result = {
                 "status": "ok",
-                "summary": (f"Generated {len(suggestions)} refactoring suggestion(s)."),
+                "summary": (
+                    f"Generated {len(suggestions)} refactoring suggestion(s) "
+                    f"(of {total} total, showing first {limit})."
+                    if total > limit
+                    else f"Generated {total} refactoring suggestion(s)."
+                ),
                 "suggestions": suggestions,
-                "total": len(suggestions),
+                "total": total,
+                "truncated": total > limit,
             }
             result["_hints"] = generate_hints("refactor", result, get_session())
             return result

@@ -251,13 +251,31 @@ def _detect_leiden(
         dominant_lang = lang_counts.most_common(1)[0][0] if lang_counts else ""
         name = _generate_community_name(members)
 
+        # Generate informative description with top files
+        top_files = []
+        for m in members[:20]:
+            file_part = m.file_path.split("/")[-1].split("\\")[-1]
+            if file_part and file_part not in top_files:
+                top_files.append(file_part)
+            if len(top_files) >= 3:
+                break
+        
+        if top_files:
+            files_str = ", ".join(top_files[:3])
+            if len(members) > len(top_files):
+                description = f"{dominant_lang or 'Mixed'} code: {files_str} (+{len(members)-len(top_files)} more)"
+            else:
+                description = f"{dominant_lang or 'Mixed'} code: {files_str}"
+        else:
+            description = f"Community of {len(members)} nodes"
+
         communities.append({
             "name": name,
             "level": 0,
             "size": len(members),
             "cohesion": round(cohesion, 4),
             "dominant_language": dominant_lang,
-            "description": f"Community of {len(members)} nodes",
+            "description": description,
             "members": [m.qualified_name for m in members],
             "member_qns": member_qns,
         })

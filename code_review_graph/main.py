@@ -161,6 +161,7 @@ def query_graph_tool(
     target: str,
     repo_root: Optional[str] = None,
     limit: Optional[int] = None,
+    exclude_tests: bool = True,
 ) -> dict:
     """Run a predefined graph query to explore code relationships.
 
@@ -180,6 +181,7 @@ def query_graph_tool(
         repo_root: Repository root path. Auto-detected if omitted.
         limit: Maximum number of results to return. When truncation occurs,
                response includes ``truncated: true`` and ``total_before_limit: N``.
+        exclude_tests: If True, exclude test nodes from results. Default: True.
     """
     import os
     from pathlib import Path
@@ -191,7 +193,10 @@ def query_graph_tool(
         # Search parent directories from current module file, or hardcode your target project
         pass
 
-    return query_graph(pattern=pattern, target=target, repo_root=repo_root, limit=limit)
+    return query_graph(
+        pattern=pattern, target=target, repo_root=repo_root, limit=limit,
+        exclude_tests=exclude_tests,
+    )
 
 
 @mcp.tool()
@@ -239,6 +244,8 @@ def semantic_search_nodes_tool(
     model: Optional[str] = None,
     names: Optional[list] = None,
     file_path: Optional[str] = None,
+    exclude_tests: bool = True,
+    language: Optional[str] = None,
 ) -> dict:
     """Search for code entities by name, keyword, or semantic similarity.
 
@@ -261,10 +268,14 @@ def semantic_search_nodes_tool(
         file_path: Optional file path filter (substring). Only nodes whose
                    file_path contains this string are returned.
                    Example: "tasks.py" or "code_review_graph/tasks.py"
+        exclude_tests: If True, exclude test nodes from results. Default: True.
+        language: Optional language filter (case-insensitive). Only nodes with
+                  matching language are returned (e.g. "python").
     """
     return semantic_search_nodes(
         query=query, kind=kind, limit=limit, repo_root=repo_root, model=model,
         names=names, file_path=file_path,
+        exclude_tests=exclude_tests, language=language,
     )
 
 
@@ -379,6 +390,7 @@ def list_flows_tool(
     kind: Optional[str] = None,
     is_test: Optional[bool] = None,
     repo_root: Optional[str] = None,
+    language: Optional[str] = None,
 ) -> dict:
     """List execution flows in the codebase, sorted by criticality.
 
@@ -394,6 +406,8 @@ def list_flows_tool(
                  production flows (excludes Test-kind entry points).
                  Default None shows all.
         repo_root: Repository root path. Auto-detected if omitted.
+        language: Optional language filter (case-insensitive). Only flows whose
+                  entry-point node has matching language are returned (e.g. "python").
     """
     return list_flows(
         repo_root=repo_root,
@@ -401,6 +415,7 @@ def list_flows_tool(
         limit=limit,
         kind=kind,
         is_test=is_test,
+        language=language,
     )
 
 
@@ -468,6 +483,7 @@ def list_communities_tool(
     sort_by: str = "size",
     min_size: int = 0,
     repo_root: Optional[str] = None,
+    exclude_tests: bool = True,
 ) -> dict:
     """List detected code communities in the codebase.
 
@@ -479,11 +495,13 @@ def list_communities_tool(
         sort_by: Sort column: size, cohesion, or name.
         min_size: Minimum community size to include. Default: 0.
         repo_root: Repository root path. Auto-detected if omitted.
+        exclude_tests: If True, exclude test-dominated communities. Default: True.
     """
     return list_communities_func(
         repo_root=repo_root,
         sort_by=sort_by,
         min_size=min_size,
+        exclude_tests=exclude_tests,
     )
 
 
@@ -519,6 +537,7 @@ def get_community_tool(
 @mcp.tool()
 def get_architecture_overview_tool(
     repo_root: Optional[str] = None,
+    exclude_tests: bool = True,
 ) -> dict:
     """Generate an architecture overview based on community structure.
 
@@ -530,8 +549,9 @@ def get_architecture_overview_tool(
 
     Args:
         repo_root: Repository root path. Auto-detected if omitted.
+        exclude_tests: If True, exclude test-dominated communities. Default: True.
     """
-    return get_architecture_overview_func(repo_root=repo_root)
+    return get_architecture_overview_func(repo_root=repo_root, exclude_tests=exclude_tests)
 
 
 @mcp.tool()
@@ -577,6 +597,7 @@ def refactor_tool(
     file_pattern: Optional[str] = None,
     exclude_paths: Optional[list] = None,
     repo_root: Optional[str] = None,
+    limit: int = 50,
 ) -> dict:
     """Graph-powered refactoring operations.
 
@@ -600,6 +621,8 @@ def refactor_tool(
         exclude_paths: List of path substrings to exclude (e.g. ['vscode', 'test']).
             Nodes in matching files are omitted from results.
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of results to return per category. Default: 50.
+            Use smaller values (10-20) for initial exploration.
     """
     return refactor_func(
         mode=mode,
@@ -609,6 +632,7 @@ def refactor_tool(
         file_pattern=file_pattern,
         exclude_paths=exclude_paths,
         repo_root=repo_root,
+        limit=limit,
     )
 
 
@@ -767,6 +791,7 @@ def audit_workspace_tool(
     file_pattern: Optional[str] = None,
     exclude_paths: Optional[list] = None,
     repo_root: Optional[str] = None,
+    limit: int = 50,
 ) -> dict:
     """Consolidated workspace audit: dead code, large functions, and dependency cycles.
 
@@ -783,6 +808,8 @@ def audit_workspace_tool(
         exclude_paths: List of path substrings to exclude (e.g. ['vscode', 'test']).
             Nodes in matching files are omitted from results.
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of results to return per category. Default: 50.
+            Use smaller values (10-20) for initial exploration.
     """
     return audit_workspace(
         include_dead_code=include_dead_code,
@@ -792,6 +819,7 @@ def audit_workspace_tool(
         file_pattern=file_pattern,
         exclude_paths=exclude_paths,
         repo_root=repo_root,
+        limit=limit,
     )
 
 
@@ -1621,7 +1649,7 @@ def note_update(
 
     Args:
         note_id: Note ID to update.
-        status: New status (open|resolved|rejected|deferred).
+        status: New status (open|answered|resolved|rejected|deferred).
         resolution: Answer or decision text.
         rationale: Reasoning.
         content: Updated note text.

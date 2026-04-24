@@ -2297,10 +2297,24 @@ class CodeParser:
         if language == "python":
             # import x.y.z  or  from x.y import z
             if node.type == "import_from_statement":
-                for child in node.children:
-                    if child.type == "dotted_name":
-                        imports.append(child.text.decode("utf-8", errors="replace"))
-                        break
+                # Determine if this is a relative import (from . import x, y or from .. import x, y).
+                # Relative imports have a `relative_import` child instead of a `dotted_name` for the
+                # module path.  In that case all top-level `dotted_name` children are imported module
+                # names and must ALL be collected.  For absolute imports (from pkg.mod import Symbol)
+                # only the FIRST `dotted_name` is the module — the rest are symbol names to ignore.
+                has_relative = any(c.type == "relative_import" for c in node.children)
+                if has_relative:
+                    # from . import a, b  or  from .. import a, b
+                    # Every top-level dotted_name is a module name to resolve.
+                    for child in node.children:
+                        if child.type == "dotted_name":
+                            imports.append(child.text.decode("utf-8", errors="replace"))
+                else:
+                    # from package.module import Symbol — first dotted_name is the module.
+                    for child in node.children:
+                        if child.type == "dotted_name":
+                            imports.append(child.text.decode("utf-8", errors="replace"))
+                            break
             else:
                 for child in node.children:
                     if child.type == "dotted_name":

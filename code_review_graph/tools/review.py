@@ -21,6 +21,13 @@ from ._common import _get_store, graph_error
 logger = logging.getLogger(__name__)
 
 
+def _is_doc_file(path: str) -> bool:
+    """Check if a file is a documentation file."""
+    p = path.lower()
+    return any(p.endswith(ext) for ext in (".md", ".rst", ".txt", ".mdx")) or \
+           "readme" in p.lower() or "changelog" in p.lower() or "license" in p.lower()
+
+
 # ---------------------------------------------------------------------------
 # Tool 4: get_review_context
 # ---------------------------------------------------------------------------
@@ -104,6 +111,10 @@ def get_review_context(
             for rel_path in changed_files:
                 full_path = root / rel_path
                 if full_path.is_file():
+                    # Skip documentation files
+                    if _is_doc_file(rel_path):
+                        snippets[rel_path] = "(documentation file - content omitted to save tokens)"
+                        continue
                     try:
                         lines = full_path.read_text(errors="replace").splitlines()
                         if len(lines) > max_lines_per_file:
@@ -302,6 +313,10 @@ def get_affected_flows_func(
                 cf["step_count"] = len(f.get("steps", []))
                 compact_flows.append(cf)
             flows = compact_flows
+        else:
+            # When include_steps=True, remove redundant 'path' field (steps already contains it)
+            for f in flows:
+                f.pop("path", None)
 
         out = {
             "status": "ok",
@@ -788,6 +803,7 @@ def audit_workspace(
     min_lines: int = 50,
     file_pattern: str | None = None,
     exclude_paths: list[str] | None = None,
+    limit: int = 50,
     repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Consolidated workspace quality audit: dead code, cycles, and large functions.
@@ -806,6 +822,10 @@ def audit_workspace(
         exclude_paths: List of path substrings to exclude.  Nodes in matching
             files are omitted from dead_code and large_functions results
             (e.g. ``["vscode", "generated"]``).  Default: None.
+        limit: Maximum number of results to return per category (dead_code,
+            large_functions).  Default: 50.  When results exceed limit,
+            ``truncated`` is True and ``total_dead_code``/``total_large_functions``
+            show the full counts.
         repo_root: Repository root path.  Auto-detected if omitted.
 
     Returns:
@@ -819,11 +839,15 @@ def audit_workspace(
         dead_code: list[dict[str, Any]] = []
         large_functions: list[dict[str, Any]] = []
         cycles: list[list[str]] = []
+        total_dead = 0
+        total_large = 0
 
         if include_dead_code:
             dead_code = find_dead_code(
                 store, file_pattern=file_pattern, exclude_paths=exclude_paths
             )
+            total_dead = len(dead_code)
+            dead_code = dead_code[:limit]
 
         if include_large_functions:
             nodes = store.get_nodes_by_size(
@@ -849,6 +873,8 @@ def audit_workspace(
                     f for f in large_functions
                     if not any(ex in (f.get("file") or "") for ex in exclude_paths)
                 ]
+            total_large = len(large_functions)
+            large_functions = large_functions[:limit]
 
         if include_cycles:
             try:
@@ -856,19 +882,30 @@ def audit_workspace(
             except Exception as exc:
                 logger.warning("audit_workspace: cycle detection failed: %s", exc)
 
-        # Compute a simple health score: 100 - penalties
-        dead_penalty = min(len(dead_code) * 2, 30)
-        large_penalty = min(len(large_functions) * 1, 20)
+        # Compute a simple health score: 100 - penalties (use totals, not sliced counts)
+        dead_penalty = min(total_dead * 2, 30)
+        large_penalty = min(total_large * 1, 20)
         cycle_penalty = min(len(cycles) * 5, 50)
         health_score = max(0, 100 - dead_penalty - large_penalty - cycle_penalty)
 
-        issues_count = len(dead_code) + len(large_functions) + len(cycles)
+        issues_count = total_dead + total_large + len(cycles)
         summary_lines = [
             f"Workspace audit complete.  Health score: {health_score}/100",
-            f"  Dead code symbols:    {len(dead_code)}",
-            f"  Oversized functions:  {len(large_functions)} (>= {min_lines} lines)",
-            f"  Dependency cycles:    {len(cycles)}",
         ]
+        
+        # Show dead code with truncation info if needed
+        if total_dead > limit:
+            summary_lines.append(f"  Dead code symbols:    {len(dead_code)} (of {total_dead} total)")
+        else:
+            summary_lines.append(f"  Dead code symbols:    {len(dead_code)}")
+        
+        # Show large functions with truncation info if needed
+        if total_large > limit:
+            summary_lines.append(f"  Oversized functions:  {len(large_functions)} (of {total_large} total, >= {min_lines} lines)")
+        else:
+            summary_lines.append(f"  Oversized functions:  {len(large_functions)} (>= {min_lines} lines)")
+        
+        summary_lines.append(f"  Dependency cycles:    {len(cycles)}")
         if health_score < 60:
             summary_lines.append(
                 "  ACTION REQUIRED: Multiple quality issues detected. "
@@ -887,6 +924,9 @@ def audit_workspace(
             "dead_code": dead_code,
             "large_functions": large_functions,
             "cycles": cycles,
+            "total_dead_code": total_dead,
+            "total_large_functions": total_large,
+            "truncated": total_dead > limit or total_large > limit,
         }
         result["_hints"] = generate_hints("audit_workspace", result, get_session())
         return result
@@ -1032,10 +1072,22 @@ def trace_dataflow(
                 # Follow outgoing CALLS edges
                 outgoing = store.get_edges_by_source(qn)
                 for edge in outgoing:
-                    if edge.kind == "CALLS" and edge.target_qualified not in visited:
-                        next_frontier.append(
-                            (edge.target_qualified, path + [edge.target_qualified])
-                        )
+                    if edge.kind == "CALLS":
+                        target_qn = edge.target_qualified
+                        
+                        # If target is a bare name (no "::"), try to resolve it
+                        if "::" not in target_qn:
+                            # Search for a node with this name; prefer non-test nodes
+                            candidates = store.search_nodes(target_qn, limit=5)
+                            if candidates:
+                                non_test = [c for c in candidates if not c.is_test]
+                                best = (non_test if non_test else candidates)[0]
+                                target_qn = best.qualified_name
+                        
+                        if target_qn not in visited:
+                            next_frontier.append(
+                                (target_qn, path + [target_qn])
+                            )
             frontier = next_frontier
             depth += 1
 
@@ -1074,19 +1126,29 @@ def trace_dataflow(
                 f"reachable within {max_depth} CALLS hop(s)."
             )
 
-        # Determine overall status: "ambiguous" if either source or sink was ambiguous
-        overall_status = "ambiguous" if (source_ambiguous_meta or sink_ambiguous_meta) else "ok"
+        # Determine overall status
+        if source_ambiguous_meta or sink_ambiguous_meta:
+            overall_status = "ambiguous"
+        elif sink_qn and len(reachable_qns) == 0:
+            # No path found from source to sink
+            overall_status = "no_path"
+        else:
+            overall_status = "ok"
 
         result: dict[str, Any] = {
             "status": overall_status,
             "summary": summary,
             "source_node": node_to_dict(source_node),
             "sink_node": node_to_dict(sink_node) if sink_node else None,
-            "reaches_sink": reaches_sink,
             "reachable_count": len(reachable_nodes),
             "reachable": reachable_nodes,
             "paths": paths_to_sink,
         }
+        
+        # Always include reaches_sink when a sink was provided so the caller
+        # gets a definitive reachability answer even when resolution was ambiguous.
+        if sink_qn:
+            result["reaches_sink"] = reaches_sink
         
         # Add ambiguity metadata if present
         if source_ambiguous_meta:
@@ -1098,6 +1160,35 @@ def trace_dataflow(
             result["sink_resolved_as"] = sink_ambiguous_meta["resolved_as"]
             result["sink_disambiguation_note"] = sink_ambiguous_meta["note"]
             result["sink_alternatives"] = sink_ambiguous_meta["alternatives"]
+        
+        # Add diagnostic when reachable_count is 0
+        if len(reachable_nodes) == 0:
+            diagnostic: dict[str, Any] = {
+                "source_found": True,
+            }
+            
+            # Count outbound edges from source
+            outbound_edges = store.get_edges_by_source(source_node.qualified_name)
+            calls_edges = [e for e in outbound_edges if e.kind == "CALLS"]
+            unresolved_calls = [e for e in calls_edges if not store.get_node(e.target_qualified)]
+            
+            diagnostic["outbound_calls_edges"] = len(calls_edges)
+            diagnostic["unresolved_outbound_edges"] = len(unresolved_calls)
+            
+            if sink_qn:
+                diagnostic["sink_found"] = sink_node is not None
+                diagnostic["message"] = (
+                    f"No path found from '{source_node.name}' to '{sink_name}' "
+                    f"within {max_depth} hop(s)."
+                )
+            else:
+                diagnostic["hint"] = (
+                    f"Source '{source_node.name}' has {len(calls_edges)} outbound call(s), "
+                    f"but {len(unresolved_calls)} cannot be resolved in the graph. "
+                    "This may indicate external dependencies or missing code."
+                )
+            
+            result["diagnostic"] = diagnostic
         result["_hints"] = generate_hints("trace_dataflow", result, get_session())
         return result
     except Exception as exc:

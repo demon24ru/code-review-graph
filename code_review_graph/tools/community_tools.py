@@ -9,6 +9,17 @@ from ..graph import node_to_dict
 from ..hints import generate_hints, get_session
 from ._common import _get_store, graph_error
 
+
+def _is_test_community(c: dict) -> bool:
+    """Return True if community name suggests it is test-dominated."""
+    name = (c.get("name") or "").lower()
+    return (
+        name.startswith("test")
+        or "/test" in name
+        or "\\test" in name
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tool 13: list_communities  [EXPLORE]
 # ---------------------------------------------------------------------------
@@ -18,6 +29,7 @@ def list_communities_func(
     repo_root: str | None = None,
     sort_by: str = "size",
     min_size: int = 0,
+    exclude_tests: bool = False,
 ) -> dict[str, Any]:
     """List detected code communities in the codebase.
 
@@ -30,6 +42,7 @@ def list_communities_func(
         repo_root: Repository root path. Auto-detected if omitted.
         sort_by: Sort column: size, cohesion, or name.
         min_size: Minimum community size to include (default: 0).
+        exclude_tests: If True, exclude test-dominated communities. Default: False.
 
     Returns:
         List of communities with size and cohesion scores.
@@ -41,6 +54,10 @@ def list_communities_func(
         communities_out = [
             {k: v for k, v in c.items() if k != "members"} for c in communities
         ]
+        if exclude_tests:
+            communities_out = [
+                c for c in communities_out if not _is_test_community(c)
+            ]
         result: dict[str, object] = {
             "status": "ok",
             "summary": f"Found {len(communities_out)} communities",
@@ -164,6 +181,7 @@ def get_community_func(
 
 def get_architecture_overview_func(
     repo_root: str | None = None,
+    exclude_tests: bool = False,
 ) -> dict[str, Any]:
     """Generate an architecture overview based on community structure.
 
@@ -175,6 +193,8 @@ def get_architecture_overview_func(
 
     Args:
         repo_root: Repository root path. Auto-detected if omitted.
+        exclude_tests: If True, exclude test-dominated communities from the
+                       overview. Default: False.
 
     Returns:
         Architecture overview with compact communities, aggregated
@@ -196,10 +216,19 @@ def get_architecture_overview_func(
                 "member_count": len(c.get("members", c.get("member_qns", []))),
             })
 
+        if exclude_tests:
+            communities_compact = [c for c in communities_compact if not _is_test_community(c)]
+
         # Compress cross-community edges into pair counts (de-duplicated)
         cross_pairs: dict[str, int] = {}
-        comm_name_by_id = {c.get("id"): c.get("name") for c in overview.get("communities", [])}
+        included_ids = {c.get("id") for c in communities_compact}
+        comm_name_by_id = {c.get("id"): c.get("name") for c in communities_compact}
         for e in overview.get("cross_community_edges", []):
+            if exclude_tests and (
+                e.get("source_community") not in included_ids
+                or e.get("target_community") not in included_ids
+            ):
+                continue
             src_id = e.get("source_community")
             tgt_id = e.get("target_community")
             src_name = comm_name_by_id.get(src_id, f"community-{src_id}")

@@ -305,6 +305,8 @@ def hybrid_search(
     model: Optional[str] = None,
     names: Optional[list[str]] = None,
     file_path: Optional[str] = None,
+    exclude_tests: bool = False,
+    language: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Hybrid search combining FTS5 BM25 and vector embeddings via RRF.
 
@@ -328,6 +330,9 @@ def hybrid_search(
         file_path: Optional file path filter (substring match, e.g.
             ``"tasks.py"`` or ``"code_review_graph/tasks.py"``).
             Only nodes whose ``file_path`` contains this string are returned.
+        exclude_tests: If True, exclude test nodes from results. Default: False.
+        language: Optional language filter (case-insensitive). Only nodes with
+            matching ``language`` field are returned (e.g. ``"python"``).
 
     Returns:
         List of dicts with node metadata and ``score`` field.
@@ -432,6 +437,12 @@ def hybrid_search(
 
         if file_path and file_path not in (row["file_path"] or ""):
             continue  # file_path here is the function parameter (filter)
+
+        if exclude_tests and row["is_test"]:
+            continue
+
+        if language and (row["language"] or "").lower() != language.lower():
+            continue
 
         results.append({
             "id": row["id"],

@@ -28,7 +28,7 @@ TASK_STATUSES = frozenset({"draft", "refined", "ready", "in_progress", "done", "
 TASK_EDGE_TYPES = frozenset({"depends_on", "blocks", "shares_context", "conflicts_with", "informs"})
 CODE_REF_TYPES = frozenset({"modifies", "creates", "deletes", "reads", "tests"})
 NOTE_TYPES = frozenset({"decision", "question", "assumption", "constraint", "risk"})
-NOTE_STATUSES = frozenset({"open", "resolved", "rejected", "deferred"})
+NOTE_STATUSES = frozenset({"open", "answered", "resolved", "rejected", "deferred"})
 CONTRACT_TYPES = frozenset({"interface", "api", "schema", "event", "data_format"})
 CONTRACT_STATUSES = frozenset({"proposed", "agreed", "implemented", "verified", "void"})
 

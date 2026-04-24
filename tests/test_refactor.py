@@ -1034,3 +1034,169 @@ class TestPendingRefactorsThreadSafe:
             assert len(_pending_refactors) >= 10
             # Clean up
             _pending_refactors.clear()
+
+
+class TestRefactorFuncLimit:
+    """C-06, C-07: refactor_func limit parameter truncates dead_code and suggest results."""
+
+    def setup_method(self):
+        import shutil
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp_db.name)
+        self.tmp_dir = Path(tempfile.mkdtemp())
+        (self.tmp_dir / ".git").mkdir()
+        (self.tmp_dir / ".code-review-graph").mkdir()
+        self.graph_db = self.tmp_dir / ".code-review-graph" / "graph.db"
+        self._seed()
+
+    def teardown_method(self):
+        import shutil
+        if self.store is not None:
+            try:
+                self.store.close()
+            except Exception:
+                pass
+            self.store = None
+        try:
+            Path(self.tmp_db.name).unlink(missing_ok=True)
+        except (PermissionError, OSError):
+            pass
+        shutil.rmtree(str(self.tmp_dir), ignore_errors=True)
+
+    def _seed(self):
+        """Seed 5 dead functions so limit tests can truncate."""
+        import shutil
+        for i in range(5):
+            self.store.upsert_node(
+                NodeInfo(
+                    kind="Function",
+                    name=f"dead_func_{i}",
+                    file_path=f"/repo/file_{i}.py",
+                    line_start=1,
+                    line_end=5,
+                    language="python",
+                )
+            )
+        self.store.commit()
+        # Close before copying to ensure WAL is checkpointed to the main db file
+        self.store.close()
+        self.store = None
+        shutil.copy(self.tmp_db.name, str(self.graph_db))
+
+    def test_dead_code_limit_truncates(self):
+        """refactor_func(mode='dead_code', limit=2) returns at most 2 items."""
+        from code_review_graph.tools.refactor_tools import refactor_func
+
+        result = refactor_func(mode="dead_code", limit=2, repo_root=str(self.tmp_dir))
+        assert result["status"] == "ok"
+        assert len(result.get("dead_code", [])) <= 2
+
+    def test_dead_code_limit_sets_truncated_true(self):
+        """When limit < total, truncated=True and total shows full count."""
+        from code_review_graph.tools.refactor_tools import refactor_func
+
+        result = refactor_func(mode="dead_code", limit=2, repo_root=str(self.tmp_dir))
+        assert result["truncated"] is True
+        assert result["total"] == 5
+
+    def test_dead_code_no_truncation_when_limit_large(self):
+        """When limit >= total, truncated=False."""
+        from code_review_graph.tools.refactor_tools import refactor_func
+
+        result = refactor_func(mode="dead_code", limit=100, repo_root=str(self.tmp_dir))
+        assert result["truncated"] is False
+        assert result["total"] == 5
+        assert len(result.get("dead_code", [])) == 5
+
+
+class TestAuditWorkspaceLimit:
+    """C-05: audit_workspace limit parameter truncates dead_code and large_functions."""
+
+    def setup_method(self):
+        import shutil
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp_db.name)
+        self.tmp_dir = Path(tempfile.mkdtemp())
+        (self.tmp_dir / ".git").mkdir()
+        (self.tmp_dir / ".code-review-graph").mkdir()
+        self.graph_db = self.tmp_dir / ".code-review-graph" / "graph.db"
+        self._seed()
+
+    def teardown_method(self):
+        import shutil
+        if self.store is not None:
+            try:
+                self.store.close()
+            except Exception:
+                pass
+            self.store = None
+        try:
+            Path(self.tmp_db.name).unlink(missing_ok=True)
+        except (PermissionError, OSError):
+            pass
+        shutil.rmtree(str(self.tmp_dir), ignore_errors=True)
+
+    def _seed(self):
+        """Seed 5 dead functions and 5 large functions."""
+        import shutil
+        for i in range(5):
+            self.store.upsert_node(
+                NodeInfo(
+                    kind="Function",
+                    name=f"dead_func_{i}",
+                    file_path=f"/repo/dead_{i}.py",
+                    line_start=1,
+                    line_end=5,
+                    language="python",
+                )
+            )
+        for i in range(5):
+            self.store.upsert_node(
+                NodeInfo(
+                    kind="Function",
+                    name=f"big_func_{i}",
+                    file_path=f"/repo/big_{i}.py",
+                    line_start=1,
+                    line_end=200,
+                    language="python",
+                )
+            )
+        self.store.commit()
+        # Close before copying to ensure WAL is checkpointed to the main db file
+        self.store.close()
+        self.store = None
+        shutil.copy(self.tmp_db.name, str(self.graph_db))
+
+    def test_limit_truncates_dead_code(self):
+        """audit_workspace(limit=2) returns at most 2 dead_code items."""
+        from code_review_graph.tools.review import audit_workspace
+
+        result = audit_workspace(
+            include_cycles=False, limit=2, repo_root=str(self.tmp_dir)
+        )
+        assert result["status"] == "ok"
+        assert len(result.get("dead_code", [])) <= 2
+
+    def test_limit_sets_truncated_and_totals(self):
+        """When truncated, total_dead_code and total_large_functions show full counts."""
+        from code_review_graph.tools.review import audit_workspace
+
+        result = audit_workspace(
+            include_cycles=False, limit=2, repo_root=str(self.tmp_dir)
+        )
+        assert result["truncated"] is True
+        # All 10 seeded functions are unreferenced (dead code)
+        assert result["total_dead_code"] == 10
+        # Only big_func_* (5 functions, 200 lines) exceed the default min_lines=50
+        assert result["total_large_functions"] == 5
+
+    def test_no_truncation_when_limit_large(self):
+        """audit_workspace(limit=100) sets truncated=False."""
+        from code_review_graph.tools.review import audit_workspace
+
+        result = audit_workspace(
+            include_cycles=False, limit=100, repo_root=str(self.tmp_dir)
+        )
+        assert result["truncated"] is False
+        # All 10 seeded functions are unreferenced (dead code)
+        assert result["total_dead_code"] == 10

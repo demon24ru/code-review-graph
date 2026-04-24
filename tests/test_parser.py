@@ -440,3 +440,46 @@ class TestCodeParser:
             )
         finally:
             tmp_path.unlink(missing_ok=True)
+
+    def test_relative_import_all_names_extracted(self):
+        """from .. import a, b should create IMPORTS_FROM edges for BOTH a and b.
+
+        Bug C-01: the old code used `break` after the first dotted_name in
+        import_from_statement, so only `a` was extracted and `b` was silently
+        dropped.  This test verifies that all names in a relative star-import
+        are resolved to files when they exist as sibling modules.
+        """
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+
+            # Create a minimal package layout:
+            #   pkg/__init__.py
+            #   pkg/module_a.py          <- importer
+            #   pkg/module_b.py          <- first import target
+            #   pkg/module_c.py          <- second import target (was dropped before fix)
+            pkg = tmppath / "pkg"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_bytes(b"")
+            # module_b and module_c are the imported modules
+            (pkg / "module_b.py").write_bytes(b"def func1(): pass\ndef func2(): pass\n")
+            (pkg / "module_c.py").write_bytes(b"def func3(): pass\n")
+            # module_a imports both via a relative import
+            (pkg / "module_a.py").write_bytes(
+                b"from . import module_b, module_c\n"
+            )
+
+            nodes, edges = self.parser.parse_file(pkg / "module_a.py")
+            import_targets = {e.target for e in edges if e.kind == "IMPORTS_FROM"}
+
+            # Both module_b.py and module_c.py must appear as edge targets.
+            module_b_path = str((pkg / "module_b.py").resolve())
+            module_c_path = str((pkg / "module_c.py").resolve())
+            assert any(module_b_path.replace("\\", "/") in t.replace("\\", "/") for t in import_targets), (
+                f"Expected IMPORTS_FROM edge to module_b.py, got: {import_targets}"
+            )
+            assert any(module_c_path.replace("\\", "/") in t.replace("\\", "/") for t in import_targets), (
+                f"Expected IMPORTS_FROM edge to module_c.py, got: {import_targets}"
+            )

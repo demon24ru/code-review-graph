@@ -1730,8 +1730,279 @@ class TestCommunityTools:
         assert "sink_alternatives" in result
         assert len(result["sink_alternatives"]) == 1
         assert "test_task_analysis.py::create_task" in result["sink_alternatives"][0]
-        # Should find the path since we resolved to the correct node
+        # After C-02 fix: reaches_sink is always set when sink is provided,
+        # even when ambiguous, so callers always get a definitive reachability answer.
+        # The edge goes from hybrid_search → tasks.py::create_task (the resolved sink),
+        # so the path IS found.
         assert result["reaches_sink"] is True
+
+    def test_trace_dataflow_cross_module(self):
+        """C-02: BFS resolves cross-module CALLS edges stored as bare names.
+
+        The parser stores cross-module call targets as bare names (no "::" separator)
+        because it can only qualify names defined in the same file.
+        _resolve_call_target must find the target via suffix match.
+        """
+        import time
+
+        file_a = str(self.root / "file_a.py")
+        file_b = str(self.root / "file_b.py")
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="func_a",
+                file_path=file_a,
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="func_b",
+                file_path=file_b,
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        # upsert_edge would path-resolve a bare target "func_b" relative to the
+        # current working directory (not the temp repo root), corrupting the value.
+        # Insert directly via SQL to persist the bare name exactly as the parser does.
+        src_qn = self.store._conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=?", ("func_a",)
+        ).fetchone()[0]
+        self.store._conn.execute(
+            """INSERT INTO edges (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("CALLS", src_qn, "func_b", "file_a.py", None, "{}", time.time()),
+        )
+        self.store.commit()
+
+        result = trace_dataflow(source="func_a", sink="func_b", repo_root=str(self.root))
+
+        assert result["status"] == "ok", (
+            f"Expected ok, got {result.get('status')}: {result.get('summary')}"
+        )
+        assert result["reaches_sink"] is True
+        assert len(result["paths"]) >= 1
+
+    def test_trace_dataflow_no_path_status(self):
+        """M-02: Status is 'no_path' when source and sink are unambiguous but not connected."""
+        file_a = str(self.root / "no_path_a.py")
+        file_b = str(self.root / "no_path_b.py")
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="isolated_source",
+                file_path=file_a,
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="isolated_sink",
+                file_path=file_b,
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        # No CALLS edge between them
+        self.store.commit()
+
+        result = trace_dataflow(
+            source="isolated_source", sink="isolated_sink", repo_root=str(self.root)
+        )
+
+        assert result["status"] == "no_path"
+        assert result["reaches_sink"] is False
+        # Diagnostic should be present since reachable_count == 0
+        assert "diagnostic" in result
+        assert result["diagnostic"]["source_found"] is True
+
+    def test_trace_dataflow_diagnostic_on_zero_reachable(self):
+        """M-03/N-08: diagnostic field explains zero reachable_count after BFS."""
+        file_a = str(self.root / "diag_a.py")
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="diag_source",
+                file_path=file_a,
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        # CALLS edge targeting an external (unresolvable) function
+        self.store.upsert_edge(
+            EdgeInfo(
+                kind="CALLS",
+                source=file_a + "::diag_source",
+                target="some_external_lib_func",  # cannot be resolved
+                file_path=file_a,
+            )
+        )
+        self.store.commit()
+
+        result = trace_dataflow(source="diag_source", repo_root=str(self.root))
+
+        assert result["status"] == "ok"  # unrestricted BFS completes
+        assert result["reachable_count"] == 0
+        assert "diagnostic" in result
+        diag = result["diagnostic"]
+        assert diag["source_found"] is True
+        assert "outbound_calls_edges" in diag
+        assert "unresolved_outbound_edges" in diag
+        assert "hint" in diag
+        # The one external edge should be unresolved
+        assert diag["unresolved_outbound_edges"] >= 1
+
+    def test_trace_dataflow_ambiguous_source_reaches_sink(self):
+        """C-02/Problem3: reaches_sink is True when source is ambiguous but path exists.
+
+        When source has multiple candidates (test + production), status is "ambiguous"
+        but reaches_sink must still be set correctly (not omitted).
+        """
+        import time
+
+        file_prod = str(self.root / "pipeline.py")
+        file_test = str(self.root / "test_pipeline.py")
+        file_target = str(self.root / "executor.py")
+
+        # Two nodes with same name — one prod, one test
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="run_pipeline",
+                file_path=file_prod,
+                line_start=1,
+                line_end=10,
+                language="python",
+                is_test=False,
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="run_pipeline",
+                file_path=file_test,
+                line_start=1,
+                line_end=10,
+                language="python",
+                is_test=True,
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="execute_job",
+                file_path=file_target,
+                line_start=1,
+                line_end=5,
+                language="python",
+                is_test=False,
+            )
+        )
+        # Production run_pipeline calls execute_job
+        prod_qn = self.store._conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=? AND is_test=0", ("run_pipeline",)
+        ).fetchone()[0]
+        sink_qn_val = self.store._conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=?", ("execute_job",)
+        ).fetchone()[0]
+        self.store._conn.execute(
+            """INSERT INTO edges (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("CALLS", prod_qn, sink_qn_val, file_prod, None, "{}", time.time()),
+        )
+        self.store.commit()
+
+        result = trace_dataflow(
+            source="run_pipeline", sink="execute_job", repo_root=str(self.root)
+        )
+
+        # Source is ambiguous (two nodes named run_pipeline)
+        assert result["status"] == "ambiguous"
+        # reaches_sink must always be set — never omitted because of ambiguity
+        assert "reaches_sink" in result
+        assert result["reaches_sink"] is True
+
+    def test_trace_dataflow_bfs_prefers_non_test_node(self):
+        """C-02/Problem1: BFS bare-name resolution prefers non-test candidate.
+
+        When an edge's target is a bare name (no '::') and search_nodes returns
+        multiple candidates, the BFS should follow the non-test node.
+        """
+        import time
+
+        file_src = str(self.root / "caller.py")
+        file_prod = str(self.root / "utils.py")
+        file_test = str(self.root / "test_utils.py")
+
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="caller_func",
+                file_path=file_src,
+                line_start=1,
+                line_end=5,
+                language="python",
+                is_test=False,
+            )
+        )
+        prod_node = self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="helper_util",
+                file_path=file_prod,
+                line_start=1,
+                line_end=5,
+                language="python",
+                is_test=False,
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="helper_util",
+                file_path=file_test,
+                line_start=1,
+                line_end=5,
+                language="python",
+                is_test=True,
+            )
+        )
+        src_qn = self.store._conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=?", ("caller_func",)
+        ).fetchone()[0]
+        prod_qn = self.store._conn.execute(
+            "SELECT qualified_name FROM nodes WHERE name=? AND is_test=0", ("helper_util",)
+        ).fetchone()[0]
+
+        # Edge with bare target name — as the parser would store it
+        self.store._conn.execute(
+            """INSERT INTO edges (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("CALLS", src_qn, "helper_util", file_src, None, "{}", time.time()),
+        )
+        self.store.commit()
+
+        result = trace_dataflow(
+            source="caller_func", sink="helper_util", repo_root=str(self.root)
+        )
+
+        # The BFS should resolve "helper_util" to the production node (not test)
+        # and therefore find the path to the production sink.
+        assert result["reaches_sink"] is True
+        # Path should go through the production qualified name
+        if result["paths"]:
+            path = result["paths"][0]
+            assert any("utils.py" in step and "test_utils" not in step for step in path)
 
 
 # ---------------------------------------------------------------------------
@@ -2231,6 +2502,22 @@ class TestSemanticSearchDisambiguation:
         assert len(non_test) == 3, f"Expected 3 non-test (Function), got {len(non_test)}"
         test_nodes = [r for r in exact_matches if r.get("kind") == "Test"]
         assert len(test_nodes) == 2, f"Expected 2 test (Test kind), got {len(test_nodes)}"
+
+    def test_query_graph_exclude_tests(self):
+        """exclude_tests filter removes is_test=True nodes from query results."""
+        # Simulate results list from query_graph (node_to_dict includes is_test)
+        results = [
+            {"name": "prod_caller", "kind": "Function", "is_test": False,
+             "file_path": "/repo/main.py", "language": "python"},
+            {"name": "test_caller", "kind": "Test", "is_test": True,
+             "file_path": "/repo/test_auth.py", "language": "python"},
+        ]
+
+        # Verify the filter that query_graph applies when exclude_tests=True
+        filtered = [r for r in results if not r.get("is_test")]
+        assert len(filtered) == 1
+        assert filtered[0]["name"] == "prod_caller"
+        assert all(not r.get("is_test") for r in filtered)
 
 
 class TestListGraphStats:

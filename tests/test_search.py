@@ -244,6 +244,47 @@ class TestHybridSearch:
         for r in results:
             assert r["kind"] == "Class"
 
+    # --- exclude_tests filter ---
+
+    def test_exclude_tests_filter(self):
+        """exclude_tests=True removes test nodes from results."""
+        # Seed a test node
+        test_node = NodeInfo(
+            kind="Function", name="test_get_users", file_path="tests/test_api.py",
+            line_start=1, line_end=10, language="python",
+            is_test=True,
+        )
+        self.store.upsert_node(test_node, file_hash="test123")
+        rebuild_fts_index(self.store)
+
+        # Without filter: test node may appear
+        all_results = hybrid_search(self.store, "test_get_users")
+        assert any(r["name"] == "test_get_users" for r in all_results)
+
+        # With filter: test node excluded
+        filtered = hybrid_search(self.store, "test_get_users", exclude_tests=True)
+        assert not any(r["name"] == "test_get_users" for r in filtered)
+
+    # --- language filter ---
+
+    def test_language_filter(self):
+        """language param filters results to only matching language."""
+        # Seed a TypeScript node with a similar name
+        ts_node = NodeInfo(
+            kind="Function", name="get_users_ts", file_path="api.ts",
+            line_start=1, line_end=10, language="typescript",
+        )
+        self.store.upsert_node(ts_node, file_hash="ts123")
+        rebuild_fts_index(self.store)
+
+        results = hybrid_search(self.store, "get_users", language="python")
+        for r in results:
+            assert (r.get("language") or "").lower() == "python"
+
+        ts_results = hybrid_search(self.store, "get_users_ts", language="typescript")
+        for r in ts_results:
+            assert (r.get("language") or "").lower() == "typescript"
+
     # --- Context file boosting ---
 
     def test_context_file_boost(self):

@@ -175,8 +175,8 @@ def pre_merge_check_prompt(base: str = "HEAD~1") -> list[dict]:
                 "Flag any high-risk functions without tests.\n"
                 "3. **Affected flows**: Use `get_affected_flows` with base="
                 f'"{base}" to identify impacted execution paths.\n'
-                "4. **Dead code check**: Use `refactor_tool` with mode=\"dead_code\" "
-                "to detect any unreferenced code that may have been left behind.\n"
+                "4. **Dead code check**: Use `refactor_tool` with mode=\"dead_code\", "
+                "limit=20 to detect any unreferenced code that may have been left behind.\n"
                 "5. **Large function check**: Use `find_large_functions` to flag "
                 "any changed functions that exceed size thresholds.\n"
                 "6. **Impact radius**: Use `get_impact_radius` to understand the "

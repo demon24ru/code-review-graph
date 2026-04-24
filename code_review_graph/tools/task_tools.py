@@ -1101,7 +1101,7 @@ def note_update_func(
 
     Args:
         note_id: Note ID to update.
-        status: New status (open|resolved|rejected|deferred).
+        status: New status (open|answered|resolved|rejected|deferred).
         resolution: Answer or decision text.
         rationale: Reasoning behind the decision.
         content: Updated note text.
@@ -1139,7 +1139,7 @@ def note_list_func(
     Args:
         task_id: Task ID.
         note_type: Filter by type (decision|question|assumption|constraint|risk).
-        status: Filter by status (open|resolved|rejected|deferred).
+        status: Filter by status (open|answered|resolved|rejected|deferred).
         include_parent: Include notes from ancestor tasks (default: True).
         include_children: Include notes from all descendant tasks.
         repo_root: Repository root path. Auto-detected if omitted.

@@ -31,6 +31,23 @@ _QUERY_PATTERNS = {
     "file_summary": "Get a summary of all nodes in a file",
 }
 
+# Python stdlib/builtin names for callees_of categorization
+_PYTHON_STDLIB_NAMES = {
+    "isinstance", "issubclass", "type", "len", "range", "enumerate",
+    "zip", "map", "filter", "sorted", "reversed", "list", "dict", "set",
+    "tuple", "str", "int", "float", "bool", "print", "input", "open",
+    "repr", "hash", "id", "abs", "min", "max", "sum", "any", "all",
+    "hasattr", "getattr", "setattr", "delattr", "vars", "dir",
+    "super", "next", "iter", "callable", "format", "hex", "oct",
+}
+
+# DB operation names for callees_of categorization
+_DB_OPERATION_NAMES = {
+    "execute", "executemany", "executescript", "commit", "rollback",
+    "cursor", "fetchone", "fetchall", "fetchmany", "close", "connect",
+}
+
+
 
 def get_impact_radius(
     changed_files: list[str] | None = None,
@@ -140,6 +157,7 @@ def query_graph(
     target: str,
     repo_root: str | None = None,
     limit: int | None = None,
+    exclude_tests: bool = False,
 ) -> dict[str, Any]:
     """Run a predefined graph query.
 
@@ -150,6 +168,8 @@ def query_graph(
         repo_root: Repository root path. Auto-detected if omitted.
         limit: Maximum number of results to return. When set and results exceed
                this limit, the response includes ``truncated: true`` and
+        exclude_tests: If True, exclude test nodes from results. Default: False.
+               NOTE: has no effect on ``tests_for`` (tests are the entire point).
                ``total_before_limit: N``.
 
     Returns:
@@ -359,6 +379,15 @@ def query_graph(
             for n in file_nodes:
                 results.append(node_to_dict(n))
 
+        # Filter out test nodes when exclude_tests=True.
+        # Exemption: tests_for — the entire purpose is to surface test nodes.
+        # Meta dicts (e.g. _external_callees) lack an is_test key; keep them.
+        if exclude_tests and pattern != "tests_for":
+            results = [
+                r for r in results
+                if r.get("is_test") is not True
+            ]
+
         # Apply limit truncation (edges are preserved in full; only results are capped)
         total_before_limit = len(results)
         truncated = False
@@ -403,6 +432,8 @@ def semantic_search_nodes(
     model: str | None = None,
     names: list[str] | None = None,
     file_path: str | None = None,
+    exclude_tests: bool = False,
+    language: str | None = None
 ) -> dict[str, Any]:
     """Search for nodes by name, keyword, or semantic similarity.
 
@@ -426,7 +457,9 @@ def semantic_search_nodes(
             contains this string are returned (e.g. ``"tasks.py"``).
 
     Returns:
-        Ranked list of matching nodes.
+        Ranked list of matching nodes. Each result includes a ``score`` field
+        (RRF score, typically 0.01-0.1 range; higher = more relevant).
+        Scores are not normalized to [0,1].
     """
     store, root = _get_store(repo_root)
     try:
@@ -439,6 +472,8 @@ def semantic_search_nodes(
             model=model,
             names=names,
             file_path=file_path,
+            exclude_tests=exclude_tests,
+            language=language
         )
 
         search_mode = "hybrid"

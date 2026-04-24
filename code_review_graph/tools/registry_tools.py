@@ -103,6 +103,11 @@ def cross_repo_search_func(
                     for r in results:
                         r["repo"] = alias
                         r["repo_path"] = str(repo_path)
+                        # Strip Windows line endings from params and signature fields
+                        if "params" in r and isinstance(r["params"], str):
+                            r["params"] = r["params"].replace("\r\n", "\n").replace("\r", "\n")
+                        if "signature" in r and isinstance(r["signature"], str):
+                            r["signature"] = r["signature"].replace("\r\n", "\n").replace("\r", "\n")
                     all_results.extend(results)
                     searched_repos.append(alias)
                 finally:
