@@ -28,6 +28,7 @@ env/
 *.swo
 *~
 TODO/
+.playwright-mcp
 
 # OS
 .DS_Store

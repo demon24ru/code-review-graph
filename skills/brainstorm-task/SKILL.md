@@ -79,6 +79,82 @@ note_add(task_id=task_id, notes=[
 - Search all notes in a subtree: `note_list(task_id, include_children=True)`
 - Resolve open questions before handing off to coder
 
+## Async Q&A with the Questions UI
+
+When you have open questions or unverified assumptions that require human input, use the Questions UI instead of waiting in the chat session. This decouples LLM work from human response time.
+
+**Note lifecycle:**
+```
+open  →  answered  →  resolved / rejected / deferred
+         (user in UI)   (LLM validates, updates DAG)
+```
+
+- `open` — question or assumption added, no response yet
+- `answered` — user wrote a response in the web UI (LLM not yet involved)
+- `resolved` — LLM validated and accepted; DAG may have been updated
+- `rejected` — LLM or user determined the note was invalid/incorrect
+- `deferred` — postponed, not blocking current work
+
+### Starting the Questions UI
+
+```bash
+# Auto-detect active root task
+code-review-graph questions
+
+# Specify task and port
+code-review-graph questions --task t1 --port 6234 --no-browser
+```
+
+The server opens `http://localhost:6234` with three sections:
+- **Awaiting LLM Validation** — notes the user has answered but LLM hasn't processed yet
+- **Open Questions** — questions/assumptions waiting for user response
+- **Resolved/Rejected** (collapsed) — history
+
+Answers are persisted to SQLite instantly. The session can close — answers survive.
+
+### LLM workflow when resuming a session
+
+At the start of every session, call `task_roadmap()`. The `attention.answered_notes` field lists notes that need processing:
+
+```
+task_roadmap()
+→ attention.answered_notes: [
+    { id: "n3", note_type: "question",
+      content: "WebSocket or polling?",
+      resolution: "Let's use SSE — simpler than WS, more reliable than polling",
+      task_id: "t1" },
+    { id: "n7", note_type: "assumption",
+      content: "User model has email field",
+      resolution: "No! Users have phone only, no email",
+      task_id: "t1" }
+  ]
+```
+
+For each answered note, you MUST:
+1. Read the resolution carefully
+2. Assess impact on the DAG (does this change invalidate existing tasks? create new questions?)
+3. Act accordingly (see table below)
+4. Mark the note: `note_update(note_id, status="resolved"/"rejected", rationale="...")`
+
+**Decision table:**
+
+| Answer type | Example | LLM action |
+|---|---|---|
+| Simple choice | "Use JWT" | `note_update(resolved)` + add decision note |
+| Design clarification | "SSE not WebSocket" | `note_update(resolved)` + possibly rename/edit tasks |
+| Rejected assumption | "No email field" | `note_update(rejected)` + `task_search` for affected tasks + `task_archive` dead paths + add new questions |
+| Direction change | "No templates, hardcode" | `note_update(resolved)` + `task_archive(subtree)` + simplify dependencies |
+| Scope expansion | "Also needs offline PWA" | `note_update(resolved)` + `task_create` new subtasks |
+
+`task_validate()` will warn if there are unprocessed `answered` notes. Process all answered notes before marking work ready for implementation.
+
+```
+note_list(task_id=root_id, status="answered", include_children=True)
+# → process each, then mark resolved/rejected
+note_update(note_id, status="resolved", resolution="Accepted: SSE", rationale="...")
+note_update(note_id, status="rejected", resolution="User has no email", rationale="Invalidates t2, t8")
+```
+
 ## Phase 3: Link Code to Tasks
 
 ### Decomposition sweet spot
@@ -362,4 +438,6 @@ task_execution_order(root_task_id)   # returns parallel levels
 - `task_get_dag(root_task_id)` returns the full tree with all edges; use `compact=True` for `{id, title, status, depth, parent_id}` nodes (faster for large trees)
 - `task_delete(task_id)` response includes `deleted_tasks: [{id, title}]` — confirm what was deleted
 - Pipeline error on `task_create` includes `blocking_task_id` for direct navigation to the blocking root
+- **Questions UI**: use `code-review-graph questions` to let users answer open questions asynchronously — survives session restarts; answers stored in SQLite
+- **`answered` notes**: after user answers via UI, `task_roadmap()` shows them in `attention.answered_notes`; process each with note_update before `task_validate` passes cleanly
 - Contract `status` auto-upgrades when provider task status changes (draft→proposed→acknowledged→implemented)

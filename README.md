@@ -234,6 +234,7 @@ code-review-graph detect-changes   # Risk-scored change impact analysis
 code-review-graph register <path>  # Register repo in multi-repo registry
 code-review-graph unregister <id>  # Remove repo from registry
 code-review-graph repos            # List registered repositories
+code-review-graph questions        # Open web UI for answering brainstorm questions
 code-review-graph eval             # Run evaluation benchmarks
 code-review-graph serve            # Start MCP server
 ```
@@ -563,6 +564,86 @@ contract_update(contract_id, qualified_name="src/auth/token.py::OAuthToken")
 ```
 
 Now `task_export` for any consumer shows the current definition side-by-side with the existing code — the coder sees exactly what to implement.
+
+### Async Q&A: The Questions UI
+
+A chat session with the LLM has a time limit — if the session ends before the user answers all questions, that context is lost. The **Questions UI** solves this by persisting open questions to SQLite and serving them through a local web page that lives independently of any LLM session.
+
+```bash
+# Auto-detects the active root task
+code-review-graph questions
+
+# Explicit task and port
+code-review-graph questions --task t1 --port 6234 --no-browser
+```
+
+This opens `http://localhost:6234` — a single-page UI backed by the same SQLite database:
+
+```
+┌──────────────────────────────────────────────────────┐
+│  🔵 Brainstorm: Notification system                  │
+│                                                      │
+│  ⏳ Awaiting LLM Validation  [2]                    │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │ ❓ WebSocket or polling?                         │ │
+│  │ 💬 "Let's use SSE — simpler and more reliable"  │ │
+│  │                              [✏️ Edit]           │ │
+│  └─────────────────────────────────────────────────┘ │
+│                                                      │
+│  ❓ Open Questions  [3]                              │
+│  ┌─────────────────────────────────────────────────┐ │
+│  │ ❓ Should we support offline / PWA?              │ │
+│  │ [___________________________]  [Answer →]        │ │
+│  └─────────────────────────────────────────────────┘ │
+│                                                      │
+│  ▸ ✅ Resolved / Rejected  [6]                      │
+└──────────────────────────────────────────────────────┘
+```
+
+**Note lifecycle:**
+
+```
+open  ──▶  answered  ──▶  resolved
+           (user in UI)    (LLM validates)
+                      └──▶ rejected / deferred
+```
+
+- `open` — question added by LLM, no response yet
+- `answered` — user wrote a response via the UI; LLM has not yet processed it
+- `resolved` / `rejected` / `deferred` — LLM has validated and acted on the answer
+
+**LLM workflow on session resume:**
+
+When you start a new session, `task_roadmap()` shows `attention.answered_notes` — a list of notes the user has answered. The LLM must process each one before `task_validate` passes cleanly:
+
+```python
+# Roadmap shows answered notes as highest-priority attention item
+task_roadmap()
+# → attention.answered_notes: [
+#     { id: "n7", note_type: "assumption",
+#       content: "User model has email field",
+#       resolution: "No! Users have phone only, no email" },
+#     ...
+#   ]
+
+# Process each answered note
+note_list(task_id=root_id, status="answered", include_children=True)
+
+# Rejected assumption — re-evaluate dependent tasks
+note_update("n7", status="rejected", rationale="Invalidates email-based tasks")
+task_search(root_task_id=root_id, query="email")      # find affected tasks
+task_archive(task_ids=["t2", "t8"], reason="No email field in User model")
+note_add(task_id=root_id, notes=[
+    {"note_type": "question", "content": "If no email, how do we deliver notifications? In-app only, or SMS?"}
+])
+
+# Simple clarification — just resolve and continue
+note_update("n3", status="resolved", resolution="SSE accepted", rationale="Simpler than WS, more reliable than LP")
+```
+
+`task_validate()` warns when there are unprocessed `answered` notes — they must be resolved or rejected before work is considered ready for implementation.
+
+**Why this design:** The UI is intentionally thin — it is `note_list` + `note_update` wrapped in an HTML form. Zero new dependencies. The LLM remains the sole decision-maker; the UI is just the inbox.
 
 ### Key Rules
 

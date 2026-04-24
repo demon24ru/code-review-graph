@@ -536,6 +536,16 @@ class TestValidateDAG(TestAnalysisBase):
         warnings_text = " ".join(result["warnings"])
         assert "DoneLeaf" not in warnings_text
 
+    def test_validate_warns_on_answered_notes(self):
+        """validate_dag must warn when notes are answered but not yet validated by LLM."""
+        root = self._task("Root")
+        tasks.add_note(self.conn, root["id"], "question", "Should we use Redis?",
+                       status="answered", resolution="Yes, Redis 7")
+        result = task_analysis.validate_dag(self.conn, root["id"])
+        warnings_text = " ".join(result["warnings"])
+        assert "answered by user but not yet validated" in warnings_text
+        assert len(result["warnings"]) > 0
+
 
 # ---------------------------------------------------------------------------
 # 5.2.6 — export_task (with include_analysis=True, replaces build_context)
@@ -662,6 +672,20 @@ class TestRoadmap(TestAnalysisBase):
         assert a["id"] not in blocked_task["blocked_by"], (
             f"blocked_by must not contain raw UUIDs, got: {blocked_task['blocked_by']}"
         )
+
+    def test_roadmap_includes_answered_notes(self):
+        """roadmap attention block must include answered_notes before unresolved_questions."""
+        root = self._task("Root")
+        tasks.add_note(self.conn, root["id"], "question", "Which database?",
+                       status="answered", resolution="PostgreSQL")
+        rm = task_analysis.roadmap(self.conn, root["id"])
+        answered = rm["attention"]["answered_notes"]
+        assert len(answered) == 1
+        assert answered[0]["content"] == "Which database?"
+        assert answered[0]["resolution"] == "PostgreSQL"
+        # answered_notes must appear before unresolved_questions in the dict
+        keys = list(rm["attention"].keys())
+        assert keys.index("answered_notes") < keys.index("unresolved_questions")
 
 
 # ---------------------------------------------------------------------------

@@ -645,6 +645,19 @@ def validate_dag(
     else:
         ok.append("No open questions")
 
+    # --- Check 4b: Notes awaiting LLM validation ---
+    answered_notes_count = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND status = 'answered'",
+        subtree_ids,
+    ).fetchone()[0]
+    if answered_notes_count > 0:
+        warnings.append(
+            f"{answered_notes_count} note(s) answered by user but not yet validated by LLM — "
+            "call note_list(status='answered') to review and update to resolved/rejected"
+        )
+    else:
+        ok.append("No notes pending LLM validation")
+
     # --- Check 5: Unverified assumptions ---
     open_assumptions = conn.execute(  # noqa: S608
         f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'assumption' AND status = 'open'",
@@ -1187,6 +1200,11 @@ def roadmap(
         subtree_ids,
     ).fetchall()
 
+    answered_notes_rows = conn.execute(  # noqa: S608
+        f"SELECT * FROM notes WHERE task_id IN ({ph}) AND status = 'answered'",
+        subtree_ids,
+    ).fetchall()
+
     # Low isolation: check leaf tasks with code refs
     parent_ids_set = set(
         r[0]
@@ -1237,6 +1255,7 @@ def roadmap(
         "notes_count": notes_count,
         "attention": {
             "ready_to_start": ready_to_start,
+            "answered_notes": [_row_to_dict(r) for r in answered_notes_rows],
             "unresolved_questions": [_row_to_dict(r) for r in unresolved_q],
             "unverified_assumptions": [_row_to_dict(r) for r in unresolved_a],
             "low_isolation": low_isolation,
