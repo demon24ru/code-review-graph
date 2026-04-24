@@ -141,7 +141,7 @@ def rename_preview(
     for e in edits:
         stats[e["confidence"]] += 1
 
-    # --- Docstring / comment / string-literal scan (possible_misses) ---
+    # --- Classify remaining occurrences not covered by graph edges ---
     # Scan files that already have edits (plus the definition file) for any
     # remaining occurrences of old_name not covered by the edits above.
     possible_misses: list[dict[str, Any]] = []
@@ -153,14 +153,92 @@ def rename_preview(
             lines = Path(fpath).read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
+        in_docstring = False
+        docstring_char: str = ""
         for lineno, line_text in enumerate(lines, start=1):
-            if old_name in line_text and (fpath, lineno) not in edit_positions:
+            if old_name not in line_text:
+                # Still track docstring state even when old_name not present
+                stripped_track = line_text.strip()
+                for marker in ('"""', "'''"):
+                    if marker in stripped_track:
+                        if in_docstring and docstring_char == marker:
+                            in_docstring = False
+                            docstring_char = ""
+                        elif not in_docstring:
+                            # Only enter docstring state if it doesn't close on same line
+                            count = stripped_track.count(marker)
+                            if count % 2 == 1:  # odd count → opens but doesn't close
+                                in_docstring = True
+                                docstring_char = marker
+                continue
+            if (fpath, lineno) in edit_positions:
+                continue
+
+            stripped = line_text.strip()
+
+            # Check docstring state transitions
+            for marker in ('"""', "'''"):
+                if marker in stripped:
+                    if in_docstring and docstring_char == marker:
+                        in_docstring = False
+                        docstring_char = ""
+                    elif not in_docstring:
+                        count = stripped.count(marker)
+                        if count % 2 == 1:
+                            in_docstring = True
+                            docstring_char = marker
+
+            # Classify occurrence
+            if (stripped.startswith("from ") and " import " in stripped) or stripped.startswith(
+                "import "
+            ):
+                # Import statement — definite rename needed
+                edits.append({
+                    "file": fpath,
+                    "line": lineno,
+                    "old": old_name,
+                    "new": new_name,
+                    "confidence": "high",
+                })
+                edit_positions.add((fpath, lineno))
+                stats["high"] += 1
+            elif stripped.startswith("#"):
                 possible_misses.append({
                     "file": fpath,
                     "line": lineno,
-                    "text": line_text.strip()[:120],  # truncate long lines
+                    "text": line_text.strip()[:120],
                     "confidence": "low",
-                    "reason": "docstring/comment/string literal — manual review required",
+                    "reason": "comment",
+                })
+            elif in_docstring:
+                possible_misses.append({
+                    "file": fpath,
+                    "line": lineno,
+                    "text": line_text.strip()[:120],
+                    "confidence": "low",
+                    "reason": "docstring",
+                })
+            elif (
+                f'"{old_name}"' in line_text
+                or f"'{old_name}'" in line_text
+                or f'"{old_name}' in line_text
+                or f"'{old_name}" in line_text
+            ):
+                possible_misses.append({
+                    "file": fpath,
+                    "line": lineno,
+                    "text": line_text.strip()[:120],
+                    "confidence": "low",
+                    "reason": "string_literal",
+                })
+            else:
+                # Unknown context — conservative miss
+                possible_misses.append({
+                    "file": fpath,
+                    "line": lineno,
+                    "text": line_text.strip()[:120],
+                    "confidence": "low",
+                    "reason": "string_literal",
                 })
 
     refactor_id = uuid.uuid4().hex[:8]
@@ -242,6 +320,14 @@ def find_dead_code(
     for node in candidates:
         # Skip test nodes.
         if node.is_test:
+            continue
+
+        # Skip __init__ constructors — called implicitly via ClassName().
+        if node.name == "__init__":
+            continue
+
+        # Skip abstract methods — called via polymorphism, not direct references.
+        if "abstract" in (node.modifiers or ""):
             continue
 
         # Skip entry points (by name pattern or decorator, not just "uncalled").

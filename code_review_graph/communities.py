@@ -144,6 +144,23 @@ def _to_slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:30]
 
 
+def _ensure_unique_names(communities: list[dict[str, Any]]) -> None:
+    """Deduplicate community names in-place by appending -2, -3, etc.
+
+    When two communities receive the same generated name, the second one
+    gets a ``-2`` suffix, the third ``-3``, and so on.  Modifies the
+    ``name`` field of each dict directly.
+    """
+    seen: dict[str, int] = {}
+    for comm in communities:
+        name = comm["name"]
+        if name in seen:
+            seen[name] += 1
+            comm["name"] = f"{name}-{seen[name]}"
+        else:
+            seen[name] = 1
+
+
 # ---------------------------------------------------------------------------
 # Cohesion calculation
 # ---------------------------------------------------------------------------
@@ -422,6 +439,9 @@ def detect_communities(
     else:
         logger.info("igraph not available, using file-based community detection")
         results = _detect_file_based(unique_nodes, all_edges, min_size)
+
+    # Ensure all community names are unique within this batch.
+    _ensure_unique_names(results)
 
     # Convert member_qns (internal set) to a list for serialization safety,
     # then strip it from the returned dicts to avoid leaking internal state.

@@ -622,6 +622,219 @@ class TestQueryGraphInheritors:
         assert "ChildService" in names, f"Expected ChildService in results, got: {names}"
 
 
+class TestQueryGraphLimit:
+    """Tests for H-08: query_graph limit param truncation."""
+
+    def setup_method(self):
+        import tempfile as _tf
+
+        self.tmpdir = Path(_tf.mkdtemp())
+        crg_dir = self.tmpdir / ".code-review-graph"
+        crg_dir.mkdir()
+        db_path = crg_dir / "graph.db"
+        self.store = GraphStore(str(db_path), repo_root=self.tmpdir)
+        self._seed_data()
+
+    def teardown_method(self):
+        self.store.close()
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _seed_data(self):
+        """Seed a target function called by 5 distinct callers."""
+        import time
+
+        target_file = str(self.tmpdir / "lib.py")
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="target_func",
+                file_path=target_file,
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        # Seed 5 callers
+        for i in range(5):
+            caller_file = str(self.tmpdir / f"caller{i}.py")
+            self.store.upsert_node(
+                NodeInfo(
+                    kind="Function",
+                    name=f"caller{i}",
+                    file_path=caller_file,
+                    line_start=1,
+                    line_end=5,
+                    language="python",
+                )
+            )
+            target_qn = target_file + "::target_func"
+            caller_qn = caller_file + f"::caller{i}"
+            self.store.upsert_edge(
+                EdgeInfo(
+                    kind="CALLS",
+                    source=caller_qn,
+                    target=target_qn,
+                    file_path=caller_file,
+                )
+            )
+        self.store.commit()
+
+    def test_limit_truncates_results(self):
+        """callers_of with limit=2 returns at most 2 results."""
+        result = query_graph(
+            pattern="callers_of",
+            target="target_func",
+            repo_root=str(self.tmpdir),
+            limit=2,
+        )
+        assert result["status"] in ("ok", "ambiguous")
+        assert len(result["results"]) <= 2
+
+    def test_limit_sets_truncated_flag(self):
+        """When results exceeded limit, response has truncated=True."""
+        result = query_graph(
+            pattern="callers_of",
+            target="target_func",
+            repo_root=str(self.tmpdir),
+            limit=2,
+        )
+        assert result.get("truncated") is True
+
+    def test_limit_sets_total_before_limit(self):
+        """total_before_limit reports the count before truncation."""
+        result = query_graph(
+            pattern="callers_of",
+            target="target_func",
+            repo_root=str(self.tmpdir),
+            limit=2,
+        )
+        assert result.get("total_before_limit", 0) > 2
+
+    def test_no_truncation_when_limit_not_set(self):
+        """Without limit, all results returned and no truncated key."""
+        result = query_graph(
+            pattern="callers_of",
+            target="target_func",
+            repo_root=str(self.tmpdir),
+        )
+        assert "truncated" not in result
+        assert len(result["results"]) == 5
+
+    def test_limit_larger_than_results_no_truncation(self):
+        """limit > actual results: no truncation, no truncated key."""
+        result = query_graph(
+            pattern="callers_of",
+            target="target_func",
+            repo_root=str(self.tmpdir),
+            limit=100,
+        )
+        assert "truncated" not in result
+        assert len(result["results"]) == 5
+
+
+class TestQueryGraphCalleesDedup:
+    """Tests for M-01: callees_of deduplicates results when called from multiple lines."""
+
+    def setup_method(self):
+        import tempfile as _tf
+
+        self.tmpdir = Path(_tf.mkdtemp())
+        crg_dir = self.tmpdir / ".code-review-graph"
+        crg_dir.mkdir()
+        db_path = crg_dir / "graph.db"
+        self.store = GraphStore(str(db_path), repo_root=self.tmpdir)
+        self._seed_data()
+
+    def teardown_method(self):
+        self.store.close()
+        import shutil
+
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _seed_data(self):
+        """Seed caller that calls callee from 2 different lines."""
+        import time
+
+        caller_file = str(self.tmpdir / "caller.py")
+        callee_file = str(self.tmpdir / "callee.py")
+
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="caller_func",
+                file_path=caller_file,
+                line_start=1,
+                line_end=20,
+                language="python",
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="callee_func",
+                file_path=callee_file,
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        # Look up actual (possibly relativized) QNs as stored in the DB
+        caller_nodes = self.store.search_nodes("caller_func", limit=1)
+        callee_nodes = self.store.search_nodes("callee_func", limit=1)
+        self.caller_qn = caller_nodes[0].qualified_name
+        self.callee_qn = callee_nodes[0].qualified_name
+
+        # Use relative file_path (as upsert_edge would store it)
+        try:
+            rel_caller_file = str(Path(caller_file).relative_to(self.tmpdir))
+        except ValueError:
+            rel_caller_file = caller_file
+
+        # Two CALLS edges from the same caller to the same callee (different lines)
+        # Insert via raw SQL to create two distinct call site edges (different line numbers)
+        for line_no in (10, 15):
+            self.store._conn.execute(
+                "INSERT INTO edges"
+                " (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, '{}', ?)",
+                ("CALLS", self.caller_qn, self.callee_qn, rel_caller_file, line_no, time.time()),
+            )
+        self.store.commit()
+
+    def test_callees_results_deduplicated(self):
+        """results must not contain the same callee twice."""
+        result = query_graph(
+            pattern="callees_of",
+            target="caller_func",
+            repo_root=str(self.tmpdir),
+        )
+        assert result["status"] == "ok"
+        callee_entries = [r for r in result["results"] if r.get("name") == "callee_func"]
+        assert len(callee_entries) == 1, (
+            f"Expected exactly 1 callee_func in results, got {len(callee_entries)}"
+        )
+
+    def test_callees_edges_preserves_all_call_sites(self):
+        """edges must retain all call-site edges (2 edges for 2 call sites)."""
+        result = query_graph(
+            pattern="callees_of",
+            target="caller_func",
+            repo_root=str(self.tmpdir),
+        )
+        callee_edges = [
+            e for e in result["edges"]
+            if e.get("target_qualified") == self.callee_qn
+            or e.get("target") == self.callee_qn
+        ]
+        assert len(callee_edges) == 2, (
+            f"Expected 2 edges for callee_func, got {len(callee_edges)}: {callee_edges}"
+        )
+
+
 class TestGetDocsSection:
     """Tests for the get_docs_section tool."""
 
@@ -2120,6 +2333,9 @@ class TestFindFilesByPatternLimit:
         assert len(result["results"]) == 10
         assert result["truncated"] is True
         assert "Results truncated to 10" in result["warning"]
+        # F-05: total_matches must be present when truncated
+        assert "total_matches" in result
+        assert result["total_matches"] == result["total_found"]
 
     def test_find_files_no_truncation_when_under_limit(self):
         """Test that truncated flag is not set when results are under limit."""

@@ -479,3 +479,274 @@ class TestFlows:
         assert "total_count" in result, "total_count missing from response"
         assert isinstance(result["total_count"], int)
         assert result["total_count"] == len(result["flows"])
+
+    # ---------------------------------------------------------------
+    # H-01: get_flows limit=None returns all flows
+    # ---------------------------------------------------------------
+
+    def test_get_flows_limit_none_returns_all(self):
+        """H-01: get_flows(limit=None) returns every stored flow regardless of sort_by."""
+        self._add_func("ep_a", path="a.py")
+        self._add_func("helper_a", path="a.py")
+        self._add_call("a.py::ep_a", "a.py::helper_a", "a.py")
+
+        self._add_func("ep_b", path="b.py")
+        self._add_func("helper_b1", path="b.py")
+        self._add_func("helper_b2", path="b.py")
+        self._add_call("b.py::ep_b", "b.py::helper_b1", "b.py")
+        self._add_call("b.py::helper_b1", "b.py::helper_b2", "b.py")
+
+        flows = trace_flows(self.store)
+        store_flows(self.store, flows)
+
+        by_criticality = get_flows(self.store, sort_by="criticality", limit=None)
+        by_depth = get_flows(self.store, sort_by="depth", limit=None)
+
+        # Both orders must return the same complete set of flows.
+        assert len(by_criticality) == len(by_depth)
+        assert {f["id"] for f in by_criticality} == {f["id"] for f in by_depth}
+        # Must have found at least the 2 flows we created.
+        assert len(by_criticality) >= 2
+
+
+# ---------------------------------------------------------------------------
+# Bug-fix regression tests: H-01, H-02, H-14 at the tool layer
+# ---------------------------------------------------------------------------
+
+
+class TestListFlowsBugFixes:
+    """Regression tests that require a proper repo_root so _get_store validates.
+
+    Uses the same tmpdir pattern as test_tools.py:
+    tmpdir/.code-review-graph/graph.db
+    """
+
+    def setup_method(self):
+        import shutil as _shutil
+        import tempfile as _tf
+
+        self.tmpdir = Path(_tf.mkdtemp())
+        crg_dir = self.tmpdir / ".code-review-graph"
+        crg_dir.mkdir()
+        db_path = crg_dir / "graph.db"
+        self.store = GraphStore(str(db_path), repo_root=self.tmpdir)
+
+    def teardown_method(self):
+        import shutil as _shutil
+
+        self.store.close()
+        _shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _add_func(
+        self,
+        name: str,
+        path: str = "app.py",
+        kind: str | None = None,
+        is_test: bool = False,
+    ) -> int:
+        """Add a node with explicit kind (decoupled from is_test for H-02 testing)."""
+        # kind defaults to "Test" when is_test, "Function" otherwise — but caller
+        # can override to create Function nodes that live in test files.
+        resolved_kind = kind if kind is not None else ("Test" if is_test else "Function")
+        node = NodeInfo(
+            kind=resolved_kind,
+            name=name,
+            file_path=str(self.tmpdir / path),
+            line_start=1,
+            line_end=10,
+            language="python",
+            is_test=is_test,
+        )
+        nid = self.store.upsert_node(node, file_hash="abc")
+        self.store.commit()
+        return nid
+
+    def _add_call(self, src_path: str, src_name: str, tgt_path: str, tgt_name: str) -> None:
+        """Add a CALLS edge using absolute paths (will be relativized by the store)."""
+        edge = EdgeInfo(
+            kind="CALLS",
+            source=str(self.tmpdir / src_path) + "::" + src_name,
+            target=str(self.tmpdir / tgt_path) + "::" + tgt_name,
+            file_path=str(self.tmpdir / src_path),
+            line=5,
+        )
+        self.store.upsert_edge(edge)
+        self.store.commit()
+
+    # -------------------------------------------------------------------
+    # H-01: sort_by must not change the set of flows returned
+    # -------------------------------------------------------------------
+
+    def test_h01_sort_by_invariant_with_is_test_filter(self):
+        """H-01: is_test=False returns the same flow IDs regardless of sort_by."""
+        from code_review_graph.tools.flows_tools import list_flows
+
+        # Two production flows
+        self._add_func("prod_ep1", path="app.py", is_test=False)
+        self._add_func("prod_helper1", path="app.py", is_test=False)
+        self._add_call("app.py", "prod_ep1", "app.py", "prod_helper1")
+
+        self._add_func("prod_ep2", path="svc.py", is_test=False)
+        self._add_func("prod_helper2a", path="svc.py", is_test=False)
+        self._add_func("prod_helper2b", path="svc.py", is_test=False)
+        self._add_call("svc.py", "prod_ep2", "svc.py", "prod_helper2a")
+        self._add_call("svc.py", "prod_helper2a", "svc.py", "prod_helper2b")
+
+        # One test flow
+        self._add_func("test_handler", path="tests/test_app.py", kind="Test", is_test=True)
+        self._add_func("test_helper", path="tests/test_app.py", kind="Test", is_test=True)
+        self._add_call("tests/test_app.py", "test_handler", "tests/test_app.py", "test_helper")
+
+        stored = trace_flows(self.store)
+        store_flows(self.store, stored)
+
+        r_crit = list_flows(
+            repo_root=str(self.tmpdir), is_test=False, sort_by="criticality", limit=50
+        )
+        r_depth = list_flows(
+            repo_root=str(self.tmpdir), is_test=False, sort_by="depth", limit=50
+        )
+
+        assert r_crit["total_count"] == r_depth["total_count"], (
+            f"sort_by='criticality' gave {r_crit['total_count']} "
+            f"but sort_by='depth' gave {r_depth['total_count']}"
+        )
+        assert {f["id"] for f in r_crit["flows"]} == {f["id"] for f in r_depth["flows"]}
+
+    # -------------------------------------------------------------------
+    # H-02: is_test flag on the node, not kind=="Test"
+    # -------------------------------------------------------------------
+
+    def test_h02_is_test_false_excludes_function_kind_with_is_test_true(self):
+        """H-02: is_test=False must exclude flows whose entry-point has is_test=True,
+        even when that node's kind is 'Function' (not 'Test'), as happens for
+        setup_method / _seed_data helpers that live in test files."""
+        from code_review_graph.tools.flows_tools import list_flows
+
+        # "Function"-kind nodes living in a test file: is_test=True, kind="Function"
+        self._add_func(
+            "setup_method", path="tests/test_app.py", kind="Function", is_test=True
+        )
+        self._add_func(
+            "_seed_data", path="tests/test_app.py", kind="Function", is_test=True
+        )
+        self._add_call("tests/test_app.py", "setup_method", "tests/test_app.py", "_seed_data")
+
+        # A proper production flow
+        self._add_func("handler", path="app.py", kind="Function", is_test=False)
+        self._add_func("helper", path="app.py", kind="Function", is_test=False)
+        self._add_call("app.py", "handler", "app.py", "helper")
+
+        stored = trace_flows(self.store)
+        store_flows(self.store, stored)
+
+        prod_result = list_flows(repo_root=str(self.tmpdir), is_test=False)
+        prod_flows = prod_result["flows"]
+
+        # The setup_method→_seed_data flow must NOT appear
+        for flow in prod_flows:
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node = self.store.get_node_by_id(ep_id)
+                if node is not None:
+                    assert not node.is_test, (
+                        f"Flow with entry-point is_test=True slipped through "
+                        f"is_test=False filter: node={node.name!r}, kind={node.kind!r}"
+                    )
+
+        # The handler→helper production flow must appear
+        prod_ep_names = set()
+        for flow in prod_flows:
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node = self.store.get_node_by_id(ep_id)
+                if node is not None:
+                    prod_ep_names.add(node.name)
+        assert "handler" in prod_ep_names, "Production flow 'handler' missing from is_test=False"
+
+    # -------------------------------------------------------------------
+    # H-14: get_affected_flows_func / get_affected_flows_tool is_test param
+    # -------------------------------------------------------------------
+
+    def test_h14_get_affected_flows_func_has_is_test_parameter(self):
+        """H-14: get_affected_flows_func signature must include is_test."""
+        import inspect
+
+        from code_review_graph.tools.review import get_affected_flows_func
+
+        sig = inspect.signature(get_affected_flows_func)
+        assert "is_test" in sig.parameters, (
+            "get_affected_flows_func is missing the is_test parameter"
+        )
+
+    def test_h14_get_affected_flows_tool_has_is_test_parameter(self):
+        """H-14: get_affected_flows_tool MCP wrapper must expose is_test."""
+        import inspect
+
+        from code_review_graph.main import get_affected_flows_tool
+
+        sig = inspect.signature(get_affected_flows_tool)
+        assert "is_test" in sig.parameters, (
+            "get_affected_flows_tool is missing the is_test parameter"
+        )
+
+    def test_h14_get_affected_flows_func_filters_test_flows(self):
+        """H-14: get_affected_flows_func(is_test=False) excludes test-file flows."""
+        from code_review_graph.tools.review import get_affected_flows_func
+
+        # Test-file flow (Function kind, is_test=True)
+        self._add_func(
+            "setup_method", path="tests/test_app.py", kind="Function", is_test=True
+        )
+        self._add_func(
+            "_seed_data", path="tests/test_app.py", kind="Function", is_test=True
+        )
+        self._add_call("tests/test_app.py", "setup_method", "tests/test_app.py", "_seed_data")
+
+        stored = trace_flows(self.store)
+        store_flows(self.store, stored)
+
+        # Changed file is the test file — the test flow passes through it
+        changed = [str(self.tmpdir / "tests/test_app.py")]
+
+        result_all = get_affected_flows_func(
+            changed_files=changed,
+            repo_root=str(self.tmpdir),
+        )
+        result_prod = get_affected_flows_func(
+            changed_files=changed,
+            repo_root=str(self.tmpdir),
+            is_test=False,
+        )
+
+        # All affected flows include the test flow
+        assert result_all["total"] >= 1
+        # With is_test=False the test flow should be excluded
+        for flow in result_prod.get("affected_flows", []):
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node = self.store.get_node_by_id(ep_id)
+                if node is not None:
+                    assert not node.is_test, (
+                        f"Test flow found in is_test=False result: {node.name!r}"
+                    )
+
+    def test_get_flow_not_found_has_hints(self):
+        """P-04: get_flow_tool not_found response has _hints.next_actions."""
+        from code_review_graph.tools.flows_tools import get_flow
+
+        result = get_flow(flow_id=99999, repo_root=str(self.tmpdir))
+        assert result["status"] == "not_found"
+        hints = result.get("_hints", {})
+        next_actions = hints.get("next_actions", [])
+        assert "list_flows_tool" in next_actions
+
+    def test_get_flow_not_found_by_name_has_hints(self):
+        """P-04: get_flow_tool not_found by flow_name has _hints.next_actions."""
+        from code_review_graph.tools.flows_tools import get_flow
+
+        result = get_flow(flow_name="nonexistent_flow_xyz", repo_root=str(self.tmpdir))
+        assert result["status"] == "not_found"
+        hints = result.get("_hints", {})
+        next_actions = hints.get("next_actions", [])
+        assert "list_flows_tool" in next_actions

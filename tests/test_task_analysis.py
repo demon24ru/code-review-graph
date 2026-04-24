@@ -251,6 +251,16 @@ class TestCheckIsolation(TestAnalysisBase):
         assert result["external_dependents"] == 0
         assert result["external_nodes"] == []
 
+    # H-06: roadmap must not crash when check_isolation returns isolation_score=None
+    def test_roadmap_does_not_crash_when_isolation_score_is_none(self):
+        """roadmap() must not raise TypeError when a leaf task has isolation_score=None."""
+        root = self._task("Root")
+        # Leaf with no code refs — check_isolation will return isolation_score=None
+        _leaf = self._task("Leaf", parent_id=root["id"])
+        # Should not raise TypeError
+        result = task_analysis.roadmap(self.conn, root["id"])
+        assert result["attention"]["low_isolation"] == []
+
 
 # ---------------------------------------------------------------------------
 # 5.2.3 — blast_radius
@@ -284,7 +294,8 @@ class TestBlastRadius(TestAnalysisBase):
         assert result["message"] == "Task has no code refs linked. Use task_link_code to associate code nodes."
         assert result["direct_nodes"] == []
         assert result["affected_nodes_count"] == 0
-        assert result["uncovered_nodes"] == []
+        assert result["uncovered_nodes_count"] == 0
+        assert "uncovered_nodes" not in result
         assert result["coverage_ratio"] is None
 
     def test_coverage_ratio_full_when_all_covered(self):
@@ -299,7 +310,8 @@ class TestBlastRadius(TestAnalysisBase):
         # Both nodes covered by some task
         result = task_analysis.blast_radius(self.conn, t1["id"], depth=1)
         assert result["coverage_ratio"] == 1.0
-        assert result["uncovered_nodes"] == []
+        assert result["uncovered_nodes_count"] == 0
+        assert "uncovered_nodes" not in result
 
     def test_blast_radius_includes_affected_when_flag_true(self):
         t = self._task("T")
@@ -318,6 +330,35 @@ class TestBlastRadius(TestAnalysisBase):
         assert "affected_nodes" in result_with_flag
         assert len(result_with_flag["affected_nodes"]) >= 1
         assert result_with_flag["affected_nodes_count"] == len(result_with_flag["affected_nodes"])
+
+    def test_include_affected_false_returns_uncovered_count_not_list(self):
+        """H-09: include_affected_nodes=False must return uncovered_nodes_count (int),
+        not full uncovered_nodes list."""
+        t = self._task("T")
+        n1 = self._node("func_x", "x.py")
+        n2 = self._node("func_y", "y.py")
+        self._link(t["id"], n1)
+        self._code_edge("func_x", "func_y")
+        # Default (include_affected_nodes=False)
+        result = task_analysis.blast_radius(self.conn, t["id"], depth=1)
+        assert "uncovered_nodes" not in result, (
+            "uncovered_nodes list must be absent when include_affected_nodes=False"
+        )
+        assert "uncovered_nodes_count" in result
+        assert isinstance(result["uncovered_nodes_count"], int)
+
+    def test_include_affected_true_returns_uncovered_list(self):
+        """H-09: include_affected_nodes=True must return full uncovered_nodes list."""
+        t = self._task("T")
+        n1 = self._node("func_p", "p.py")
+        n2 = self._node("func_q", "q.py")
+        self._link(t["id"], n1)
+        self._code_edge("func_p", "func_q")
+        result = task_analysis.blast_radius(
+            self.conn, t["id"], depth=1, include_affected_nodes=True
+        )
+        assert "uncovered_nodes" in result
+        assert isinstance(result["uncovered_nodes"], list)
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +525,17 @@ class TestValidateDAG(TestAnalysisBase):
         warnings_text = " ".join(result["warnings"])
         assert "constraint" in warnings_text.lower() or "unresolved" in warnings_text.lower()
 
+    # M-08: done leaf tasks must be excluded from check 3 (no code refs warning)
+    def test_validate_done_leaf_not_warned_for_missing_code_refs(self):
+        """validate_dag check 3 must NOT warn about done leaf tasks with no code refs."""
+        root = self._task("Root")
+        leaf = self._task("DoneLeaf", parent_id=root["id"], description="Already done")
+        tasks.update_task(self.conn, leaf["id"], status="done")
+        result = task_analysis.validate_dag(self.conn, root["id"])
+        # No warning about "DoneLeaf" lacking code refs
+        warnings_text = " ".join(result["warnings"])
+        assert "DoneLeaf" not in warnings_text
+
 
 # ---------------------------------------------------------------------------
 # 5.2.6 — export_task (with include_analysis=True, replaces build_context)
@@ -520,6 +572,16 @@ class TestBuildContext(TestAnalysisBase):
         root = self._task("Root")
         ctx = task_analysis.export_task(self.conn, root["id"], include_analysis=True)
         assert ctx["pipeline_state"]["ready_for_coder"] is True
+
+    # H-04: open constraint must block ready_for_coder
+    def test_pipeline_state_not_ready_with_open_constraint(self):
+        """pipeline_state.ready_for_coder must be False when unresolved_constraints > 0."""
+        root = self._task("Root")
+        tasks.add_note(self.conn, root["id"], "constraint", "Must run on Python 3.10+")
+        ctx = task_analysis.export_task(self.conn, root["id"], include_analysis=True)
+        assert ctx["pipeline_state"]["open_constraints"] == 1
+        assert ctx["pipeline_state"]["ready_for_coder"] is False
+        assert "constraint" in ctx["pipeline_state"]["summary"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +638,30 @@ class TestRoadmap(TestAnalysisBase):
         assert rm["contracts"]["total"] == 2
         assert rm["contracts"]["agreed"] == 1
         assert rm["contracts"]["pending"] == 1
+
+    def test_phases_blocked_by_shows_titles(self):
+        """F-08: blocked_by in phases must show task titles, not raw UUIDs."""
+        root = self._task("Root")
+        a = self._task("Fix auth bug", parent_id=root["id"])
+        b = self._task("Deploy service", parent_id=root["id"])
+        # b depends_on a → b is blocked by a until a is done
+        tasks.add_task_edge(self.conn, b["id"], a["id"], "depends_on")
+        rm = task_analysis.roadmap(self.conn, root["id"])
+        # Find b in phases
+        blocked_task = None
+        for phase in rm["phases"]:
+            for t in phase["tasks"]:
+                if t["id"] == b["id"]:
+                    blocked_task = t
+                    break
+        assert blocked_task is not None, "Deploy service task should appear in phases"
+        assert "blocked_by" in blocked_task, "Blocked task should have blocked_by field"
+        assert "Fix auth bug" in blocked_task["blocked_by"], (
+            f"blocked_by should list titles, got: {blocked_task['blocked_by']}"
+        )
+        assert a["id"] not in blocked_task["blocked_by"], (
+            f"blocked_by must not contain raw UUIDs, got: {blocked_task['blocked_by']}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +721,29 @@ class TestRoadmapDiff(TestAnalysisBase):
         assert "current_status" not in changed, "Should not have 'current_status' key"
         assert changed["new_status"] == "done"
         assert changed["old_status"] is None
+
+    def test_roadmap_diff_uses_updated_at_not_created_at(self):
+        """H-13: tasks_status_changed is based on updated_at, never created_at.
+
+        A task created BEFORE since_timestamp but updated AFTER must appear in
+        tasks_status_changed, not in tasks_created.
+        """
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        # Both t1.created_at < ts — set the cutoff after creation
+        ts = time.time()
+        time.sleep(0.01)
+        # Update t1 after ts → t1.updated_at > ts
+        tasks.update_task(self.conn, t1["id"], status="in_progress")
+        diff = task_analysis.roadmap_diff(self.conn, root["id"], ts)
+        changed_ids = {t["id"] for t in diff["tasks_status_changed"]}
+        created_ids = {t["id"] for t in diff["tasks_created"]}
+        assert t1["id"] in changed_ids, (
+            "Task updated after since_timestamp must appear in tasks_status_changed"
+        )
+        assert t1["id"] not in created_ids, (
+            "Task created before since_timestamp must not appear in tasks_created"
+        )
 
 
 # ---------------------------------------------------------------------------

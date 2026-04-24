@@ -47,6 +47,38 @@ class TestRegistry:
         assert len(repos) == 1
         assert repos[0]["alias"] == "second"
 
+    def test_register_no_alias_stores_dirname(self):
+        """Registering without alias stores the directory name as alias."""
+        entry = self.registry.register(str(self.repo1))
+        assert entry.get("alias") == "repo1"
+        # Stored entry in list_repos must also have the alias
+        repos = self.registry.list_repos()
+        assert repos[0]["alias"] == "repo1"
+
+    def test_register_no_alias_unregister_by_dirname(self):
+        """After register without alias, unregister by directory name works."""
+        self.registry.register(str(self.repo1))
+        result = self.registry.unregister("repo1")
+        assert result is True
+        assert len(self.registry.list_repos()) == 0
+
+    def test_register_returns_action_created(self):
+        """register() returns action='created' for a new registration."""
+        entry = self.registry.register(str(self.repo1), alias="r1")
+        assert entry.get("action") == "created"
+        # Stored entry must NOT have action field
+        repos = self.registry.list_repos()
+        assert "action" not in repos[0]
+
+    def test_register_returns_action_updated(self):
+        """register() returns action='updated' on re-registration."""
+        self.registry.register(str(self.repo1), alias="r1")
+        entry = self.registry.register(str(self.repo1), alias="r2")
+        assert entry.get("action") == "updated"
+        # Stored entry must still NOT have action field
+        repos = self.registry.list_repos()
+        assert "action" not in repos[0]
+
     def test_register_invalid_path(self):
         """Registering a non-existent path raises ValueError."""
         import pytest
@@ -350,3 +382,192 @@ class TestRegisterRepoFunc:
 
             assert result["status"] == "error"
             assert result["code"] == "REGISTRY_ERROR"
+
+    def test_register_repo_func_action_created(self):
+        """register_repo_func returns action='created' for a new registration."""
+        from code_review_graph.tools import register_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.register.return_value = {
+                "path": str(self.repo1.resolve()),
+                "alias": "repo1",
+                "action": "created",
+            }
+            mock_registry_cls.return_value = mock_instance
+
+            result = register_repo_func(str(self.repo1))
+
+            assert result["status"] == "ok"
+            assert result["action"] == "created"
+            # action field must NOT appear inside repo entry
+            assert "action" not in result["repo"]
+
+    def test_register_repo_func_action_updated(self):
+        """register_repo_func returns action='updated' on re-registration."""
+        from code_review_graph.tools import register_repo_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.register.return_value = {
+                "path": str(self.repo1.resolve()),
+                "alias": "repo1",
+                "action": "updated",
+            }
+            mock_registry_cls.return_value = mock_instance
+
+            result = register_repo_func(str(self.repo1))
+
+            assert result["status"] == "ok"
+            assert result["action"] == "updated"
+
+
+class TestRegistryErrorCodes:
+    """H-12: REGISTRY_ERROR / REGISTRY_NOT_FOUND must point to list_repos_tool."""
+
+    def test_registry_not_found_next_action(self):
+        """REGISTRY_NOT_FOUND error has next_action=list_repos_tool."""
+        from code_review_graph.response import graph_error
+
+        err = graph_error("REGISTRY_NOT_FOUND", "No repo matching 'ghost'")
+        assert err["next_action"] == "list_repos_tool"
+
+    def test_registry_error_next_action(self):
+        """REGISTRY_ERROR error has next_action=list_repos_tool."""
+        from code_review_graph.response import graph_error
+
+        err = graph_error("REGISTRY_ERROR", "Something went wrong")
+        assert err["next_action"] == "list_repos_tool"
+
+    def test_registry_not_found_has_recovery(self):
+        """REGISTRY_NOT_FOUND error includes a helpful recovery hint."""
+        from code_review_graph.response import graph_error
+
+        err = graph_error("REGISTRY_NOT_FOUND", "msg")
+        assert "list_repos_tool" in err["recovery"]
+
+
+class TestListReposHasGraph:
+    """N-07: list_repos_func returns has_graph bool per repo."""
+
+    def setup_method(self):
+        self.tmp_dir = tempfile.mkdtemp()
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_list_repos_has_graph_false(self):
+        """has_graph is False when graph.db does not exist."""
+        from code_review_graph.tools import list_repos_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.list_repos.return_value = [
+                {"path": "/nonexistent/path", "alias": "ghost"},
+            ]
+            mock_registry_cls.return_value = mock_instance
+
+            result = list_repos_func()
+            assert result["status"] == "ok"
+            assert "has_graph" in result["repos"][0]
+            assert result["repos"][0]["has_graph"] is False
+
+    def test_list_repos_has_graph_true(self):
+        """has_graph is True when graph.db exists."""
+        from code_review_graph.tools import list_repos_func
+
+        # Create a real graph.db path
+        repo_dir = Path(self.tmp_dir) / "myrepo"
+        db_dir = repo_dir / ".code-review-graph"
+        db_dir.mkdir(parents=True)
+        (db_dir / "graph.db").touch()
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.list_repos.return_value = [
+                {"path": str(repo_dir), "alias": "myrepo"},
+            ]
+            mock_registry_cls.return_value = mock_instance
+
+            result = list_repos_func()
+            assert result["status"] == "ok"
+            assert result["repos"][0]["has_graph"] is True
+
+
+class TestCrossRepoSearchSkipped:
+    """M-07: cross_repo_search includes repos_skipped for missing graph.db."""
+
+    def test_repos_skipped_when_no_graph_db(self):
+        """repos_skipped includes entries for repos without graph.db."""
+        from code_review_graph.tools import cross_repo_search_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.list_repos.return_value = [
+                {"path": "/nonexistent/repo", "alias": "ghost"},
+            ]
+            mock_registry_cls.return_value = mock_instance
+
+            result = cross_repo_search_func(query="test")
+            assert result["status"] == "ok"
+            assert "repos_skipped" in result
+            assert len(result["repos_skipped"]) == 1
+            skipped = result["repos_skipped"][0]
+            assert skipped["alias"] == "ghost"
+            assert skipped["reason"] == "no graph DB"
+            # repos_searched should count only actually-searched repos
+            assert result["repos_searched"] == []
+
+    def test_repos_searched_not_inflated(self):
+        """repos_searched does not count skipped repos."""
+        from code_review_graph.tools import cross_repo_search_func
+
+        with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+            mock_instance = MagicMock()
+            mock_instance.list_repos.return_value = [
+                {"path": "/nonexistent/repo1", "alias": "ghost1"},
+                {"path": "/nonexistent/repo2", "alias": "ghost2"},
+            ]
+            mock_registry_cls.return_value = mock_instance
+
+            result = cross_repo_search_func(query="test")
+            assert result["repos_searched"] == []
+            assert len(result["repos_skipped"]) == 2
+
+    def test_no_repos_skipped_field_when_all_searched(self):
+        """repos_skipped is absent from response when no repos are skipped."""
+        import sqlite3
+        import tempfile
+        from code_review_graph.tools import cross_repo_search_func
+
+        tmp = tempfile.mkdtemp()
+        try:
+            repo_dir = Path(tmp) / "repo"
+            db_dir = repo_dir / ".code-review-graph"
+            db_dir.mkdir(parents=True)
+            db_path = db_dir / "graph.db"
+            # Create minimal graph.db so GraphStore doesn't crash
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS nodes "
+                "(id INTEGER PRIMARY KEY, name TEXT, kind TEXT, "
+                "file_path TEXT, start_line INTEGER, end_line INTEGER, "
+                "qualified_name TEXT, checksum TEXT)"
+            )
+            conn.commit()
+            conn.close()
+
+            with patch("code_review_graph.registry.Registry") as mock_registry_cls:
+                mock_instance = MagicMock()
+                mock_instance.list_repos.return_value = [
+                    {"path": str(repo_dir), "alias": "good"},
+                ]
+                mock_registry_cls.return_value = mock_instance
+
+                result = cross_repo_search_func(query="test")
+                assert result["status"] == "ok"
+                assert "repos_skipped" not in result
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)

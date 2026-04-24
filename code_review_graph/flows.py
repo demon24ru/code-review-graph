@@ -345,14 +345,14 @@ def store_flows(store: GraphStore, flows: list[dict]) -> int:
 def get_flows(
     store: GraphStore,
     sort_by: str = "criticality",
-    limit: int = 50,
+    limit: int | None = 50,
 ) -> list[dict]:
     """Retrieve stored flows from the database.
 
     Args:
         store: The graph store.
         sort_by: Column to sort by (``criticality``, ``depth``, ``node_count``).
-        limit: Maximum number of flows to return.
+        limit: Maximum number of flows to return. ``None`` returns all flows.
     """
     allowed_sort = {"criticality", "depth", "node_count", "file_count", "name"}
     if sort_by not in allowed_sort:
@@ -362,10 +362,15 @@ def get_flows(
 
     # NOTE: get_flows reads from the flows table which is managed by
     # the flows module; _conn access is documented coupling.
-    rows = store._conn.execute(
-        f"SELECT * FROM flows ORDER BY {sort_by} {order} LIMIT ?",  # nosec B608
-        (limit,),
-    ).fetchall()
+    if limit is None:
+        rows = store._conn.execute(
+            f"SELECT * FROM flows ORDER BY {sort_by} {order}",  # nosec B608
+        ).fetchall()
+    else:
+        rows = store._conn.execute(
+            f"SELECT * FROM flows ORDER BY {sort_by} {order} LIMIT ?",  # nosec B608
+            (limit,),
+        ).fetchall()
 
     results: list[dict] = []
     for row in rows:

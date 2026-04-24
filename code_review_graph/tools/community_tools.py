@@ -108,6 +108,7 @@ def get_community_func(
             return {
                 "status": "not_found",
                 "summary": ("No community found matching the given criteria."),
+                "_hints": {"next_actions": ["list_communities_tool"]},
             }
 
         if include_members:
@@ -134,6 +135,21 @@ def get_community_func(
             "member_count": len(community.get("members", [])),
         }
         result["_hints"] = generate_hints("get_community", result, get_session())
+        if include_members:
+            result["_hints"]["next_steps"] = [
+                {
+                    "tool": "query_graph_tool",
+                    "suggestion": "Explore callers/callees of community members with callers_of pattern",
+                },
+                {
+                    "tool": "trace_dataflow_tool",
+                    "suggestion": "Trace data flow through community members",
+                },
+                {
+                    "tool": "get_flow_tool",
+                    "suggestion": "See execution flows involving community members",
+                },
+            ]
         return result
     except Exception as exc:
         return graph_error("PARSE_ERROR", str(exc))

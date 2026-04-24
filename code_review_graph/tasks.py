@@ -1376,9 +1376,22 @@ def link_task_code(
             resolved_id = _resolve_code_node(
                 conn, item_node_id, item_qname, caller="link_task_code"
             )
+            # Check if (task_id, code_node_id) already exists regardless of ref_type
+            existing = conn.execute(
+                "SELECT ref_type FROM task_code_refs WHERE task_id = ? AND code_node_id = ?",
+                (task_id, resolved_id),
+            ).fetchone()
+            if existing is not None:
+                errors.append({
+                    "item": item,
+                    "error": f"Node {resolved_id} is already linked to this task "
+                             f"(ref_type='{existing[0]}')",
+                    "already_linked": True,
+                })
+                continue
             conn.execute(
                 """
-                INSERT OR REPLACE INTO task_code_refs
+                INSERT INTO task_code_refs
                     (task_id, code_node_id, ref_type, description, created_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,

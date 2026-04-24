@@ -608,6 +608,22 @@ class TestDAGEdges(TestTaskBase):
         with pytest.raises(KeyError):
             tasks.remove_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
 
+    def test_remove_nonexistent_edge_error_message_unquoted(self):
+        """H-10: KeyError.args[0] must be a clean string without outer quotes.
+
+        The MCP wrapper uses exc.args[0] (not str(exc)) to avoid the extra
+        quoting that Python's KeyError.__str__ adds.  Verify the unquoted form
+        here so that graph_error("EDGE_NOT_FOUND", msg) receives a clean message.
+        """
+        with pytest.raises(KeyError) as exc_info:
+            tasks.remove_task_edge(self.conn, self.t1["id"], self.t2["id"], "depends_on")
+        msg = exc_info.value.args[0]
+        assert isinstance(msg, str), "KeyError args[0] should be a plain string"
+        assert not msg.startswith("'"), (
+            f"args[0] must not start with a quote (no double-quoting): {msg!r}"
+        )
+        assert "not found" in msg, f"Message should mention 'not found': {msg!r}"
+
     def test_get_edges_direction(self):
         tasks.add_task_edge(self.conn, [{"source_id": self.t1["id"], "target_id": self.t2["id"]}], edge_type="depends_on")
         outgoing = tasks.get_task_edges(self.conn, self.t1["id"], direction="outgoing")
@@ -1667,31 +1683,104 @@ class TestBatchLinkCode(TestTaskBase):
             tasks.link_task_code(self.conn, t["id"], "not-a-list")
 
     def test_batch_idempotent_insert_or_replace(self):
-        """Linking the same (task, node, ref_type) twice replaces, not duplicates.
-        Different ref_types for the same node produce separate rows (by design)."""
+        """Linking the same (task, code_node_id) pair a second time (any ref_type)
+        returns already_linked error and does NOT insert a duplicate row."""
         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
         n1 = self._node("fn_idem", "src/idem.py")
 
-        # First batch: modifies + reads → 2 rows (different ref_type)
-        tasks.link_task_code(
+        # First link: modifies → inserts
+        result1 = tasks.link_task_code(
             self.conn, t["id"],
-            [
-                {"ref_type": "modifies", "code_node_id": n1},
-                {"ref_type": "reads",    "code_node_id": n1},
-            ],
+            [{"ref_type": "modifies", "code_node_id": n1}],
         )
+        assert result1["success_count"] == 1
         refs = tasks.get_task_code_refs(self.conn, t["id"])
-        assert len(refs) == 2  # modifies + reads
+        assert len(refs) == 1
 
-        # Second batch: link same ref_type again → INSERT OR REPLACE, still 2 rows
-        tasks.link_task_code(
+        # Second link: reads (different ref_type, same node) → already_linked error, no insert
+        result2 = tasks.link_task_code(
             self.conn, t["id"],
-            [{"ref_type": "modifies", "code_node_id": n1}],  # duplicate → replace
+            [{"ref_type": "reads", "code_node_id": n1}],
         )
+        assert result2["success_count"] == 0
+        assert result2["error_count"] == 1
+        assert result2["errors"][0].get("already_linked") is True
+
+        # DB still has exactly 1 row
         refs2 = tasks.get_task_code_refs(self.conn, t["id"])
-        assert len(refs2) == 2  # no new row added, existing replaced
-        node_ids = {r["code_node_id"] for r in refs2}
-        assert node_ids == {n1}  # same node, two ref_types
+        assert len(refs2) == 1
+
+
+# ---------------------------------------------------------------------------
+# H-07: Duplicate (task_id, code_node_id) prevention
+# ---------------------------------------------------------------------------
+
+
+class TestLinkTaskCodeDuplicate(TestTaskBase):
+    """H-07: Linking the same (task_id, code_node_id) pair twice must not create duplicate DB rows."""
+
+    def test_second_link_returns_already_linked_error(self):
+        """Linking same node ID twice → second call returns already_linked error, DB has 1 row."""
+        t = tasks.create_task(self.conn, [{"title": "Dup Task"}])["tasks"][0]
+        nid = self._node("duplicate_fn", "src/dup.py")
+
+        # First link succeeds
+        r1 = tasks.link_task_code(self.conn, t["id"], [
+            {"ref_type": "modifies", "code_node_id": nid},
+        ])
+        assert r1["success_count"] == 1
+        assert r1["error_count"] == 0
+
+        # Second link (same ref_type) → already_linked
+        r2 = tasks.link_task_code(self.conn, t["id"], [
+            {"ref_type": "modifies", "code_node_id": nid},
+        ])
+        assert r2["success_count"] == 0
+        assert r2["error_count"] == 1
+        assert r2["errors"][0].get("already_linked") is True
+
+        # DB has exactly 1 row
+        refs = tasks.get_task_code_refs(self.conn, t["id"])
+        assert len(refs) == 1
+
+    def test_second_link_different_ref_type_also_returns_already_linked(self):
+        """Linking same node with a different ref_type also returns already_linked."""
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        nid = self._node("fn_x", "src/x.py")
+
+        tasks.link_task_code(self.conn, t["id"], [{"ref_type": "reads", "code_node_id": nid}])
+        r = tasks.link_task_code(self.conn, t["id"], [{"ref_type": "modifies", "code_node_id": nid}])
+
+        assert r["error_count"] == 1
+        assert r["errors"][0].get("already_linked") is True
+        # Only 1 row in DB
+        assert len(tasks.get_task_code_refs(self.conn, t["id"])) == 1
+
+    def test_batch_deduplication_in_same_call(self):
+        """Within one batch: first occurrence of a node succeeds, subsequent occurrences error."""
+        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        nid = self._node("fn_batch", "src/batch.py")
+
+        r = tasks.link_task_code(self.conn, t["id"], [
+            {"ref_type": "modifies", "code_node_id": nid},
+            {"ref_type": "reads",    "code_node_id": nid},  # duplicate within batch
+        ])
+        assert r["success_count"] == 1
+        assert r["error_count"] == 1
+        assert r["errors"][0].get("already_linked") is True
+        assert len(tasks.get_task_code_refs(self.conn, t["id"])) == 1
+
+    def test_different_tasks_can_link_same_node(self):
+        """Different tasks may link the same code node — no error."""
+        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=root["id"])["tasks"][0]
+        t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=root["id"])["tasks"][0]
+        nid = self._node("shared_fn", "src/shared.py")
+
+        r1 = tasks.link_task_code(self.conn, t1["id"], [{"ref_type": "reads", "code_node_id": nid}])
+        r2 = tasks.link_task_code(self.conn, t2["id"], [{"ref_type": "reads", "code_node_id": nid}])
+        assert r1["success_count"] == 1
+        assert r2["success_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1801,3 +1890,36 @@ class TestDryRunArchive(TestTaskBase):
         
         # Task is archived
         assert tasks.get_task(self.conn, t["id"])["status"] == "archived"
+
+
+# ---------------------------------------------------------------------------
+# P-05: task_get_active_root idle state includes active_root: null explicitly
+# ---------------------------------------------------------------------------
+
+
+class TestActiveRootIdleKey:
+    """P-05: ensure active_root key is present (and null) when pipeline is idle."""
+
+    def setup_method(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        # _validate_repo_root requires .git or .code-review-graph to exist.
+        Path(self.tmpdir, ".code-review-graph").mkdir()
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_idle_response_has_active_root_null(self):
+        """task_get_active_root_func must include active_root: None even when idle."""
+        from code_review_graph.tools.task_tools import task_get_active_root_func
+
+        result = task_get_active_root_func(repo_root=self.tmpdir)
+
+        assert result["status"] == "ok"
+        # The key must exist (not be absent), and its value must be None.
+        assert "active_root" in result, (
+            "active_root key missing from idle response — LLM code checking "
+            "response['active_root'] would get a KeyError"
+        )
+        assert result["active_root"] is None

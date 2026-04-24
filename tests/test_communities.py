@@ -9,6 +9,7 @@ from code_review_graph.communities import (
     IGRAPH_AVAILABLE,
     _compute_cohesion,
     _detect_file_based,
+    _ensure_unique_names,
     _generate_community_name,
     detect_communities,
     get_architecture_overview,
@@ -296,6 +297,38 @@ class TestCommunities:
         """IGRAPH_AVAILABLE is a boolean."""
         assert isinstance(IGRAPH_AVAILABLE, bool)
 
+    def test_ensure_unique_names_deduplicates(self):
+        """H-03: _ensure_unique_names appends -2, -3 for duplicate names."""
+        communities = [
+            {"name": "tests-no", "size": 3},
+            {"name": "tests-no", "size": 2},
+            {"name": "tests-no", "size": 1},
+            {"name": "other", "size": 4},
+        ]
+        _ensure_unique_names(communities)
+        names = [c["name"] for c in communities]
+        # First keeps original, duplicates get -2, -3
+        assert names == ["tests-no", "tests-no-2", "tests-no-3", "other"]
+
+    def test_ensure_unique_names_no_duplicates_unchanged(self):
+        """H-03: _ensure_unique_names leaves already-unique names intact."""
+        communities = [
+            {"name": "auth", "size": 3},
+            {"name": "db", "size": 2},
+            {"name": "tests", "size": 1},
+        ]
+        _ensure_unique_names(communities)
+        names = [c["name"] for c in communities]
+        assert names == ["auth", "db", "tests"]
+
+    def test_detect_communities_names_are_unique(self):
+        """H-03: detect_communities returns communities with unique names."""
+        self._seed_two_clusters()
+        result = detect_communities(self.store, min_size=1)
+        names = [c["name"] for c in result]
+        # All names must be unique
+        assert len(names) == len(set(names)), f"Duplicate names found: {names}"
+
 
 class TestGetCommunity:
     """Tests for get_community_func tool."""
@@ -510,3 +543,42 @@ class TestGetCommunity:
             assert isinstance(item["communities"], str)
             assert isinstance(item["edge_count"], int)
             assert " <-> " in item["communities"]  # Bidirectional pair format
+
+    def test_get_community_include_members_true_has_hints(self):
+        """P-03: get_community_tool(include_members=True) has non-empty _hints.next_steps."""
+        from code_review_graph.hints import reset_session
+        from code_review_graph.tools.community_tools import get_community_func
+
+        reset_session()
+        self._seed_two_similar_communities()
+
+        result = get_community_func(community_name="task-core", repo_root=self.repo_root)
+        assert result["status"] == "ok"
+
+        # Now call with include_members=True
+        reset_session()
+        result = get_community_func(
+            community_name="task-core",
+            include_members=True,
+            repo_root=self.repo_root,
+        )
+        assert result["status"] == "ok"
+        hints = result.get("_hints", {})
+        next_steps = hints.get("next_steps", [])
+        assert len(next_steps) > 0, "_hints.next_steps should be non-empty when include_members=True"
+        tool_names = [s["tool"] for s in next_steps]
+        assert "query_graph_tool" in tool_names
+        assert "trace_dataflow_tool" in tool_names
+        assert "get_flow_tool" in tool_names
+
+    def test_get_community_not_found_has_hints(self):
+        """P-04: get_community_tool not_found response has _hints.next_actions."""
+        from code_review_graph.tools.community_tools import get_community_func
+
+        self._seed_two_similar_communities()
+
+        result = get_community_func(community_name="nonexistent_xyz", repo_root=self.repo_root)
+        assert result["status"] == "not_found"
+        hints = result.get("_hints", {})
+        next_actions = hints.get("next_actions", [])
+        assert "list_communities_tool" in next_actions

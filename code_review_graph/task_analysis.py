@@ -376,8 +376,9 @@ def blast_radius(
         conn: Database connection.
         task_id: Task ID to analyze.
         depth: BFS depth (default: 2).
-        include_affected_nodes: If True, include full affected_nodes list.
-            Default False returns only affected_nodes_count (scalar).
+        include_affected_nodes: If True, include full affected_nodes and
+            uncovered_nodes lists. Default False returns only scalar counts
+            (affected_nodes_count, uncovered_nodes_count).
 
     Returns::
 
@@ -385,7 +386,8 @@ def blast_radius(
             direct_nodes: [...],           # task's own code refs
             affected_nodes_count: int,     # count of reachable nodes (always present)
             affected_nodes: [...],         # reachable within depth (only if include_affected_nodes=True)
-            uncovered_nodes: [...],        # affected but not in any task's refs
+            uncovered_nodes: [...],        # full list (only if include_affected_nodes=True)
+            uncovered_nodes_count: int,    # count only (only if include_affected_nodes=False)
             coverage_ratio: float
         }
     """
@@ -397,7 +399,7 @@ def blast_radius(
             "message": "Task has no code refs linked. Use task_link_code to associate code nodes.",
             "direct_nodes": [],
             "affected_nodes_count": 0,
-            "uncovered_nodes": [],
+            "uncovered_nodes_count": 0,
             "coverage_ratio": None,
         }
 
@@ -432,11 +434,13 @@ def blast_radius(
         "status": "ok",
         "direct_nodes": _fetch_nodes(internal_ids),
         "affected_nodes_count": len(affected_ids),
-        "uncovered_nodes": _fetch_nodes(uncovered_ids),
         "coverage_ratio": coverage_ratio,
     }
     if include_affected_nodes:
         result["affected_nodes"] = _fetch_nodes(affected_ids)
+        result["uncovered_nodes"] = _fetch_nodes(uncovered_ids)
+    else:
+        result["uncovered_nodes_count"] = len(uncovered_ids)
     return result
 
 
@@ -621,7 +625,8 @@ def validate_dag(
         ).fetchall()
     )
     no_refs = [
-        t for t in leaf_tasks if t["id"] not in covered_tasks and t["status"] != "archived"
+        t for t in leaf_tasks
+        if t["id"] not in covered_tasks and t["status"] not in ("archived", "done")
     ]
     if no_refs:
         for t in no_refs:
@@ -997,7 +1002,10 @@ def export_task(
         result["conflicts"] = _find_sibling_conflicts(conn, task_id, task.get("parent_id"))
         # Pipeline state
         is_ready = (
-            open_questions == 0 and unverified_assumptions == 0 and pending_contracts == 0
+            open_questions == 0
+            and unverified_assumptions == 0
+            and unresolved_constraints == 0
+            and pending_contracts == 0
         )
         if is_ready:
             summary = "Ready for handoff"
@@ -1007,13 +1015,16 @@ def export_task(
                 reasons.append(f"{open_questions} open question(s)")
             if unverified_assumptions:
                 reasons.append(f"{unverified_assumptions} unverified assumption(s)")
+            if unresolved_constraints:
+                reasons.append(f"{unresolved_constraints} unresolved constraint(s)")
             if pending_contracts:
                 reasons.append(f"{pending_contracts} pending contract(s)")
             summary = f"NOT ready — {', '.join(reasons)}"
-        
+
         result["pipeline_state"] = {
             "open_questions": open_questions,
             "open_assumptions": unverified_assumptions,
+            "open_constraints": unresolved_constraints,
             "pending_contracts": pending_contracts,
             "ready_for_coder": is_ready,
             "summary": summary,
@@ -1126,7 +1137,10 @@ def roadmap(
                     "status": t["status"],
                 }
                 if t["id"] in blocked_by:
-                    entry["blocked_by"] = blocked_by[t["id"]]
+                    entry["blocked_by"] = [
+                        tasks_by_id.get(uid, {}).get("title", uid)
+                        for uid in blocked_by[t["id"]]
+                    ]
                 phase_tasks.append(entry)
             # Drop empty phases (all tasks were archived)
             if phase_tasks:
@@ -1193,7 +1207,7 @@ def roadmap(
     low_isolation: list[dict[str, Any]] = []
     for lid in list(leaf_ids_with_refs)[:10]:  # cap at 10 to avoid heavy computation
         iso = check_isolation(conn, lid)
-        if iso["isolation_score"] < 0.5:
+        if iso.get("isolation_score") is not None and iso["isolation_score"] < 0.5:
             t = tasks_by_id.get(lid, {})
             low_isolation.append({
                 "id": lid,

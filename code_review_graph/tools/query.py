@@ -139,6 +139,7 @@ def query_graph(
     pattern: str,
     target: str,
     repo_root: str | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """Run a predefined graph query.
 
@@ -147,6 +148,9 @@ def query_graph(
                  importers_of, children_of, tests_for, inheritors_of, file_summary.
         target: The node name, qualified name, or file path to query about.
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of results to return. When set and results exceed
+               this limit, the response includes ``truncated: true`` and
+               ``total_before_limit: N``.
 
     Returns:
         Matching nodes and edges for the query.
@@ -200,8 +204,15 @@ def query_graph(
             elif len(pool) > 1:
                 # Multiple candidates: pick the best one and carry on, but signal
                 # the ambiguity so the caller can verify.
-                # Priority: non-test nodes first, then highest BM25 score (pool is
-                # already score-sorted by store.search_nodes).
+                # Priority order:
+                #   1. For module-like names (no "::" or path separators), prefer File kind
+                #      so `importers_of("tasks")` resolves to tasks.py, not a function called tasks.
+                #   2. Non-test nodes before test nodes.
+                #   3. Highest BM25 score (pool is already score-sorted by store.search_nodes).
+                is_module_name = "::" not in target and "/" not in target and "\\" not in target
+                if is_module_name:
+                    file_nodes = [c for c in pool if c.kind == "File"]
+                    pool = file_nodes if file_nodes else pool
                 non_test = [c for c in pool if not c.is_test]
                 best = (non_test if non_test else pool)[0]
                 node = best
@@ -245,14 +256,16 @@ def query_graph(
                     edges_out.append(edge_to_dict(e))
 
         elif pattern == "callees_of":
-            internal_callees: list[dict[str, Any]] = []
+            seen_callees: set[str] = set()
             external_callees: list[str] = []
             for e in store.get_edges_by_source(qn):
                 if e.kind == "CALLS":
                     callee = store.get_node(e.target_qualified)
                     if callee:
-                        internal_callees.append(node_to_dict(callee))
-                        results.append(node_to_dict(callee))
+                        # Deduplicate by qualified_name (multiple call sites → one result entry)
+                        if callee.qualified_name not in seen_callees:
+                            results.append(node_to_dict(callee))
+                            seen_callees.add(callee.qualified_name)
                     else:
                         external_callees.append(e.target_qualified)
                     edges_out.append(edge_to_dict(e))
@@ -346,6 +359,13 @@ def query_graph(
             for n in file_nodes:
                 results.append(node_to_dict(n))
 
+        # Apply limit truncation (edges are preserved in full; only results are capped)
+        total_before_limit = len(results)
+        truncated = False
+        if limit is not None and len(results) > limit:
+            results = results[:limit]
+            truncated = True
+
         status = "ambiguous" if ambiguous_meta else "ok"
         result = {
             "status": status,
@@ -356,6 +376,9 @@ def query_graph(
             "results": results,
             "edges": edges_out,
         }
+        if truncated:
+            result["truncated"] = True
+            result["total_before_limit"] = total_before_limit
         if ambiguous_meta:
             result["resolved_as"] = ambiguous_meta["resolved_as"]
             result["disambiguation_note"] = ambiguous_meta["note"]
@@ -626,6 +649,7 @@ def find_files_by_pattern(
         }
         if len(results) > limit:
             result["truncated"] = True
+            result["total_matches"] = len(results)
             result["warning"] = f"Results truncated to {limit}. Use a more specific pattern or increase limit."
         result["_hints"] = generate_hints("find_files_by_pattern", result, get_session())
         return result

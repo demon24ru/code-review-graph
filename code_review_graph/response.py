@@ -102,6 +102,9 @@ _ERROR_NEXT_ACTION: dict[str, str] = {
     "CONTRACT_NOT_FOUND": "contract_list",
     "CONTRACT_INVALID_PARAMS": "contract_list",
     "CONTRACT_ERROR": "contract_list",
+    # Registry errors — route to registry tools
+    "REGISTRY_ERROR": "list_repos_tool",
+    "REGISTRY_NOT_FOUND": "list_repos_tool",
 }
 
 _ERROR_RECOVERY: dict[str, str] = {
@@ -140,6 +143,12 @@ _ERROR_RECOVERY: dict[str, str] = {
         "role in (provider|consumer)."
     ),
     "CONTRACT_ERROR": "Verify contract_id and parameters, then retry.",
+    # Registry errors
+    "REGISTRY_ERROR": "Use list_repos_tool to inspect the current registry state.",
+    "REGISTRY_NOT_FOUND": (
+        "Use list_repos_tool to see registered repos. "
+        "Pass a full path or the exact alias shown there."
+    ),
 }
 
 

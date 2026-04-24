@@ -162,6 +162,7 @@ class GraphNode:
     is_test: bool
     file_hash: Optional[str]
     extra: dict
+    modifiers: Optional[str] = None
 
 
 @dataclass
@@ -1069,6 +1070,7 @@ class GraphStore:
             parent_name=row["parent_name"],
             params=row["params"],
             return_type=row["return_type"],
+            modifiers=row["modifiers"],
             is_test=bool(row["is_test"]),
             file_hash=row["file_hash"],
             extra=json.loads(row["extra"]) if row["extra"] else {},

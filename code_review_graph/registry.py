@@ -84,18 +84,18 @@ class Registry:
             str_path = str(resolved)
             for entry in self._repos:
                 if entry["path"] == str_path:
-                    # Update alias if provided
+                    # Update alias only if explicitly provided
                     if alias:
                         entry["alias"] = alias
                         self._save()
-                    return entry
+                    return {**entry, "action": "updated"}
 
-            new_entry: dict[str, str] = {"path": str_path}
-            if alias:
-                new_entry["alias"] = alias
+            # New entry — always store an alias (provided or directory name)
+            effective_alias = alias or resolved.name
+            new_entry: dict[str, str] = {"path": str_path, "alias": effective_alias}
             self._repos.append(new_entry)
             self._save()
-            return new_entry
+            return {**new_entry, "action": "created"}
 
     def unregister(self, path_or_alias: str) -> bool:
         """Remove a repository by path or alias.

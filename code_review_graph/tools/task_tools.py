@@ -127,7 +127,10 @@ def task_get_active_root_func(
                 f"Active root task: '{root['title']}' (status={root['status']!r})",
                 active_root=root,
             )
-        return _ok("No active root task — pipeline is idle.", active_root=None)
+        # P-05: active_root=None must not be pruned — add after _ok() to bypass prune_empty.
+        result = _ok("No active root task — pipeline is idle.")
+        result["active_root"] = None
+        return result
     return _run(repo_root, _fn)
 
 
@@ -564,7 +567,11 @@ def task_remove_edge_func(
         The removed edge dict.
     """
     def _fn(conn, source_id, target_id, edge_type):
-        edge = tasks.remove_task_edge(conn, source_id, target_id, edge_type)
+        try:
+            edge = tasks.remove_task_edge(conn, source_id, target_id, edge_type)
+        except KeyError as exc:
+            msg = exc.args[0] if exc.args else str(exc)
+            return graph_error("EDGE_NOT_FOUND", msg)
         return _ok(f"Removed {source_id[:8]} --{edge_type}--> {target_id[:8]}", edge=edge)
     return _run(repo_root, _fn, source_id, target_id, edge_type)
 
@@ -879,11 +886,16 @@ def task_blast_radius_func(
         result = task_analysis.blast_radius(
             conn, task_id, depth=depth, include_affected_nodes=include_affected_nodes
         )
+        uncovered_count = result.get(
+            "uncovered_nodes_count", len(result.get("uncovered_nodes", []))
+        )
+        coverage = result["coverage_ratio"]
+        coverage_str = f"{coverage:.0%}" if coverage is not None else "N/A"
         return _ok(
             f"Blast radius: {len(result['direct_nodes'])} direct, "
             f"{result['affected_nodes_count']} affected, "
-            f"{len(result['uncovered_nodes'])} uncovered "
-            f"(coverage {result['coverage_ratio']:.0%})",
+            f"{uncovered_count} uncovered "
+            f"(coverage {coverage_str})",
             **result,
         )
     return _run(repo_root, _fn, task_id, depth, include_affected_nodes)

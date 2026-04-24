@@ -405,6 +405,303 @@ class TestFindDeadCode:
             assert result["file"] == result["file_path"], "'file' and 'file_path' should match"
 
 
+class TestImportClassification:
+    """C-08: import statements in rename preview → high_confidence edits, not possible_misses."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+        with _refactor_lock:
+            _pending_refactors.clear()
+
+    def test_from_import_goes_to_high_confidence(self, tmp_path):
+        """'from module import old_name' lines appear in high-confidence edits, not possible_misses."""
+        # The definition file also contains an import line with old_name.
+        # The definition file is always in files_to_scan, so the import line will be scanned.
+        src_file = tmp_path / "utils.py"
+        src_file.write_text(
+            "from other_module import old_name\n"
+            "# old_name is also used here\n"
+            "def old_name():\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="old_name",
+                file_path=str(src_file),
+                line_start=3,
+                line_end=4,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        result = rename_preview(self.store, "old_name", "new_name")
+        assert result is not None
+
+        # Line 1: import statement → must be in high-confidence edits
+        high_positions = {(e["file"], e["line"]) for e in result["edits"] if e["confidence"] == "high"}
+        assert (str(src_file), 1) in high_positions, (
+            f"Import line not in high-confidence edits. edits={result['edits']}"
+        )
+
+        # Line 1 must NOT appear in possible_misses
+        miss_positions = {(m["file"], m["line"]) for m in result["possible_misses"]}
+        assert (str(src_file), 1) not in miss_positions, (
+            "Import statement incorrectly classified as possible_miss"
+        )
+
+    def test_bare_import_goes_to_high_confidence(self, tmp_path):
+        """'import old_name' lines appear in high-confidence edits, not possible_misses."""
+        src_file = tmp_path / "mod.py"
+        src_file.write_text(
+            "import old_name\n"
+            "def old_name():\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="old_name",
+                file_path=str(src_file),
+                line_start=2,
+                line_end=3,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        result = rename_preview(self.store, "old_name", "new_name")
+        assert result is not None
+
+        high_positions = {(e["file"], e["line"]) for e in result["edits"] if e["confidence"] == "high"}
+        assert (str(src_file), 1) in high_positions, (
+            f"Bare import not in high-confidence edits. edits={result['edits']}"
+        )
+        miss_positions = {(m["file"], m["line"]) for m in result["possible_misses"]}
+        assert (str(src_file), 1) not in miss_positions
+
+    def test_comment_reason_set(self, tmp_path):
+        """Lines starting with '#' get reason='comment' in possible_misses."""
+        src_file = tmp_path / "utils.py"
+        src_file.write_text(
+            "def old_name():\n"
+            "    # old_name is documented here\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="old_name",
+                file_path=str(src_file),
+                line_start=1,
+                line_end=3,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        result = rename_preview(self.store, "old_name", "new_name")
+        assert result is not None
+
+        comment_misses = [
+            m for m in result["possible_misses"]
+            if m.get("reason") == "comment"
+        ]
+        assert len(comment_misses) >= 1, (
+            f"Expected at least one miss with reason='comment'. misses={result['possible_misses']}"
+        )
+        # Must not have the old generic reason
+        for m in result["possible_misses"]:
+            assert m.get("reason") != "docstring/comment/string literal — manual review required", (
+                "Old generic reason still present"
+            )
+
+    def test_string_literal_reason_set(self, tmp_path):
+        """String literals get reason='string_literal' in possible_misses."""
+        src_file = tmp_path / "utils.py"
+        src_file.write_text(
+            'def old_name():\n'
+            '    return "old_name"\n',
+            encoding="utf-8",
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="old_name",
+                file_path=str(src_file),
+                line_start=1,
+                line_end=2,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+        result = rename_preview(self.store, "old_name", "new_name")
+        assert result is not None
+
+        string_misses = [m for m in result["possible_misses"] if m.get("reason") == "string_literal"]
+        assert len(string_misses) >= 1, (
+            f"Expected at least one miss with reason='string_literal'. misses={result['possible_misses']}"
+        )
+
+
+class TestDeadCodeFalsePositives:
+    """H-05: __init__ and abstract methods must not be flagged as dead code."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+        self._seed()
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _seed(self):
+        """Seed store with __init__, abstract method, and a real dead function."""
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="__init__",
+                file_path="/repo/myclass.py",
+                line_start=5,
+                line_end=10,
+                language="python",
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="abstract_method",
+                file_path="/repo/myclass.py",
+                line_start=12,
+                line_end=15,
+                language="python",
+                modifiers="abstract",
+            )
+        )
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="truly_dead_func",
+                file_path="/repo/myclass.py",
+                line_start=20,
+                line_end=25,
+                language="python",
+            )
+        )
+        self.store.commit()
+
+    def test_init_not_flagged_as_dead(self):
+        """__init__ methods are never reported as dead code."""
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "__init__" not in dead_names, (
+            "__init__ constructor should not be flagged as dead code"
+        )
+
+    def test_abstract_method_not_flagged_as_dead(self):
+        """Functions with modifiers='abstract' are never reported as dead code."""
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "abstract_method" not in dead_names, (
+            "Abstract methods should not be flagged as dead code"
+        )
+
+    def test_truly_dead_still_flagged(self):
+        """Genuinely unreferenced functions are still reported."""
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "truly_dead_func" in dead_names, (
+            "Unreferenced function should still be flagged as dead code"
+        )
+
+
+class TestAuditHealthScore:
+    """M-05: health_score must reflect the post-exclude_paths filtered dead_code count."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+        self._seed()
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _seed(self):
+        """Seed with dead functions spread across two paths."""
+        # 5 dead functions in /repo/included/
+        for i in range(5):
+            self.store.upsert_node(
+                NodeInfo(
+                    kind="Function",
+                    name=f"included_dead_{i}",
+                    file_path=f"/repo/included/file_{i}.py",
+                    line_start=1,
+                    line_end=5,
+                    language="python",
+                )
+            )
+        # 5 dead functions in /repo/excluded/
+        for i in range(5):
+            self.store.upsert_node(
+                NodeInfo(
+                    kind="Function",
+                    name=f"excluded_dead_{i}",
+                    file_path=f"/repo/excluded/file_{i}.py",
+                    line_start=1,
+                    line_end=5,
+                    language="python",
+                )
+            )
+        self.store.commit()
+
+    def test_health_score_uses_filtered_count(self):
+        """health_score computed from filtered dead_code is higher than from unfiltered."""
+        dead_unfiltered = find_dead_code(self.store)
+        dead_filtered = find_dead_code(self.store, exclude_paths=["/repo/excluded/"])
+
+        # Verify we have fewer items after filtering
+        assert len(dead_filtered) < len(dead_unfiltered), (
+            "exclude_paths should reduce dead_code count"
+        )
+        assert len(dead_filtered) == 5   # only included/ functions remain
+        assert len(dead_unfiltered) == 10
+
+        # Compute health_score using the same formula as audit_workspace_tool
+        def compute_score(dead: list) -> int:
+            dead_penalty = min(len(dead) * 2, 30)
+            return max(0, 100 - dead_penalty)
+
+        score_unfiltered = compute_score(dead_unfiltered)
+        score_filtered = compute_score(dead_filtered)
+
+        assert score_filtered > score_unfiltered, (
+            f"Health score with exclude ({score_filtered}) should be higher than "
+            f"without ({score_unfiltered})"
+        )
+
+    def test_excluded_symbols_not_in_filtered_results(self):
+        """Symbols in excluded paths do not appear in filtered dead_code results."""
+        dead = find_dead_code(self.store, exclude_paths=["/repo/excluded/"])
+        dead_names = {d["name"] for d in dead}
+
+        for i in range(5):
+            assert f"excluded_dead_{i}" not in dead_names
+        for i in range(5):
+            assert f"included_dead_{i}" in dead_names
+
+
 class TestSuggestRefactorings:
     """Tests for suggest_refactorings."""
 

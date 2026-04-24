@@ -234,6 +234,7 @@ def get_affected_flows_func(
     base: str = "HEAD~1",
     repo_root: str | None = None,
     include_steps: bool = False,
+    is_test: bool | None = None,
 ) -> dict[str, Any]:
     """Find execution flows affected by changed files.
 
@@ -249,6 +250,8 @@ def get_affected_flows_func(
         include_steps: If True, include full step arrays for each flow.
                        Default False returns only flow metadata + step_count.
                        Use get_flow_tool(flow_id) for step details of a specific flow.
+        is_test: Filter by test status. True=only test flows, False=only
+                 production flows. Default None shows all.
 
     Returns:
         Affected flows sorted by criticality. By default includes only metadata
@@ -273,9 +276,24 @@ def get_affected_flows_func(
         abs_files = [str(root / f) for f in changed_files]
         result = _get_affected_flows(store, abs_files)
 
-        total = result["total"]
         flows = result["affected_flows"]
-        
+
+        # Apply is_test filter using node.is_test (same logic as list_flows).
+        if is_test is not None:
+            filtered = []
+            for f in flows:
+                ep_id = f.get("entry_point_id")
+                if ep_id is not None:
+                    node = store.get_node_by_id(ep_id)
+                    flow_is_test = node.is_test if node else False
+                    if flow_is_test == is_test:
+                        filtered.append(f)
+                elif is_test is False:
+                    filtered.append(f)
+            flows = filtered
+
+        total = len(flows)
+
         # Strip step arrays if not requested — return only metadata + step_count
         if not include_steps:
             compact_flows = []
@@ -284,7 +302,7 @@ def get_affected_flows_func(
                 cf["step_count"] = len(f.get("steps", []))
                 compact_flows.append(cf)
             flows = compact_flows
-        
+
         out = {
             "status": "ok",
             "summary": (f"{total} flow(s) affected by changes in {len(changed_files)} file(s)"),
@@ -384,6 +402,13 @@ def detect_changes_func(
                 "review_priorities_count": len(analysis.get("review_priorities", [])),
             }
             result["_hints"] = generate_hints("detect_changes", result, get_session())
+            # F-12: doc-only changes — drop get_review_context suggestion, add wiki hint.
+            if result.get("changed_functions_count", 0) == 0:
+                result["next_actions"] = [
+                    a for a in result.get("next_actions", []) if a != "get_review_context"
+                ]
+                if "generate_wiki_tool" not in result.get("next_actions", []):
+                    result.setdefault("next_actions", []).append("generate_wiki_tool")
             return result
 
         # Optionally include source snippets for changed functions.
@@ -411,6 +436,14 @@ def detect_changes_func(
             **analysis,
         }
         result["_hints"] = generate_hints("detect_changes", result, get_session())
+        # F-12: doc-only changes — drop get_review_context suggestion, add wiki hint.
+        changed_funcs = len(analysis.get("changed_functions", []))
+        if changed_funcs == 0:
+            result["next_actions"] = [
+                a for a in result.get("next_actions", []) if a != "get_review_context"
+            ]
+            if "generate_wiki_tool" not in result.get("next_actions", []):
+                result.setdefault("next_actions", []).append("generate_wiki_tool")
         return result
     except Exception as exc:
         return graph_error("PARSE_ERROR", str(exc))

@@ -25,17 +25,21 @@ def list_repos_func() -> dict[str, Any]:
     multi-repo registry at ``~/.code-review-graph/registry.json``.
 
     Returns:
-        List of registered repos with paths and aliases.
+        List of registered repos with paths, aliases, and has_graph bool.
     """
     from ..registry import Registry
 
     try:
         registry = Registry()
         repos = registry.list_repos()
+        enriched = []
+        for entry in repos:
+            db_path = Path(entry["path"]) / ".code-review-graph" / "graph.db"
+            enriched.append({**entry, "has_graph": db_path.exists()})
         return {
             "status": "ok",
-            "summary": f"{len(repos)} registered repository(ies)",
-            "repos": repos,
+            "summary": f"{len(enriched)} registered repository(ies)",
+            "repos": enriched,
         }
     except Exception as exc:
         return graph_error("PARSE_ERROR", str(exc))
@@ -78,11 +82,17 @@ def cross_repo_search_func(
 
         all_results: list[dict[str, Any]] = []
         searched_repos: list[str] = []
+        skipped_repos: list[dict[str, Any]] = []
 
         for repo_entry in repos:
             repo_path = Path(repo_entry["path"])
             db_path = repo_path / ".code-review-graph" / "graph.db"
             if not db_path.exists():
+                skipped_repos.append({
+                    "path": str(repo_path),
+                    "alias": repo_entry.get("alias"),
+                    "reason": "no graph DB",
+                })
                 continue
 
             try:
@@ -103,7 +113,7 @@ def cross_repo_search_func(
         # Sort all results by score descending
         all_results.sort(key=lambda r: r.get("score", 0), reverse=True)
 
-        return {
+        response: dict[str, Any] = {
             "status": "ok",
             "summary": (
                 f"Found {len(all_results)} result(s) across "
@@ -112,6 +122,9 @@ def cross_repo_search_func(
             "results": all_results[:limit],
             "repos_searched": searched_repos,
         }
+        if skipped_repos:
+            response["repos_skipped"] = skipped_repos
+        return response
     except Exception as exc:
         return graph_error("PARSE_ERROR", str(exc))
 
@@ -146,11 +159,14 @@ def register_repo_func(
     try:
         registry = Registry()
         entry = registry.register(path, alias=alias)
-        alias = entry.get("alias", Path(entry["path"]).name)
+        action = entry.get("action", "created")
+        repo_entry = {k: v for k, v in entry.items() if k != "action"}
+        alias_display = repo_entry.get("alias", Path(repo_entry["path"]).name)
         return {
             "status": "ok",
-            "summary": f"Registered '{alias}' at {entry['path']}",
-            "repo": entry,
+            "summary": f"Registered '{alias_display}' at {repo_entry['path']}",
+            "action": action,
+            "repo": repo_entry,
             "next_actions": ["list_repos_tool", "cross_repo_search_tool"],
         }
     except Exception as exc:

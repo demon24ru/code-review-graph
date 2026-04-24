@@ -42,10 +42,9 @@ def list_flows(
     """
     store, root = _get_store(repo_root)
     try:
-        # Fetch more to account for post-fetch filtering
-        fetch_limit = limit
-        if kind or is_test is not None:
-            fetch_limit = limit * 10
+        # When filtering is active, fetch ALL flows so the final count is
+        # independent of sort order (H-01 fix).
+        fetch_limit: int | None = None if (kind or is_test is not None) else limit
         flows = get_flows(store, sort_by=sort_by, limit=fetch_limit)
         total_before_filter = len(flows)
 
@@ -64,8 +63,11 @@ def list_flows(
             for f in flows:
                 ep_id = f.get("entry_point_id")
                 if ep_id is not None:
-                    node_kind = store.get_node_kind_by_id(ep_id)
-                    flow_is_test = (node_kind == "Test")
+                    # Use node.is_test (set by parser from file path) instead of
+                    # kind=="Test" so that setup_method/_seed_data-style helpers
+                    # in test files are correctly classified (H-02 fix).
+                    node = store.get_node_by_id(ep_id)
+                    flow_is_test = node.is_test if node else False
                     if flow_is_test == is_test:
                         test_flows.append(f)
                 elif is_test is False:
@@ -139,6 +141,7 @@ def get_flow(
             return {
                 "status": "not_found",
                 "summary": "No flow found matching the given criteria.",
+                "_hints": {"next_actions": ["list_flows_tool"]},
             }
 
         # Optionally include source snippets for each step

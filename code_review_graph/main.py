@@ -160,12 +160,13 @@ def query_graph_tool(
     pattern: str,
     target: str,
     repo_root: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> dict:
     """Run a predefined graph query to explore code relationships.
 
     Available patterns:
     - callers_of: Find functions that call the target
-    - callees_of: Find functions called by the target. Results include internal callees (in graph) plus an `_external_callees` list for stdlib/builtin calls not indexed in the graph.
+    - callees_of: Find functions called by the target. Results include internal callees (in graph) plus an `_external_callees` list for stdlib/builtin calls not indexed in the graph. Duplicate nodes from multiple call sites are deduplicated in results (edges retain all call sites).
     - imports_of: Find what the target imports
     - importers_of: Find files that import the target
     - children_of: Find nodes contained in a file or class
@@ -177,6 +178,8 @@ def query_graph_tool(
         pattern: Query pattern name (see above).
         target: Node name, qualified name, or file path to query.
         repo_root: Repository root path. Auto-detected if omitted.
+        limit: Maximum number of results to return. When truncation occurs,
+               response includes ``truncated: true`` and ``total_before_limit: N``.
     """
     import os
     from pathlib import Path
@@ -188,7 +191,7 @@ def query_graph_tool(
         # Search parent directories from current module file, or hardcode your target project
         pass
 
-    return query_graph(pattern=pattern, target=target, repo_root=repo_root)
+    return query_graph(pattern=pattern, target=target, repo_root=repo_root, limit=limit)
 
 
 @mcp.tool()
@@ -435,24 +438,28 @@ def get_affected_flows_tool(
     base: str = "HEAD~1",
     repo_root: Optional[str] = None,
     include_steps: bool = False,
+    is_test: Optional[bool] = None,
 ) -> dict:
     """Find execution flows affected by changed files.
 
     Identifies which execution flows pass through nodes in the changed files.
     Useful during code review to understand which user-facing or critical paths
-    are impacted by a change. Auto-detects changed files from git if not specified.
+    are impacted by a change. Auto-detects changed files from git if specified.
 
     Args:
         changed_files: List of changed file paths (relative to repo root). Auto-detected if omitted.
         base: Git ref for auto-detecting changes. Default: HEAD~1.
         repo_root: Repository root path. Auto-detected if omitted.
         include_steps: If True, include full step arrays for each flow. Default False.
+        is_test: Filter by test status. True=only test flows, False=only production flows.
+                 Default None shows all.
     """
     return get_affected_flows_func(
         changed_files=changed_files,
         base=base,
         repo_root=repo_root,
         include_steps=include_steps,
+        is_test=is_test,
     )
 
 
@@ -1256,6 +1263,9 @@ def task_get_dag(
 
     [BRAINSTORM] Returns all tasks in the subtree plus all edges between them.
 
+    Note: 'depth' is hierarchy depth (parent/child nesting level), NOT execution dependency depth.
+    For execution planning use task_execution_order.
+
     Args:
         root_task_id: Root of the DAG to retrieve.
         compact: If True, return only {id, title, status, depth, parent_id} per node.
@@ -1331,6 +1341,8 @@ def task_unlink_code(
     """Remove all code refs between a task and a code node.
 
     [BRAINSTORM] Removes the association regardless of ref_type.
+
+    WARNING: Removes ALL ref_types for this (task, code_node) pair, regardless of how many were linked.
 
     Args:
         task_id: Task ID.

@@ -62,11 +62,12 @@ export const crg_get_impact_radius_tool = tool({
 })
 
 export const crg_query_graph_tool = tool({
-  description: "Run a predefined graph query to explore code relationships. Available patterns: callers_of, callees_of, imports_of, importers_of, children_of, tests_for, inheritors_of, file_summary.",
+  description: "Run a predefined graph query to explore code relationships. Available patterns: callers_of, callees_of, imports_of, importers_of, children_of, tests_for, inheritors_of, file_summary. callees_of deduplicates results by qualified_name (edges retain all call sites).",
   args: {
     pattern: tool.schema.string().describe("Query pattern name: callers_of | callees_of | imports_of | importers_of | children_of | tests_for | inheritors_of | file_summary"),
     target: tool.schema.string().describe("Node name, qualified name, or file path to query."),
     repo_root: tool.schema.string().optional().describe("Repository root path. Auto-detected if omitted."),
+    limit: tool.schema.number().optional().describe("Maximum number of results to return. When truncation occurs, response includes truncated: true and total_before_limit: N."),
   },
   async execute(args, context) {
     return callPython("query_graph_tool", { ...args, repo_root: args.repo_root ?? context.worktree }, context.worktree)
@@ -196,6 +197,7 @@ export const crg_get_affected_flows_tool = tool({
     base: tool.schema.string().default("HEAD~1").describe("Git ref for auto-detecting changes."),
     repo_root: tool.schema.string().optional().describe("Repository root path. Auto-detected if omitted."),
     include_steps: tool.schema.boolean().default(false).describe("If true, include full step arrays for each flow."),
+    is_test: tool.schema.boolean().optional().describe("Filter by test status. true=only test flows, false=only production flows. Default null shows all."),
   },
   async execute(args, context) {
     return callPython("get_affected_flows_tool", { ...args, repo_root: args.repo_root ?? context.worktree }, context.worktree)
@@ -567,7 +569,7 @@ export const crg_task_remove_edge = tool({
 })
 
 export const crg_task_get_dag = tool({
-  description: "Get the full DAG rooted at a task. [BRAINSTORM] Returns all tasks in the subtree plus all edges between them.",
+  description: "Get the full DAG rooted at a task. [BRAINSTORM] Returns all tasks in the subtree plus all edges between them. Note: 'depth' is hierarchy depth (parent/child nesting level), NOT execution dependency depth. For execution planning use task_execution_order.",
   args: {
     root_task_id: tool.schema.string().describe("Root of the DAG to retrieve."),
     compact: tool.schema.boolean().default(false).describe("If true, return only {id, title, status, depth, parent_id} per node."),
@@ -602,7 +604,7 @@ export const crg_task_link_code = tool({
 })
 
 export const crg_task_unlink_code = tool({
-  description: "Remove all code refs between a task and a code node. [BRAINSTORM] Removes the association regardless of ref_type.",
+  description: "Remove all code refs between a task and a code node. [BRAINSTORM] Removes the association regardless of ref_type. WARNING: Removes ALL ref_types for this (task, code_node) pair, regardless of how many were linked.",
   args: {
     task_id: tool.schema.string().describe("Task ID."),
     code_node_id: tool.schema.number().describe("Integer ID of the code node."),
