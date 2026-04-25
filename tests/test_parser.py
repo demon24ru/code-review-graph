@@ -1,5 +1,6 @@
 """Tests for the Tree-sitter parser module."""
 
+import tempfile
 from pathlib import Path
 
 from code_review_graph.parser import CodeParser
@@ -482,4 +483,40 @@ class TestCodeParser:
             )
             assert any(module_c_path.replace("\\", "/") in t.replace("\\", "/") for t in import_targets), (
                 f"Expected IMPORTS_FROM edge to module_c.py, got: {import_targets}"
+            )
+
+    def test_is_test_file_inherits_to_all_nodes(self, tmp_path):
+        """All nodes in a test file should have is_test=True, regardless of name."""
+        src = "class TestBase:\n    def create_task(self):\n        pass\n"
+
+        # In a test file path — ALL nodes should be is_test=True
+        test_file = tmp_path / "tests" / "test_helpers.py"
+        test_file.parent.mkdir(parents=True)
+        test_file.write_text(src)
+
+        nodes, _ = self.parser.parse_file(test_file)
+        non_file_nodes = [n for n in nodes if n.kind != "File"]
+        assert non_file_nodes, "Expected at least one non-File node"
+        for node in non_file_nodes:
+            assert node.is_test, (
+                f"Node {node.name!r} ({node.kind}) in test file should have is_test=True"
+            )
+
+    def test_non_test_file_helper_not_flagged(self):
+        """Helper methods in non-test files should have is_test=False."""
+        src = "class TestBase:\n    def create_task(self):\n        pass\n"
+
+        # Use tempfile so the directory name doesn't contain 'test_' (pytest
+        # tmp_path names the dir after the test function, which starts with 'test_'
+        # and trips the greedy regex test_.*\.py$).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_file = Path(tmpdir) / "production" / "helpers.py"
+            src_file.parent.mkdir(parents=True)
+            src_file.write_text(src)
+
+            nodes, _ = self.parser.parse_file(src_file)
+            helper = next((n for n in nodes if n.name == "create_task"), None)
+            assert helper is not None, "Expected to find 'create_task' node"
+            assert not helper.is_test, (
+                f"Node 'create_task' in non-test file should have is_test=False"
             )

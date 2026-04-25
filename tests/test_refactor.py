@@ -1200,3 +1200,85 @@ class TestAuditWorkspaceLimit:
         assert result["truncated"] is False
         # All 10 seeded functions are unreferenced (dead code)
         assert result["total_dead_code"] == 10
+
+
+# ---------------------------------------------------------------------------
+# Explicit named tests required by spec
+# ---------------------------------------------------------------------------
+
+
+def test_refactor_dead_code_limit(tmp_path):
+    """refactor_func(mode='dead_code', limit=3) returns ≤3 items, truncated=True when more exist."""
+    import shutil
+    from code_review_graph.graph import GraphStore
+    from code_review_graph.parser import NodeInfo
+    from code_review_graph.tools.refactor_tools import refactor_func
+
+    # Set up a minimal project root with a graph DB seeded with 5 dead functions
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".code-review-graph").mkdir()
+    graph_db = tmp_path / ".code-review-graph" / "graph.db"
+
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    store = GraphStore(tmp_db.name)
+    for i in range(5):
+        store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name=f"dead_f_{i}",
+                file_path=f"/repo/f_{i}.py",
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+    store.commit()
+    store.close()
+    shutil.copy(tmp_db.name, str(graph_db))
+    try:
+        Path(tmp_db.name).unlink(missing_ok=True)
+    except (PermissionError, OSError):
+        pass  # Windows: file still in use, will be cleaned up later
+
+    result = refactor_func(mode="dead_code", limit=3, repo_root=str(tmp_path))
+    assert result["status"] == "ok"
+    assert len(result["dead_code"]) <= 3
+    assert result["truncated"] is True  # 5 items, limit=3
+
+
+def test_audit_workspace_limit(tmp_path):
+    """audit_workspace(limit=3) returns ≤3 dead_code items."""
+    import shutil
+    from code_review_graph.graph import GraphStore
+    from code_review_graph.parser import NodeInfo
+    from code_review_graph.tools.review import audit_workspace
+
+    # Set up a minimal project root with a graph DB seeded with 5 dead functions
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".code-review-graph").mkdir()
+    graph_db = tmp_path / ".code-review-graph" / "graph.db"
+
+    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    store = GraphStore(tmp_db.name)
+    for i in range(5):
+        store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name=f"dead_g_{i}",
+                file_path=f"/repo/g_{i}.py",
+                line_start=1,
+                line_end=5,
+                language="python",
+            )
+        )
+    store.commit()
+    store.close()
+    shutil.copy(tmp_db.name, str(graph_db))
+    try:
+        Path(tmp_db.name).unlink(missing_ok=True)
+    except (PermissionError, OSError):
+        pass  # Windows: file still in use, will be cleaned up later
+
+    result = audit_workspace(include_cycles=False, limit=3, repo_root=str(tmp_path))
+    assert result["status"] == "ok"
+    assert len(result.get("dead_code", [])) <= 3

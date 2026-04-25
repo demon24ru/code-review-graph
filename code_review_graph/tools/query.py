@@ -55,7 +55,7 @@ def get_impact_radius(
     max_results: int = 500,
     repo_root: str | None = None,
     base: str = "HEAD~1",
-    summary_only: bool = False,
+    summary_only: bool = True,
 ) -> dict[str, Any]:
     """Analyze the blast radius of changed files.
 
@@ -67,7 +67,7 @@ def get_impact_radius(
         repo_root: Repository root path. Auto-detected if omitted.
         base: Git ref for auto-detecting changes (default: HEAD~1).
         summary_only: If True, return only counts and summary (no full node/edge arrays).
-                      Keeps response under 1KB. Default: False.
+                      Keeps response under 1KB. Default: True.
 
     Returns:
         Changed nodes, impacted nodes, impacted files, connecting edges,

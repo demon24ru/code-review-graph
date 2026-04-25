@@ -255,13 +255,13 @@ def _is_test_file(path: str) -> bool:
 
 
 def _is_test_function(name: str, file_path: str) -> bool:
-    """A function is a test if its name matches test patterns or it lives
-    in a test file and has a test-runner name (describe, it, test, etc.).
+    """A function is a test if its name matches test patterns, or it lives
+    in a test file (all nodes in test files are test nodes).
     """
-    if any(p.search(name) for p in _TEST_PATTERNS):
+    # All functions/methods in a test file are considered test nodes
+    if _is_test_file(file_path):
         return True
-    # In test files, treat common JS/TS test-runner wrappers as tests
-    if _is_test_file(file_path) and name in _TEST_RUNNER_NAMES:
+    if any(p.search(name) for p in _TEST_PATTERNS):
         return True
     return False
 
@@ -1485,6 +1485,7 @@ class CodeParser:
             line_end=child.end_point[0] + 1,
             language=language,
             parent_name=enclosing_class,
+            is_test=_is_test_file(file_path),
         )
         nodes.append(node)
 
@@ -2724,6 +2725,7 @@ class CodeParser:
             line_end=node.end_point[0] + 1,
             language=language,
             parent_name=enclosing_class,
+            is_test=_is_test_file(file_path),
         ))
         edges.append(EdgeInfo(
             kind="CONTAINS",

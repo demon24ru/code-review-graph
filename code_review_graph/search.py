@@ -167,6 +167,7 @@ def _fts_search(
     conn: sqlite3.Connection,
     query: str,
     limit: int = 50,
+    exclude_tests: bool = False,
 ) -> list[tuple[int, float]]:
     """Run an FTS5 BM25 search against the nodes_fts table.
 
@@ -175,15 +176,27 @@ def _fts_search(
 
     Multi-word queries are automatically converted to OR expressions so that
     each word is searched independently (see ``_build_fts_query``).
+
+    When ``exclude_tests=True``, filters out test nodes at the SQL level by
+    joining against the ``nodes`` table so they never enter the ranking pool.
     """
     safe_query = _build_fts_query(query)
 
     try:
-        rows = conn.execute(
-            "SELECT rowid, rank FROM nodes_fts WHERE nodes_fts MATCH ? "
-            "ORDER BY rank LIMIT ?",
-            (safe_query, limit),
-        ).fetchall()
+        if exclude_tests:
+            rows = conn.execute(
+                "SELECT f.rowid, f.rank FROM nodes_fts AS f "
+                "JOIN nodes AS n ON f.rowid = n.id "
+                "WHERE nodes_fts MATCH ? AND n.is_test = 0 "
+                "ORDER BY f.rank LIMIT ?",
+                (safe_query, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT rowid, rank FROM nodes_fts WHERE nodes_fts MATCH ? "
+                "ORDER BY rank LIMIT ?",
+                (safe_query, limit),
+            ).fetchall()
         # FTS5 rank is negative BM25 (lower = better), negate for consistency
         return [(row[0], -row[1]) for row in rows]
     except sqlite3.OperationalError as e:
@@ -242,6 +255,7 @@ def _keyword_search(
     conn: sqlite3.Connection,
     query: str,
     limit: int = 50,
+    exclude_tests: bool = False,
 ) -> list[tuple[int, float]]:
     """Fall back to simple LIKE keyword matching.
 
@@ -249,6 +263,8 @@ def _keyword_search(
     that word.  For multiple words: uses OR logic (same as FTS5 path) so that
     each word is independently findable — e.g. "create_task move_task" finds
     nodes matching either token.
+
+    When ``exclude_tests=True``, adds ``AND is_test = 0`` to the SQL query.
 
     Returns ``(node_id, score)`` tuples with a basic relevance score.
     """
@@ -266,6 +282,8 @@ def _keyword_search(
 
     # OR between words — consistent with FTS5 multi-token behaviour
     where = " OR ".join(conditions)
+    if exclude_tests:
+        where = f"({where}) AND is_test = 0"
     params.append(limit)
     sql = f"SELECT id, name, qualified_name FROM nodes WHERE {where} LIMIT ?"  # nosec B608
 
@@ -357,7 +375,7 @@ def hybrid_search(
 
     # Try FTS5 search
     try:
-        fts_results = _fts_search(conn, query, limit=fetch_limit)
+        fts_results = _fts_search(conn, query, limit=fetch_limit, exclude_tests=exclude_tests)
     except Exception as e:
         logger.warning("FTS5 unavailable, will use fallback: %s", e)
 
@@ -374,7 +392,7 @@ def hybrid_search(
         merged = rrf_merge(*lists_to_merge)
     else:
         # Fallback: keyword LIKE matching
-        keyword_results = _keyword_search(conn, query, limit=fetch_limit)
+        keyword_results = _keyword_search(conn, query, limit=fetch_limit, exclude_tests=exclude_tests)
         if not keyword_results:
             return []
         merged = keyword_results
@@ -402,6 +420,12 @@ def hybrid_search(
     for node_id, score in merged:
         row = node_rows.get(node_id)
         if not row:
+            continue
+
+        # Exclude test nodes before scoring — ensures they never enter the
+        # ranked output even when FTS-level filtering was unavailable
+        # (e.g. embedding results path) or when exclude_tests was just set.
+        if exclude_tests and row["is_test"]:
             continue
 
         node_kind = row["kind"]
@@ -437,9 +461,6 @@ def hybrid_search(
 
         if file_path and file_path not in (row["file_path"] or ""):
             continue  # file_path here is the function parameter (filter)
-
-        if exclude_tests and row["is_test"]:
-            continue
 
         if language and (row["language"] or "").lower() != language.lower():
             continue

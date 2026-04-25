@@ -324,6 +324,48 @@ class TestHybridSearch:
             assert isinstance(results, list)
 
 
+    # --- Production node ranking ---
+
+    def test_production_node_ranks_above_test_helper(self):
+        """Production function should rank above same-named test helper."""
+        # Seed a production node and a test helper with the same name
+        prod_node = NodeInfo(
+            kind="Function", name="create_task", file_path="tasks.py",
+            line_start=1, line_end=30, language="python",
+            params="(title: str, parent_id: str | None = None)",
+            return_type="dict",
+            is_test=False,
+        )
+        test_node = NodeInfo(
+            kind="Function", name="create_task", file_path="tests/test_tasks.py",
+            line_start=5, line_end=10, language="python",
+            params="(self, title: str)",
+            return_type="None",
+            is_test=True,
+        )
+        prod_id = self.store.upsert_node(prod_node, file_hash="prod123")
+        test_id = self.store.upsert_node(test_node, file_hash="test456")
+        rebuild_fts_index(self.store)
+
+        results = hybrid_search(self.store, "create_task", limit=10)
+        assert len(results) >= 2
+
+        # Find the positions of each node
+        result_file_paths = [r["file_path"] for r in results]
+        prod_idx = next(
+            (i for i, r in enumerate(results) if r["id"] == prod_id), None
+        )
+        test_idx = next(
+            (i for i, r in enumerate(results) if r["id"] == test_id), None
+        )
+        assert prod_idx is not None, "Production node not found in results"
+        assert test_idx is not None, "Test helper node not found in results"
+        assert prod_idx < test_idx, (
+            f"Production node (rank {prod_idx}) should rank above "
+            f"test helper (rank {test_idx}). Results: {result_file_paths}"
+        )
+
+
 class TestBuildFtsQuery:
     """Unit tests for _build_fts_query helper."""
 

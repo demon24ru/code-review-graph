@@ -344,7 +344,7 @@ def detect_changes_func(
     include_source: bool = False,
     max_depth: int = 2,
     repo_root: str | None = None,
-    summary_only: bool = False,
+    summary_only: bool = True,
 ) -> dict[str, Any]:
     """Detect changes and produce risk-scored review guidance.
 
@@ -361,7 +361,7 @@ def detect_changes_func(
         max_depth: Impact radius depth for BFS traversal.  Default: 2.
         repo_root: Repository root path.  Auto-detected if omitted.
         summary_only: If True, return only counts and summary (no full node/edge arrays).
-                      Keeps response under 1KB. Default: False.
+                      Keeps response under 1KB. Default: True.
 
     Returns:
         Risk-scored analysis with changed functions, affected flows,

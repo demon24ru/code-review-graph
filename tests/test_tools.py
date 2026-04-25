@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from code_review_graph.graph import GraphStore, _sanitize_name, node_to_dict
 from code_review_graph.parser import EdgeInfo, NodeInfo
@@ -2690,3 +2691,77 @@ class TestSinglePipelineViolation:
         assert result["blocking_task_id"] == root1["id"]
         assert "next_action" in result
         assert result["next_action"] == "task_update"
+
+
+# ---------------------------------------------------------------------------
+# C-03/C-04: default summary_only=True tests
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultSummaryOnly:
+    """Tests that detect_changes_func and get_impact_radius default to summary_only=True."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+        self.store.commit()
+
+    def teardown_method(self):
+        try:
+            self.store.close()
+        except Exception:
+            pass
+        try:
+            Path(self.tmp.name).unlink(missing_ok=True)
+        except (PermissionError, OSError):
+            pass  # Windows: SQLite WAL may still hold file open
+
+    def test_detect_changes_default_is_summary(self):
+        """detect_changes_func() with no summary_only arg → compact response (no full arrays)."""
+        from unittest.mock import MagicMock
+        from code_review_graph.tools.review import detect_changes_func
+
+        # Use a non-empty changed_files list so we don't trigger the early-return path
+        mock_analysis = {
+            "summary": "1 changed function",
+            "risk_score": 0.5,
+            "changed_functions": [{"name": "foo", "file_path": "/fake/repo/app.py"}],
+            "affected_flows": [],
+            "test_gaps": [],
+            "review_priorities": [],
+        }
+
+        with (
+            patch("code_review_graph.tools.review._get_store") as mock_get_store,
+            patch("code_review_graph.tools.review.get_changed_files", return_value=["app.py"]),
+            patch("code_review_graph.tools.review.parse_git_diff_ranges", return_value={}),
+            patch("code_review_graph.tools.review.analyze_changes", return_value=mock_analysis),
+        ):
+            mock_get_store.return_value = (self.store, Path("/fake/repo"))
+            self.store.close = lambda: None  # prevent double-close
+
+            result = detect_changes_func(base="HEAD~1", repo_root="/fake/repo")
+
+        # summary_only=True (default): full array 'changed_functions' must NOT be in result
+        assert result["status"] == "ok"
+        assert "changed_functions" not in result  # array absent in summary mode
+
+    def test_get_impact_radius_default_is_summary(self):
+        """get_impact_radius() with no summary_only arg → compact response (no full arrays)."""
+        from code_review_graph.tools.query import get_impact_radius
+
+        with (
+            patch("code_review_graph.tools.query._get_store") as mock_get_store,
+            patch("code_review_graph.tools.query.get_changed_files", return_value=[]),
+        ):
+            mock_get_store.return_value = (self.store, Path("/fake/repo"))
+            self.store.close = lambda: None  # prevent double-close
+
+            result = get_impact_radius(
+                changed_files=[],
+                repo_root="/fake/repo",
+            )
+
+        # summary_only=True (default): full array 'changed_nodes' must NOT be in result
+        assert result["status"] == "ok"
+        assert "changed_nodes" not in result  # array absent in summary mode

@@ -144,7 +144,7 @@ def get_impact_radius_tool(
         repo_root: Repository root path. Auto-detected if omitted.
         base: Git ref for auto-detecting changes. Default: HEAD~1.
         summary_only: If True, return only counts and summary (no full node/edge arrays).
-                      Keeps response under 1KB. Default: False.
+                      Keeps response under 1KB. Default: True.
     """
     return get_impact_radius(
         changed_files=changed_files,
@@ -576,7 +576,7 @@ def detect_changes_tool(
         max_depth: Impact radius depth for BFS traversal. Default: 2.
         repo_root: Repository root path. Auto-detected if omitted.
         summary_only: If True, return only counts and summary (no full node/edge arrays).
-                      Keeps response under 1KB. Default: False.
+                      Keeps response under 1KB. Default: True.
     """
     return detect_changes_func(
         base=base,

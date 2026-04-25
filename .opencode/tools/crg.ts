@@ -91,7 +91,7 @@ export const crg_get_review_context_tool = tool({
 })
 
 export const crg_semantic_search_nodes_tool = tool({
-  description: "Search for code entities by name, keyword, or semantic similarity. Uses vector embeddings for semantic search when available (run embed_graph_tool first). Falls back to keyword matching otherwise. Multi-word queries are automatically converted to FTS5 OR expressions.",
+  description: "Search for code entities by name, keyword, or semantic similarity. Uses vector embeddings for semantic search when available (run embed_graph_tool first). Falls back to keyword matching otherwise. Multi-word queries are automatically converted to FTS5 OR expressions. Production nodes are ranked above test helpers when exclude_tests=false.",
   args: {
     query: tool.schema.string().describe("Search string. Multi-word queries find all in one round-trip."),
     kind: tool.schema.string().optional().describe("Optional filter: File, Class, Function, or Test."),
@@ -100,6 +100,7 @@ export const crg_semantic_search_nodes_tool = tool({
     model: tool.schema.string().optional().describe("Embedding model for query vectors. Falls back to CRG_EMBEDDING_MODEL env var, then all-MiniLM-L6-v2."),
     names: tool.schema.array(tool.schema.string()).optional().describe("List of symbol names for bulk multi-symbol lookup. Example: [\"create_task\", \"move_task\"]"),
     file_path: tool.schema.string().optional().describe("Optional file path filter (substring). Only nodes whose file_path contains this string are returned."),
+    exclude_tests: tool.schema.boolean().default(false).describe("If true, exclude test nodes entirely from results. Default false — test nodes are included but ranked lower than production nodes."),
   },
   async execute(args, context) {
     return callPython("semantic_search_nodes_tool", { ...args, repo_root: args.repo_root ?? context.worktree }, context.worktree)
@@ -255,15 +256,16 @@ export const crg_detect_changes_tool = tool({
 })
 
 export const crg_refactor_tool = tool({
-  description: "Graph-powered refactoring operations. Unified entry point for rename previews, dead code detection, and refactoring suggestions. Modes: rename (preview renaming a symbol), dead_code (find unreferenced functions/classes), suggest (community-driven suggestions).",
+  description: "Graph-powered refactoring operations. Unified entry point for rename previews, dead code detection, and refactoring suggestions. Modes: rename (preview renaming a symbol), dead_code (find unreferenced functions/classes), suggest (community-driven suggestions). Use limit=10-20 for initial exploration to avoid large responses.",
   args: {
     mode: tool.schema.string().default("rename").describe("Operation mode: \"rename\", \"dead_code\", or \"suggest\"."),
     old_name: tool.schema.string().optional().describe("(rename) Current symbol name to rename."),
     new_name: tool.schema.string().optional().describe("(rename) Desired new name for the symbol."),
     kind: tool.schema.string().optional().describe("(dead_code) Optional filter: Function or Class."),
     file_pattern: tool.schema.string().optional().describe("(dead_code) Filter by file path substring."),
-    exclude_paths: tool.schema.array(tool.schema.string()).optional().describe("List of path substrings to exclude (e.g. ['vscode', 'test'])."),
+    exclude_paths: tool.schema.array(tool.schema.string()).optional().describe("List of path substrings to exclude (e.g. ['vscode', 'test']). Nodes in matching files are omitted from results."),
     repo_root: tool.schema.string().optional().describe("Repository root path. Auto-detected if omitted."),
+    limit: tool.schema.number().default(50).describe("Maximum number of results to return per category. Use smaller values (10-20) for initial exploration. When truncation occurs, response includes truncated: true and total_before_limit: N."),
   },
   async execute(args, context) {
     return callPython("refactor_tool", { ...args, repo_root: args.repo_root ?? context.worktree }, context.worktree)
@@ -359,15 +361,16 @@ export const crg_analyze_edit_region_tool = tool({
 })
 
 export const crg_audit_workspace_tool = tool({
-  description: "Consolidated workspace audit: dead code, large functions, and dependency cycles. Runs multiple quality checks in a single call and returns a health score. Equivalent to running refactor_tool(dead_code) + find_large_functions_tool + cycle detection in one shot. Use before merging a PR.",
+  description: "Consolidated workspace audit: dead code, large functions, and dependency cycles. Runs multiple quality checks in a single call and returns a health score. Equivalent to running refactor_tool(dead_code) + find_large_functions_tool + cycle detection in one shot. Use before merging a PR. Use limit=10-20 for initial exploration.",
   args: {
     include_dead_code: tool.schema.boolean().default(true).describe("Detect unreferenced functions/classes."),
     include_large_functions: tool.schema.boolean().default(true).describe("Find oversized functions."),
     include_cycles: tool.schema.boolean().default(true).describe("Detect import/call cycles."),
     min_lines: tool.schema.number().default(50).describe("Minimum lines to flag a function as large."),
     file_pattern: tool.schema.string().optional().describe("Filter dead code / large functions by file path substring."),
-    exclude_paths: tool.schema.array(tool.schema.string()).optional().describe("List of path substrings to exclude (e.g. ['vscode', 'test'])."),
+    exclude_paths: tool.schema.array(tool.schema.string()).optional().describe("List of path substrings to exclude (e.g. ['vscode', 'test']). Nodes in matching files are omitted from results."),
     repo_root: tool.schema.string().optional().describe("Repository root path. Auto-detected if omitted."),
+    limit: tool.schema.number().default(50).describe("Maximum number of results to return per category (dead_code, large_functions). When truncation occurs, response includes truncated: true and total_before_limit: N."),
   },
   async execute(args, context) {
     return callPython("audit_workspace_tool", { ...args, repo_root: args.repo_root ?? context.worktree }, context.worktree)
