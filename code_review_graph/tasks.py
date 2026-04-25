@@ -16,7 +16,7 @@ import sqlite3
 import time
 import uuid
 from collections import deque
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -1577,10 +1577,11 @@ def suggest_code_links(
         pattern = f"%{kw}%"
         rows = conn.execute(
             """
-            SELECT id, kind, name, qualified_name, file_path, line_start, line_end, language
+            SELECT id, kind, name, qualified_name, file_path, line_start, line_end, language, is_test
             FROM nodes
-            WHERE name LIKE ? COLLATE NOCASE
-               OR qualified_name LIKE ? COLLATE NOCASE
+            WHERE (name LIKE ? COLLATE NOCASE
+               OR qualified_name LIKE ? COLLATE NOCASE)
+              AND (is_test = 0 OR is_test IS NULL)
             LIMIT 20
             """,
             (pattern, pattern),
@@ -1741,10 +1742,52 @@ def update_note(
     return _get_note(conn, note_id)
 
 
+def update_notes(
+    conn: sqlite3.Connection,
+    updates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Update multiple notes in a single transaction.
+
+    Batch-only API: always pass a list, even for a single note.
+
+    Each item in *updates* must have ``note_id`` plus any of:
+    ``status``, ``resolution``, ``content``, ``rationale``.
+
+    Args:
+        updates: List of dicts, each with ``note_id`` (required) and optional
+            ``status``, ``resolution``, ``content``, ``rationale``.
+
+    Returns:
+        ``{"notes": [updated_note_objects], "errors": [{note_id, error}, ...]}``
+    """
+    updated_notes: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for item in updates:
+        note_id = item.get("note_id")
+        if not note_id:
+            errors.append({"note_id": "", "error": "missing note_id"})
+            continue
+        try:
+            note = update_note(
+                conn, note_id,
+                status=item.get("status"),
+                resolution=item.get("resolution"),
+                content=item.get("content"),
+                rationale=item.get("rationale"),
+            )
+            updated_notes.append(note)
+        except (KeyError, ValueError) as exc:
+            errors.append({"note_id": note_id, "error": str(exc)})
+
+    # update_note commits individually; no extra commit needed
+    return {"notes": updated_notes, "errors": errors}
+
+
 def list_notes(
     conn: sqlite3.Connection,
     task_id: str,
-    note_type: Optional[str] = None,
+    note_type: Optional[Union[str, list[str]]] = None,
     status: Optional[str] = None,
     include_parent: bool = True,
     include_children: bool = False,
@@ -1756,11 +1799,18 @@ def list_notes(
 
     If *include_children* is True, notes from all descendant tasks are also
     included. Useful for searching notes across an entire brainstorm subtree.
+
+    *note_type* may be a single string or a list of strings for multi-type
+    filtering.
     """
     get_task(conn, task_id)
 
     if note_type is not None:
-        _check_enum(note_type, NOTE_TYPES, "note_type")
+        if isinstance(note_type, list):
+            for nt in note_type:
+                _check_enum(nt, NOTE_TYPES, "note_type")
+        else:
+            _check_enum(note_type, NOTE_TYPES, "note_type")
     if status is not None:
         _check_enum(status, NOTE_STATUSES, "status")
 
@@ -1778,8 +1828,13 @@ def list_notes(
     extra_clauses = []
     extra_params: list[Any] = []
     if note_type is not None:
-        extra_clauses.append("note_type = ?")
-        extra_params.append(note_type)
+        if isinstance(note_type, list):
+            type_placeholders = ", ".join("?" * len(note_type))
+            extra_clauses.append(f"note_type IN ({type_placeholders})")  # noqa: S608
+            extra_params.extend(note_type)
+        else:
+            extra_clauses.append("note_type = ?")
+            extra_params.append(note_type)
     if status is not None:
         extra_clauses.append("status = ?")
         extra_params.append(status)
@@ -2064,6 +2119,27 @@ def update_contract(
             )
 
     return result
+
+
+def delete_contract(conn: sqlite3.Connection, contract_id: str) -> dict[str, Any]:
+    """Delete a contract and all its participant links.
+
+    Args:
+        contract_id: Contract ID to delete.
+
+    Returns:
+        ``{"status": "ok", "deleted_contract_id": ..., "name": ...}``
+
+    Raises:
+        KeyError: if the contract does not exist.
+    """
+    row = conn.execute("SELECT id, name FROM contracts WHERE id = ?", (contract_id,)).fetchone()
+    if not row:
+        raise KeyError(f"Contract '{contract_id}' not found")
+    conn.execute("DELETE FROM contract_links WHERE contract_id = ?", (contract_id,))
+    conn.execute("DELETE FROM contracts WHERE id = ?", (contract_id,))
+    conn.commit()
+    return {"status": "ok", "deleted_contract_id": contract_id, "name": row["name"]}
 
 
 def list_contracts(

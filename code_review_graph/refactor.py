@@ -292,6 +292,7 @@ def find_dead_code(
     kind: Optional[str] = None,
     file_pattern: Optional[str] = None,
     exclude_paths: Optional[list[str]] = None,
+    exclude_known_false_positives: bool = True,
 ) -> list[dict[str, Any]]:
     """Find functions/classes with no callers, no test refs, and no importers.
 
@@ -305,6 +306,13 @@ def find_dead_code(
         exclude_paths: Optional list of path substrings to exclude.  Nodes
             whose ``file_path`` contains any of the given substrings are
             omitted from results (e.g. ``["vscode", "generated"]``).
+        exclude_known_false_positives: When True (default), suppress results
+            that are commonly false positives:
+            - ``__init__`` constructors (called implicitly via ``ClassName()``).
+            - Functions with ``abstract`` in their modifiers (called via
+              polymorphism).
+            - TypeScript/TSX nodes — VS Code extension contribution points are
+              invisible to Python static analysis.
 
     Returns:
         List of dead-code dicts with name, qualified_name, kind, file, line.
@@ -322,13 +330,19 @@ def find_dead_code(
         if node.is_test:
             continue
 
-        # Skip __init__ constructors — called implicitly via ClassName().
-        if node.name == "__init__":
-            continue
+        if exclude_known_false_positives:
+            # Skip __init__ constructors — called implicitly via ClassName().
+            if node.name == "__init__":
+                continue
 
-        # Skip abstract methods — called via polymorphism, not direct references.
-        if "abstract" in (node.modifiers or ""):
-            continue
+            # Skip abstract methods — called via polymorphism, not direct references.
+            if "abstract" in (node.modifiers or ""):
+                continue
+
+            # Skip TypeScript/TSX nodes — framework integration (e.g. VS Code
+            # extension contribution points) is invisible to static analysis.
+            if (node.file_path or "").endswith((".ts", ".tsx")):
+                continue
 
         # Skip entry points (by name pattern or decorator, not just "uncalled").
         if _is_entry_point(node):

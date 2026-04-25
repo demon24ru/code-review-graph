@@ -242,7 +242,7 @@ code-review-graph serve            # Start MCP server
 </details>
 
 <details>
-<summary><strong>69 MCP tools (30 code-graph + 39 task DAG)</strong></summary>
+<summary><strong>70 MCP tools (30 code-graph + 40 task DAG)</strong></summary>
 <br>
 
 Your AI assistant uses these automatically once the graph is built.
@@ -268,7 +268,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `get_community_tool` | Get details of a single community; `include_members=False` hides QN list (only `member_count` scalar returned); `include_members=True` adds full `member_details` |
 | `get_architecture_overview_tool` | Architecture overview — compact community summaries (`member_count` scalar) + aggregated `cross_community_coupling` pairs. CONTAINS edges excluded from coupling |
 | `detect_changes_tool` | Risk-scored change impact analysis for code review. `summary_only=True` returns counts only (<1 KB) |
-| `refactor_tool` | Rename preview, dead code detection, suggestions |
+| `refactor_tool` | Rename preview, dead code detection, suggestions. `exclude_known_false_positives=True` (default) suppresses `__init__`, abstract methods, and TypeScript/TSX nodes from dead_code results |
 | `apply_refactor_tool` | Apply a previously previewed refactoring |
 | `generate_wiki_tool` | Generate markdown wiki from communities |
 | `get_wiki_page_tool` | Retrieve a specific wiki page |
@@ -277,12 +277,12 @@ Your AI assistant uses these automatically once the graph is built.
 | `register_repo_tool` | Register a repository in the multi-repo registry (MCP alternative to CLI `register`) |
 | `unregister_repo_tool` | Remove a repository from the multi-repo registry |
 | `analyze_edit_region_tool` | Blast radius of a specific line range in a file. `summary_only=True` returns counts only (<1 KB) |
-| `audit_workspace_tool` | Consolidated dead code + large functions + cycle audit |
+| `audit_workspace_tool` | Consolidated dead code + large functions + cycle audit. `exclude_known_false_positives=True` (default) filters false positives; `health_score` is computed from the post-filter counts |
 | `trace_dataflow_tool` | Forward BFS data-flow tracing from source to sink |
 | `export_scip_tool` | Export graph to SCIP-compatible JSON |
 | `import_scip_tool` | Import SCIP JSON document into the graph |
 
-**Task DAG tools (39) — brainstorm-driven task planning:**
+**Task DAG tools (40) — brainstorm-driven task planning:**
 
 > **Single-pipeline discipline**: at most one root task may be open at a time.
 > Workflow: brainstorm fully → validate → implement → close → next task.
@@ -290,47 +290,48 @@ Your AI assistant uses these automatically once the graph is built.
 > Most tools (`task_roadmap`, `task_export`, `task_validate`) auto-detect
 > the active root when called without an explicit ID.
 
-| Tool | Description |
-|------|-------------|
-| `task_get_active_root` | Return the single open root task (or null if idle) |
-| `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]`; optional `edges=[{from, to, type?}]` for atomic decomposition + wiring |
-| `task_update` | Update title, description, status, spec, acceptance_criteria |
-| `task_edit` | Surgically edit a text field: search/replace or line-range |
-| `task_delete` | Delete a task. `cascade=True` deletes subtree. `dry_run=True` previews `would_delete` list without executing. Response echoes `deleted_tasks: [{id, title}]` |
-| `task_get` | Get a task by ID |
-| `task_list` | List tasks with filters: parent_id, status, root_only |
-| `task_move` | Move tasks to a shared new parent — batch list API: `task_ids=[...]` |
-| `task_search` | Keyword search within a task subtree |
-| `task_archive` | Archive tasks — batch list API: `task_ids=[...]`. `dry_run=True` previews `would_archive` list. Response includes `reason` as a top-level field |
-| `task_add_edge` | Add edges between tasks — batch list API: `edges=[{source_id, target_id, edge_type?}]` |
-| `task_remove_edge` | Remove an edge between tasks |
-| `task_get_dag` | Full DAG for a subtree (nodes + all edges). `compact=True` returns only `{id, title, status, depth, parent_id}`. All nodes include `depth` field. Nodes ordered by depth then `created_at` |
-| `task_topological_sort` | Topological order of leaf tasks by depends_on. Each task includes `topo_order` (1-based). Prefer `task_execution_order` for parallel scheduling |
-| `task_link_code` | Link a task to code nodes — batch list API: `links=[{ref_type, code_node_id\|qualified_name}]` |
-| `task_unlink_code` | Remove code node association |
-| `task_get_code_refs` | Get code nodes linked to a task |
-| `task_find_by_code_node` | Find open tasks referencing a code node (`open_only=True` by default) |
-| `task_suggest_code_links` | Keyword-based code node suggestions — scored by match count, already-linked nodes excluded, `limit` param (default 20) |
-| `task_find_conflicts` | Leaf tasks with overlapping code refs |
-| `task_check_isolation` | Isolation score: internal / (internal + external). Returns `status: not_applicable` with null score if task has no code refs |
-| `task_blast_radius` | BFS impact from task's code refs. Returns `affected_nodes_count` + full `uncovered_nodes`. Use `include_affected_nodes=True` for full list. Returns `status: not_applicable` if no code refs |
-| `task_execution_order` | Parallelism-aware execution levels from depends_on |
-| `task_validate` | Gate-check: 8 algorithmic checks before coder handoff |
-| `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts; `pipeline_state.summary` explains all blockers; `subtask_code_refs_summary` rollup for mid-level tasks |
-| `note_add` | Add notes to a task — batch list API: `notes=[{note_type, content, status?, resolution?}]` |
-| `note_update` | Resolve or update a note |
-| `note_list` | List notes (with optional ancestor chain) |
-| `note_delete` | Delete a note |
-| `contract_add` | Record interface contract between provider and consumer tasks |
-| `contract_update` | Advance contract status (proposed→agreed→implemented→verified). Backward transitions return a `warning` field. |
-| `contract_list` | All contracts where task is provider or consumer |
-| `task_roadmap` | Progress snapshot: counts, phases, contracts, attention block |
-| `task_roadmap_diff` | What changed since a Unix timestamp (for resuming sessions) |
-| `task_find_for_impact` | Cross-query: find open tasks in blast radius of changed files |
-| `task_suggest_contracts` | Detect implicit code-level deps between tasks needing contracts |
-| `task_check_rollup` | Check if parent/ancestors can be closed or archived after a subtask completes |
-| `contract_link` | Attach a task to an existing contract as provider or consumer |
-| `contract_unlink` | Remove all links between a task and a contract |
+| Tool | Description                                                                                                                                                                                       |
+|------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `task_get_active_root` | Return the single open root task (or null if idle)                                                                                                                                                |
+| `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]`; optional `edges=[{from, to, type?}]` for atomic decomposition + wiring                                      |
+| `task_update` | Update title, description, status, spec, acceptance_criteria                                                                                                                                      |
+| `task_edit` | Surgically edit a text field: search/replace or line-range                                                                                                                                        |
+| `task_delete` | Delete a task. `cascade=True` deletes subtree. `dry_run=True` previews `would_delete` list without executing. Response echoes `deleted_tasks: [{id, title}]`                                      |
+| `task_get` | Get a task by ID                                                                                                                                                                                  |
+| `task_list` | List tasks with filters: parent_id, status, root_only                                                                                                                                             |
+| `task_move` | Move tasks to a shared new parent — batch list API: `task_ids=[...]`                                                                                                                              |
+| `task_search` | Keyword search within a task subtree                                                                                                                                                              |
+| `task_archive` | Archive tasks — batch list API: `task_ids=[...]`. `dry_run=True` previews `would_archive` list. Response includes `reason` as a top-level field                                                   |
+| `task_add_edge` | Add edges between tasks — batch list API: `edges=[{source_id, target_id, edge_type?}]`                                                                                                            |
+| `task_remove_edge` | Remove an edge between tasks                                                                                                                                                                      |
+| `task_get_dag` | Full DAG for a subtree (nodes + all edges). `compact=True` returns only `{id, title, status, depth, parent_id}`. All nodes include `depth` field. Nodes ordered by depth then `created_at`        |
+| `task_topological_sort` | Topological order of leaf tasks by depends_on. Each task includes `topo_order` (1-based). Prefer `task_execution_order` for parallel scheduling                                                   |
+| `task_link_code` | Link a task to code nodes — batch list API: `links=[{ref_type, code_node_id\                                                                                                                      |qualified_name}]` |
+| `task_unlink_code` | Remove code node association                                                                                                                                                                      |
+| `task_get_code_refs` | Get code nodes linked to a task                                                                                                                                                                   |
+| `task_find_by_code_node` | Find open tasks referencing a code node (`open_only=True` by default)                                                                                                                             |
+| `task_suggest_code_links` | Keyword-based code node suggestions — scored by match count, already-linked nodes excluded, `limit` param (default 20)                                                                            |
+| `task_find_conflicts` | Leaf tasks with overlapping code refs                                                                                                                                                             |
+| `task_check_isolation` | Isolation score: internal / (internal + external). Returns `status: not_applicable` with null score if task has no code refs                                                                      |
+| `task_blast_radius` | BFS impact from task's code refs. Returns `affected_nodes_count` + full `uncovered_nodes`. Use `include_affected_nodes=True` for full list. Returns `status: not_applicable` if no code refs      |
+| `task_execution_order` | Parallelism-aware execution levels from depends_on                                                                                                                                                |
+| `task_validate` | Gate-check: 8 algorithmic checks before coder handoff                                                                                                                                             |
+| `task_export` | Full task context export — use `include_analysis=True` for isolation + conflicts; `pipeline_state.summary` explains all blockers; `subtask_code_refs_summary` rollup for mid-level tasks          |
+| `note_add` | Add notes to a task — batch list API: `notes=[{note_type, content, status?, resolution?}]`                                                                                                        |
+| `note_update` | Resolve or update a note, Update multiple notes in one transaction — `updates=[{note_id, status?, resolution?, content?, rationale?}]`                                                            |
+| `note_list` | List notes (with optional ancestor chain). `note_type` accepts a string or a list of strings for multi-type filtering                                                                             |
+| `note_delete` | Delete a note                                                                                                                                                                                     |
+| `contract_add` | Record interface contract between provider and consumer tasks                                                                                                                                     |
+| `contract_update` | Advance contract status (proposed→agreed→implemented→verified). Backward transitions return a `warning` field.                                                                                    |
+| `contract_list` | All contracts where task is provider or consumer                                                                                                                                                  |
+| `contract_delete` | Permanently delete a contract and all its participant links                                                                                                                                       |
+| `task_roadmap` | Progress snapshot: counts, phases, contracts, attention block                                                                                                                                     |
+| `task_roadmap_diff` | What changed since a Unix timestamp (for resuming sessions)                                                                                                                                       |
+| `task_find_for_impact` | Cross-query: find open tasks in blast radius of changed files                                                                                                                                     |
+| `task_suggest_contracts` | Detect implicit code-level deps between tasks needing contracts                                                                                                                                   |
+| `task_check_rollup` | Check if parent/ancestors can be closed or archived after a subtask completes                                                                                                                     |
+| `contract_link` | Attach a task to an existing contract as provider or consumer                                                                                                                                     |
+| `contract_unlink` | Remove all links between a task and a contract                                                                                                                                                    |
 
 **MCP Prompts** (5 workflow templates):
 `review_changes`, `architecture_map`, `debug_issue`, `onboard_developer`, `pre_merge_check`

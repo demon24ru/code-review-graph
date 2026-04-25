@@ -75,6 +75,20 @@ def get_review_context(
                 "context": {},
             }
 
+        _NON_CODE_EXTENSIONS = frozenset({
+            ".md", ".txt", ".rst", ".json", ".yaml", ".yml",
+            ".toml", ".cfg", ".ini", ".lock",
+        })
+        if all(Path(f).suffix.lower() in _NON_CODE_EXTENSIONS for f in changed_files):
+            return {
+                "status": "ok",
+                "code_changes": 0,
+                "message": (
+                    "No code changes detected — only documentation/config files changed"
+                ),
+                "changed_files": changed_files,
+            }
+
         abs_files = [str(root / f) for f in changed_files]
         impact = store.get_impact_radius(abs_files, max_depth=max_depth)
 
@@ -471,6 +485,35 @@ def detect_changes_func(
 # ---------------------------------------------------------------------------
 
 
+def _collect_test_callers(store: Any, start_qn: str, max_depth: int = 3) -> list[Any]:
+    """Reverse BFS: walk backwards through CALLS edges to find test callers."""
+    visited: set[str] = {start_qn}
+    queue: list[tuple[str, int]] = [(start_qn, 0)]
+    test_nodes: list[Any] = []
+
+    while queue:
+        current_qn, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+        for edge in store.get_edges_by_target(current_qn):
+            if edge.kind != "CALLS":
+                continue
+            caller_qn = edge.source_qualified
+            if caller_qn in visited:
+                continue
+            visited.add(caller_qn)
+            caller_node = store.get_node(caller_qn)
+            if caller_node is None:
+                continue
+            if caller_node.is_test:
+                test_nodes.append(caller_node)
+            else:
+                # Continue BFS through non-test intermediate nodes
+                queue.append((caller_qn, depth + 1))
+
+    return test_nodes
+
+
 def analyze_edit_region(
     file_path: str,
     line_start: int,
@@ -595,23 +638,12 @@ def analyze_edit_region(
                         downstream_calls.append(node_to_dict(callee))
                         seen_downstream.add(edge.target_qualified)
 
-        # Also include test callers from external_callers that aren't already in test_coverage
-        # (handles projects that don't have TESTED_BY edges but have CALLS from test functions)
-        for caller_dict in external_callers:
-            qn = caller_dict.get("qualified_name", "")
-            if qn not in seen_tests:
-                is_test_node = (
-                    caller_dict.get("is_test")
-                    or caller_dict.get("kind") == "Test"
-                    or caller_dict.get("name", "").startswith("test_")
-                    or "/test" in caller_dict.get("file_path", "").replace("\\", "/")
-                    or "\\test" in caller_dict.get("file_path", "")
-                )
-                if is_test_node:
-                    node_obj = store.get_node(qn)
-                    if node_obj:
-                        test_coverage.append(node_to_dict(node_obj))
-                        seen_tests.add(qn)
+        # Reverse BFS to find test callers at depth > 1
+        for node in overlapping:
+            for test_node in _collect_test_callers(store, node.qualified_name, max_depth=3):
+                if test_node.qualified_name not in seen_tests:
+                    test_coverage.append(node_to_dict(test_node))
+                    seen_tests.add(test_node.qualified_name)
 
         summary_parts = [
             f"Edit region {file_path}:{line_start}-{line_end} overlaps "
@@ -803,6 +835,7 @@ def audit_workspace(
     min_lines: int = 50,
     file_pattern: str | None = None,
     exclude_paths: list[str] | None = None,
+    exclude_known_false_positives: bool = True,
     limit: int = 50,
     repo_root: str | None = None,
 ) -> dict[str, Any]:
@@ -822,6 +855,9 @@ def audit_workspace(
         exclude_paths: List of path substrings to exclude.  Nodes in matching
             files are omitted from dead_code and large_functions results
             (e.g. ``["vscode", "generated"]``).  Default: None.
+        exclude_known_false_positives: When True (default), suppress common
+            false positives in dead_code results: ``__init__`` constructors,
+            abstract methods, and TypeScript/TSX nodes.
         limit: Maximum number of results to return per category (dead_code,
             large_functions).  Default: 50.  When results exceed limit,
             ``truncated`` is True and ``total_dead_code``/``total_large_functions``
@@ -844,7 +880,10 @@ def audit_workspace(
 
         if include_dead_code:
             dead_code = find_dead_code(
-                store, file_pattern=file_pattern, exclude_paths=exclude_paths
+                store,
+                file_pattern=file_pattern,
+                exclude_paths=exclude_paths,
+                exclude_known_false_positives=exclude_known_false_positives,
             )
             total_dead = len(dead_code)
             dead_code = dead_code[:limit]
@@ -882,11 +921,11 @@ def audit_workspace(
             except Exception as exc:
                 logger.warning("audit_workspace: cycle detection failed: %s", exc)
 
-        # Compute a simple health score: 100 - penalties (use totals, not sliced counts)
-        dead_penalty = min(total_dead * 2, 30)
-        large_penalty = min(total_large * 1, 20)
-        cycle_penalty = min(len(cycles) * 5, 50)
-        health_score = max(0, 100 - dead_penalty - large_penalty - cycle_penalty)
+        # Compute health score from post-exclude_paths filtered counts.
+        # Simple formula: each dead symbol costs 2 pts, each oversized function 1 pt.
+        # Cycles are reported separately but not penalised here to avoid double-counting
+        # with the dead_code penalty (cycles rarely add actionable signal beyond dead code).
+        health_score = max(0, 100 - total_dead * 2 - total_large)
 
         issues_count = total_dead + total_large + len(cycles)
         summary_lines = [
@@ -990,6 +1029,10 @@ def trace_dataflow(
             return {
                 "status": "not_found",
                 "summary": f"Source node '{source}' not found in graph.",
+                "diagnostic": {
+                    "source_found": False,
+                    "hint": f"No node named '{source}' exists in the graph. Try semantic_search_nodes_tool to find the correct name.",
+                },
                 "next_actions": ["semantic_search_nodes_tool", "query_graph_tool"],
             }
         

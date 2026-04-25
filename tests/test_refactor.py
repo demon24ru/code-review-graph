@@ -555,7 +555,7 @@ class TestImportClassification:
 
 
 class TestDeadCodeFalsePositives:
-    """H-05: __init__ and abstract methods must not be flagged as dead code."""
+    """H-05: __init__, abstract methods, and TS nodes must not be flagged as dead code."""
 
     def setup_method(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -567,7 +567,7 @@ class TestDeadCodeFalsePositives:
         Path(self.tmp.name).unlink(missing_ok=True)
 
     def _seed(self):
-        """Seed store with __init__, abstract method, and a real dead function."""
+        """Seed store with __init__, abstract method, TS node, and a real dead function."""
         self.store.upsert_node(
             NodeInfo(
                 kind="Function",
@@ -599,6 +599,28 @@ class TestDeadCodeFalsePositives:
                 language="python",
             )
         )
+        # TypeScript VS Code extension class — invisible callers via package.json
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Class",
+                name="VscodeExtensionProvider",
+                file_path="/repo/extension/provider.ts",
+                line_start=1,
+                line_end=30,
+                language="typescript",
+            )
+        )
+        # TSX React component — also invisible callers via JSX
+        self.store.upsert_node(
+            NodeInfo(
+                kind="Function",
+                name="MyReactComponent",
+                file_path="/repo/ui/component.tsx",
+                line_start=1,
+                line_end=20,
+                language="typescript",
+            )
+        )
         self.store.commit()
 
     def test_init_not_flagged_as_dead(self):
@@ -624,6 +646,35 @@ class TestDeadCodeFalsePositives:
         assert "truly_dead_func" in dead_names, (
             "Unreferenced function should still be flagged as dead code"
         )
+
+    def test_typescript_class_not_flagged_by_default(self):
+        """TypeScript nodes are excluded from dead code by default (exclude_known_false_positives=True)."""
+        dead = find_dead_code(self.store)
+        dead_names = {d["name"] for d in dead}
+        assert "VscodeExtensionProvider" not in dead_names, (
+            ".ts class should not be flagged as dead code when exclude_known_false_positives=True"
+        )
+        assert "MyReactComponent" not in dead_names, (
+            ".tsx function should not be flagged as dead code when exclude_known_false_positives=True"
+        )
+
+    def test_typescript_class_flagged_when_false_positives_disabled(self):
+        """TypeScript nodes appear in dead code when exclude_known_false_positives=False."""
+        dead = find_dead_code(self.store, exclude_known_false_positives=False)
+        dead_names = {d["name"] for d in dead}
+        # With the flag off, TS nodes should appear (because they have no callers)
+        assert "VscodeExtensionProvider" in dead_names, (
+            ".ts class should be flagged when exclude_known_false_positives=False"
+        )
+        assert "MyReactComponent" in dead_names, (
+            ".tsx function should be flagged when exclude_known_false_positives=False"
+        )
+
+    def test_exclude_known_false_positives_default_is_true(self):
+        """Default call (no params) is identical to exclude_known_false_positives=True."""
+        dead_default = find_dead_code(self.store)
+        dead_explicit = find_dead_code(self.store, exclude_known_false_positives=True)
+        assert {d["name"] for d in dead_default} == {d["name"] for d in dead_explicit}
 
 
 class TestAuditHealthScore:

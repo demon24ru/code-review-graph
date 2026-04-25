@@ -6,7 +6,7 @@ Communicates via stdio (standard MCP transport).
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Union
 
 from fastmcp import FastMCP
 
@@ -51,6 +51,7 @@ from .tools import (
 )
 from .tools.task_tools import (
     contract_add_func,
+    contract_delete_func,
     contract_link_func,
     contract_list_func,
     contract_unlink_func,
@@ -162,6 +163,7 @@ def query_graph_tool(
     repo_root: Optional[str] = None,
     limit: Optional[int] = None,
     exclude_tests: bool = True,
+    kind: Optional[str] = None,
 ) -> dict:
     """Run a predefined graph query to explore code relationships.
 
@@ -182,6 +184,8 @@ def query_graph_tool(
         limit: Maximum number of results to return. When truncation occurs,
                response includes ``truncated: true`` and ``total_before_limit: N``.
         exclude_tests: If True, exclude test nodes from results. Default: True.
+        kind: Optional node kind filter (e.g. "Function", "Class", "File").
+              When set, only results whose kind matches (case-insensitive) are returned.
     """
     import os
     from pathlib import Path
@@ -195,7 +199,7 @@ def query_graph_tool(
 
     return query_graph(
         pattern=pattern, target=target, repo_root=repo_root, limit=limit,
-        exclude_tests=exclude_tests,
+        exclude_tests=exclude_tests, kind=kind,
     )
 
 
@@ -596,6 +600,7 @@ def refactor_tool(
     kind: Optional[str] = None,
     file_pattern: Optional[str] = None,
     exclude_paths: Optional[list] = None,
+    exclude_known_false_positives: bool = True,
     repo_root: Optional[str] = None,
     limit: int = 50,
 ) -> dict:
@@ -620,6 +625,9 @@ def refactor_tool(
         file_pattern: (dead_code) Filter by file path substring.
         exclude_paths: List of path substrings to exclude (e.g. ['vscode', 'test']).
             Nodes in matching files are omitted from results.
+        exclude_known_false_positives: When True (default), suppress common
+            false positives in dead_code mode: __init__ constructors, abstract
+            methods, and TypeScript/TSX nodes (VS Code extension points).
         repo_root: Repository root path. Auto-detected if omitted.
         limit: Maximum number of results to return per category. Default: 50.
             Use smaller values (10-20) for initial exploration.
@@ -631,6 +639,7 @@ def refactor_tool(
         kind=kind,
         file_pattern=file_pattern,
         exclude_paths=exclude_paths,
+        exclude_known_false_positives=exclude_known_false_positives,
         repo_root=repo_root,
         limit=limit,
     )
@@ -790,6 +799,7 @@ def audit_workspace_tool(
     min_lines: int = 50,
     file_pattern: Optional[str] = None,
     exclude_paths: Optional[list] = None,
+    exclude_known_false_positives: bool = True,
     repo_root: Optional[str] = None,
     limit: int = 50,
 ) -> dict:
@@ -807,6 +817,10 @@ def audit_workspace_tool(
         file_pattern: Filter dead code / large functions by file path substring.
         exclude_paths: List of path substrings to exclude (e.g. ['vscode', 'test']).
             Nodes in matching files are omitted from results.
+        exclude_known_false_positives: When True (default), suppress common
+            false positives in dead_code results: __init__ constructors, abstract
+            methods, and TypeScript/TSX nodes (VS Code extension points).
+            health_score is computed from the resulting filtered counts.
         repo_root: Repository root path. Auto-detected if omitted.
         limit: Maximum number of results to return per category. Default: 50.
             Use smaller values (10-20) for initial exploration.
@@ -818,6 +832,7 @@ def audit_workspace_tool(
         min_lines=min_lines,
         file_pattern=file_pattern,
         exclude_paths=exclude_paths,
+        exclude_known_false_positives=exclude_known_false_positives,
         repo_root=repo_root,
         limit=limit,
     )
@@ -1636,33 +1651,26 @@ def note_add(
 
 @mcp.tool()
 def note_update(
-    note_id: str,
-    status: Optional[str] = None,
-    resolution: Optional[str] = None,
-    rationale: Optional[str] = None,
-    content: Optional[str] = None,
+    updates: list,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Update an existing note.
+    """Update one or more notes.
 
-    [BRAINSTORM] Use to resolve open questions or update rationale.
+    [BRAINSTORM] Batch-only API: always pass a list, even for a single note.
+    Use to resolve open questions or update rationale.
 
     Args:
-        note_id: Note ID to update.
-        status: New status (open|answered|resolved|rejected|deferred).
-        resolution: Answer or decision text.
-        rationale: Reasoning.
-        content: Updated note text.
+        updates: List of dicts, each with ``note_id`` (required) plus any of:
+            ``status``, ``resolution``, ``content``, ``rationale``.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return note_update_func(note_id=note_id, status=status, resolution=resolution,
-                            rationale=rationale, content=content, repo_root=repo_root)
+    return note_update_func(updates=updates, repo_root=repo_root)
 
 
 @mcp.tool()
 def note_list(
     task_id: str,
-    note_type: Optional[str] = None,
+    note_type: Optional[Union[str, list]] = None,
     status: Optional[str] = None,
     include_parent: bool = True,
     include_children: bool = False,
@@ -1677,7 +1685,8 @@ def note_list(
 
     Args:
         task_id: Task ID.
-        note_type: Filter by type (decision|question|assumption|constraint|risk).
+        note_type: Filter by type. Pass a single string OR a list to match
+            multiple types (decision|question|assumption|constraint|risk).
         status: Filter by status.
         include_parent: Include ancestor notes (default: True).
         include_children: Include descendant notes — search entire subtree.
@@ -1704,7 +1713,7 @@ def note_delete(
     return note_delete_func(note_id=note_id, repo_root=repo_root)
 
 
-# --- Contracts (5) ---
+# --- Contracts (6) ---
 
 @mcp.tool()
 def contract_add(
@@ -1845,6 +1854,22 @@ def contract_list(
     """
     return contract_list_func(scope_task_id=scope_task_id, task_id=task_id,
                               name=name, repo_root=repo_root)
+
+
+@mcp.tool()
+def contract_delete(
+    contract_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Delete a contract and all its participant links.
+
+    [BRAINSTORM] Permanently removes the contract from the brainstorm scope.
+
+    Args:
+        contract_id: Contract ID to delete.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return contract_delete_func(contract_id=contract_id, repo_root=repo_root)
 
 
 # --- Roadmap (2) ---

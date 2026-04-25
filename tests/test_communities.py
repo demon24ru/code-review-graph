@@ -582,3 +582,75 @@ class TestGetCommunity:
         hints = result.get("_hints", {})
         next_actions = hints.get("next_actions", [])
         assert "list_communities_tool" in next_actions
+
+    def test_is_test_community_filters_fixture(self):
+        """_is_test_community returns True for communities with 'fixture' in name."""
+        from code_review_graph.tools.community_tools import _is_test_community
+
+        assert _is_test_community({"name": "fixtures-db"}) is True
+        assert _is_test_community({"name": "my-fixtures"}) is True
+        assert _is_test_community({"name": "fixture-helpers"}) is True
+        assert _is_test_community({"name": "FIXTURE-set"}) is True  # case-insensitive
+        # Should NOT filter non-test communities
+        assert _is_test_community({"name": "auth-core"}) is False
+        assert _is_test_community({"name": "graph-db"}) is False
+
+    def test_is_test_community_filters_test_prefix(self):
+        """_is_test_community returns True for communities starting with 'test'."""
+        from code_review_graph.tools.community_tools import _is_test_community
+
+        assert _is_test_community({"name": "tests-core"}) is True
+        assert _is_test_community({"name": "tests-no"}) is True
+        assert _is_test_community({"name": "test_helpers"}) is True
+        assert _is_test_community({"name": "auth-core"}) is False
+
+    def test_list_communities_exclude_tests_filters_test_communities(self):
+        """list_communities_func(exclude_tests=True) should exclude test/fixture communities."""
+        from code_review_graph.tools.community_tools import list_communities_func
+
+        self._seed_two_similar_communities()
+
+        # Manually override community names to include test and fixture entries
+        all_comms = get_communities(self.store)
+        # Rename them: one production, one test, one fixture
+        for i, comm in enumerate(all_comms):
+            if i == 0:
+                comm["name"] = "auth-core"
+            elif i == 1:
+                comm["name"] = "tests-db"
+        store_communities(self.store, all_comms)
+
+        # With exclude_tests=False: should see all communities
+        result_all = list_communities_func(repo_root=self.repo_root, exclude_tests=False)
+        assert result_all["status"] == "ok"
+        all_names = {c["name"] for c in result_all["communities"]}
+        assert "auth-core" in all_names
+        assert "tests-db" in all_names
+
+        # With exclude_tests=True: should exclude test community
+        result_filtered = list_communities_func(repo_root=self.repo_root, exclude_tests=True)
+        assert result_filtered["status"] == "ok"
+        filtered_names = {c["name"] for c in result_filtered["communities"]}
+        assert "auth-core" in filtered_names
+        assert "tests-db" not in filtered_names
+
+    def test_list_communities_exclude_tests_filters_fixture_communities(self):
+        """list_communities_func(exclude_tests=True) should exclude fixture communities."""
+        from code_review_graph.tools.community_tools import list_communities_func
+
+        self._seed_two_similar_communities()
+
+        # Add a fixture community by renaming
+        all_comms = get_communities(self.store)
+        for i, comm in enumerate(all_comms):
+            if i == 0:
+                comm["name"] = "graph-utils"
+            elif i == 1:
+                comm["name"] = "fixtures-helpers"
+        store_communities(self.store, all_comms)
+
+        result = list_communities_func(repo_root=self.repo_root, exclude_tests=True)
+        assert result["status"] == "ok"
+        names = {c["name"] for c in result["communities"]}
+        assert "graph-utils" in names
+        assert "fixtures-helpers" not in names

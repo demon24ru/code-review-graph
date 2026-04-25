@@ -14,8 +14,8 @@ Groups:
   Analysis (4):       task_find_conflicts, task_check_isolation,
                       task_blast_radius, task_execution_order
   Validation (3):     task_validate, task_build_context, task_export
-  Notes (4):          note_add, note_update, note_list, note_delete
-  Contracts (3):      contract_add, contract_update, contract_list
+   Notes (4):          note_add, note_update, note_list, note_delete
+  Contracts (4):      contract_add, contract_update, contract_list, contract_delete
   Roadmap (2):        task_roadmap, task_roadmap_diff
 """
 
@@ -1087,42 +1087,36 @@ def note_add_func(
 
 
 def note_update_func(
-    note_id: str,
-    status: Optional[str] = None,
-    resolution: Optional[str] = None,
-    rationale: Optional[str] = None,
-    content: Optional[str] = None,
+    updates: list[dict],
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Update an existing note.
+    """Update one or more notes.
 
-    [BRAINSTORM] Use to resolve an open question, update a decision's
-    rationale, or change a note's status.
+    [BRAINSTORM] Batch-only API: always pass a list, even for a single note.
+    Use to resolve open questions, update decisions' rationale, or change note status.
 
     Args:
-        note_id: Note ID to update.
-        status: New status (open|answered|resolved|rejected|deferred).
-        resolution: Answer or decision text.
-        rationale: Reasoning behind the decision.
-        content: Updated note text.
+        updates: List of dicts, each with ``note_id`` (required) plus any of:
+            ``status``, ``resolution``, ``content``, ``rationale``.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        The updated note dict.
+        ``{"notes": [updated_note_objects], "errors": [...]}``
     """
-    def _fn(conn, note_id, status, resolution, rationale, content):
-        note = tasks.update_note(
-            conn, note_id,
-            status=status, resolution=resolution,
-            rationale=rationale, content=content,
+    def _fn(conn, updates):
+        result = tasks.update_notes(conn, updates)
+        n_ok = len(result["notes"])
+        n_err = len(result["errors"])
+        return _ok(
+            f"Updated {n_ok} note(s)" + (f", {n_err} error(s)" if n_err else ""),
+            **result,
         )
-        return _ok(f"Updated note {note_id[:8]} (status: {note['status']})", note=note)
-    return _run(repo_root, _fn, note_id, status, resolution, rationale, content)
+    return _run(repo_root, _fn, updates)
 
 
 def note_list_func(
     task_id: str,
-    note_type: Optional[str] = None,
+    note_type=None,
     status: Optional[str] = None,
     include_parent: bool = True,
     include_children: bool = False,
@@ -1374,6 +1368,27 @@ def contract_list_func(
             contracts=contract_list,
         )
     return _run_contract(repo_root, _fn, scope_task_id, task_id, name)
+
+
+def contract_delete_func(
+    contract_id: str,
+    repo_root: Optional[str] = None,
+) -> dict[str, Any]:
+    """Delete a contract and all its participant links.
+
+    [BRAINSTORM] Permanently removes the contract from the brainstorm scope.
+
+    Args:
+        contract_id: Contract ID to delete.
+        repo_root: Repository root path. Auto-detected if omitted.
+
+    Returns:
+        ``{"status": "ok", "deleted_contract_id": ..., "name": ...}``
+    """
+    def _fn(conn, contract_id):
+        result = tasks.delete_contract(conn, contract_id)
+        return _ok(f"Deleted contract {contract_id[:8]} ('{result['name']}')", **result)
+    return _run_contract(repo_root, _fn, contract_id)
 
 
 # ===========================================================================

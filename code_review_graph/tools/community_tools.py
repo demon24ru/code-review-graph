@@ -17,6 +17,7 @@ def _is_test_community(c: dict) -> bool:
         name.startswith("test")
         or "/test" in name
         or "\\test" in name
+        or "fixture" in name
     )
 
 
@@ -202,7 +203,7 @@ def get_architecture_overview_func(
     """
     store, root = _get_store(repo_root)
     try:
-        overview = get_architecture_overview(store)
+        overview = get_architecture_overview(store, exclude_tests=exclude_tests)
 
         # Strip member lists from communities — keep only summary fields
         communities_compact = []
@@ -215,9 +216,6 @@ def get_architecture_overview_func(
                 "dominant_language": c.get("dominant_language"),
                 "member_count": len(c.get("members", c.get("member_qns", []))),
             })
-
-        if exclude_tests:
-            communities_compact = [c for c in communities_compact if not _is_test_community(c)]
 
         # Compress cross-community edges into pair counts (de-duplicated)
         cross_pairs: dict[str, int] = {}

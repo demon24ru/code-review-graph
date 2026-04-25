@@ -123,7 +123,7 @@ def get_impact_radius(
                 "changed_nodes_count": len(changed_dicts),
                 "impacted_nodes_count": len(impacted_dicts),
                 "impacted_files_count": len(raw["impacted_files"]),
-                "impacted_files": raw["impacted_files"],
+                "edges_count": len(edge_dicts),
                 "truncated": truncated,
                 "total_impacted": total_impacted,
             }
@@ -158,6 +158,7 @@ def query_graph(
     repo_root: str | None = None,
     limit: int | None = None,
     exclude_tests: bool = False,
+    kind: str | None = None,
 ) -> dict[str, Any]:
     """Run a predefined graph query.
 
@@ -171,6 +172,9 @@ def query_graph(
         exclude_tests: If True, exclude test nodes from results. Default: False.
                NOTE: has no effect on ``tests_for`` (tests are the entire point).
                ``total_before_limit: N``.
+        kind: Optional node kind filter (e.g. "Function", "Class", "File").
+              When set, only results whose ``kind`` matches (case-insensitive)
+              are returned. Applied after pattern query and exclude_tests.
 
     Returns:
         Matching nodes and edges for the query.
@@ -185,6 +189,7 @@ def query_graph(
 
         results: list[dict] = []
         edges_out: list[dict] = []
+        external_callees: list[str] = []
 
         # For callers_of, skip common builtins early (bare names only)
         # "Who calls .map()?" returns hundreds of useless hits.
@@ -277,7 +282,6 @@ def query_graph(
 
         elif pattern == "callees_of":
             seen_callees: set[str] = set()
-            external_callees: list[str] = []
             for e in store.get_edges_by_source(qn):
                 if e.kind == "CALLS":
                     callee = store.get_node(e.target_qualified)
@@ -289,11 +293,6 @@ def query_graph(
                     else:
                         external_callees.append(e.target_qualified)
                     edges_out.append(edge_to_dict(e))
-            if external_callees:
-                results.append({
-                    "_external_callees": external_callees,
-                    "_note": f"{len(external_callees)} external/stdlib callee(s) not in graph",
-                })
 
         elif pattern == "imports_of":
             for e in store.get_edges_by_source(qn):
@@ -388,6 +387,13 @@ def query_graph(
                 if r.get("is_test") is not True
             ]
 
+        # Filter by node kind when requested.
+        if kind is not None:
+            results = [
+                r for r in results
+                if r.get("kind", "").lower() == kind.lower()
+            ]
+
         # Apply limit truncation (edges are preserved in full; only results are capped)
         total_before_limit = len(results)
         truncated = False
@@ -412,6 +418,10 @@ def query_graph(
             result["resolved_as"] = ambiguous_meta["resolved_as"]
             result["disambiguation_note"] = ambiguous_meta["note"]
             result["alternatives"] = ambiguous_meta["alternatives"]
+        # Add external_callees at top level for callees_of pattern
+        if pattern == "callees_of" and external_callees:
+            result["_external_callees"] = external_callees
+            result["_note"] = f"{len(external_callees)} external/stdlib callee(s) not in graph"
         result["_hints"] = generate_hints("query_graph", result, get_session())
         return result
     finally:

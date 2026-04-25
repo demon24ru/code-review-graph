@@ -525,7 +525,8 @@ def store_communities(
 
 
 def get_communities(
-    store: GraphStore, sort_by: str = "size", min_size: int = 0
+    store: GraphStore, sort_by: str = "size", min_size: int = 0,
+    exclude_tests: bool = False,
 ) -> list[dict[str, Any]]:
     """Retrieve stored communities from the database.
 
@@ -533,6 +534,7 @@ def get_communities(
         store: The GraphStore instance.
         sort_by: Column to sort by ("size", "cohesion", "name").
         min_size: Minimum community size to include.
+        exclude_tests: If True, exclude test-dominated communities.
 
     Returns:
         List of community dicts.
@@ -559,7 +561,7 @@ def get_communities(
             for qn in store.get_community_member_qns(row["id"])
         ]
 
-        communities.append({
+        comm_dict = {
             "id": row["id"],
             "name": _sanitize_name(row["name"]),
             "level": row["level"],
@@ -568,12 +570,27 @@ def get_communities(
             "dominant_language": row["dominant_language"] or "",
             "description": _sanitize_name(row["description"] or ""),
             "members": member_qns,
-        })
+        }
+
+        # Filter test communities if requested
+        if exclude_tests:
+            name = (comm_dict.get("name") or "").lower()
+            if (
+                name.startswith("test")
+                or "/test" in name
+                or "\\test" in name
+                or "fixture" in name
+            ):
+                continue
+
+        communities.append(comm_dict)
 
     return communities
 
 
-def get_architecture_overview(store: GraphStore) -> dict[str, Any]:
+def get_architecture_overview(
+    store: GraphStore, exclude_tests: bool = True
+) -> dict[str, Any]:
     """Generate an architecture overview based on community structure.
 
     Builds a node-to-community mapping, counts cross-community edges,
@@ -581,11 +598,12 @@ def get_architecture_overview(store: GraphStore) -> dict[str, Any]:
 
     Args:
         store: The GraphStore instance.
+        exclude_tests: If True, exclude test-dominated communities. Default: True.
 
     Returns:
         Dict with keys: communities, cross_community_edges, warnings.
     """
-    communities = get_communities(store)
+    communities = get_communities(store, exclude_tests=exclude_tests)
 
     # Build node -> community_id mapping
     node_to_community: dict[str, int] = {}

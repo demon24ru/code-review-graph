@@ -1178,9 +1178,21 @@ def roadmap(
     contracts_list = [_row_to_dict(r) for r in contract_rows]
     pending_contracts = [c for c in contracts_list if c["status"] == "proposed"]
 
-    # Notes count
+    # Notes count and breakdown by type+status
     notes_count = conn.execute(  # noqa: S608
         f"SELECT count(*) FROM notes WHERE task_id IN ({ph})", subtree_ids
+    ).fetchone()[0]
+    open_questions_count = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'question' AND status = 'open'",
+        subtree_ids,
+    ).fetchone()[0]
+    open_assumptions_count = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'assumption' AND status = 'open'",
+        subtree_ids,
+    ).fetchone()[0]
+    open_constraints_count = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'constraint' AND status = 'open'",
+        subtree_ids,
     ).fetchone()[0]
 
     # Attention block
@@ -1253,6 +1265,12 @@ def roadmap(
             "pending_list": pending_contracts,
         },
         "notes_count": notes_count,
+        "notes_summary": {
+            "total": notes_count,
+            "open_questions": open_questions_count,
+            "open_assumptions": open_assumptions_count,
+            "open_constraints": open_constraints_count,
+        },
         "attention": {
             "ready_to_start": ready_to_start,
             "answered_notes": [_row_to_dict(r) for r in answered_notes_rows],
@@ -1379,6 +1397,14 @@ def check_parent_rollup(
         else:
             suggestion = f"Parent '{parent['title']}' status '{current_status}' — no action needed."
 
+        # Determine suggested_action
+        if can_archive and not can_close:
+            suggested_action: str | None = "archive"
+        elif can_complete:
+            suggested_action = "complete"
+        else:
+            suggested_action = None
+
         entry: dict[str, Any] = {
             "id": current_id,
             "title": parent.get("title"),
@@ -1390,6 +1416,7 @@ def check_parent_rollup(
             "can_close": can_close,
             "can_archive": can_archive,
             "can_complete": can_complete,
+            "suggested_action": suggested_action,
             "suggestion": suggestion,
         }
         chain.append(entry)

@@ -2200,6 +2200,7 @@ class TestAnalyzeEditRegion:
                 line_start=3,
                 line_end=15,
                 language="python",
+                is_test=True,
             )
         )
 
@@ -2226,7 +2227,7 @@ class TestAnalyzeEditRegion:
         assert result["status"] == "ok"
         assert len(result["overlapping_symbols"]) >= 1
 
-        # test_compute is a test caller (name starts with test_) — must appear in test_coverage
+        # test_compute is a test caller (is_test=True) — must appear in test_coverage via reverse BFS
         assert result["impact_summary"]["test_coverage"] > 0, (
             "test_coverage should be > 0 when callers include test functions"
         )

@@ -549,3 +549,112 @@ class TestChanges:
             assert result.get("review_priorities", []) == [] or isinstance(
                 result.get("review_priorities"), list
             )
+
+
+# ---------------------------------------------------------------------------
+# M-09: get_review_context non-code file guard
+# ---------------------------------------------------------------------------
+
+
+class TestGetReviewContextNonCodeGuard:
+    """M-09: get_review_context returns early for doc/config-only changes."""
+
+    def _make_mock_store(self):
+        from unittest.mock import MagicMock
+        store = MagicMock()
+        store.close = MagicMock()
+        return store
+
+    def test_all_doc_files_returns_no_code_changes(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from code_review_graph.tools.review import get_review_context
+
+        doc_files = ["README.md", "docs/guide.rst", "notes.txt"]
+        with (
+            patch("code_review_graph.tools.review._get_store") as mock_gs,
+            patch(
+                "code_review_graph.tools.review.get_changed_files",
+                return_value=doc_files,
+            ),
+        ):
+            mock_gs.return_value = (self._make_mock_store(), Path("/fake/repo"))
+            result = get_review_context(repo_root="/fake/repo")
+
+        assert result["status"] == "ok"
+        assert result["code_changes"] == 0
+        assert "only documentation" in result["message"].lower() or \
+               "config" in result["message"].lower()
+        assert result["changed_files"] == doc_files
+
+    def test_all_config_files_returns_no_code_changes(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from code_review_graph.tools.review import get_review_context
+
+        config_files = ["pyproject.toml", ".github/config.yml", "package.json", "Pipfile.lock"]
+        with (
+            patch("code_review_graph.tools.review._get_store") as mock_gs,
+            patch(
+                "code_review_graph.tools.review.get_changed_files",
+                return_value=config_files,
+            ),
+        ):
+            mock_gs.return_value = (self._make_mock_store(), Path("/fake/repo"))
+            result = get_review_context(repo_root="/fake/repo")
+
+        assert result["status"] == "ok"
+        assert result["code_changes"] == 0
+
+    def test_mixed_files_does_not_short_circuit(self):
+        """If any file is a code file, the guard must NOT trigger."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from code_review_graph.tools.review import get_review_context
+
+        # When mixed (code + doc), the doc-only guard must NOT fire.
+        # Use a mock store to avoid real DB I/O.
+        mock_store = self._make_mock_store()
+        mock_store.get_impact_radius.return_value = {
+            "changed_nodes": [], "impacted_nodes": [], "impacted_files": [], "edges": []
+        }
+        with (
+            patch("code_review_graph.tools.review._get_store") as mock_gs,
+            patch(
+                "code_review_graph.tools.review.get_changed_files",
+                return_value=["README.md", "app.py"],
+            ),
+        ):
+            mock_gs.return_value = (mock_store, Path("/fake/repo"))
+            result = get_review_context(repo_root="/fake/repo")
+
+        # Must NOT have the doc-only guard response
+        assert result.get("code_changes") != 0 or "message" not in result
+
+    def test_doc_only_guard_uses_extension_not_filename(self):
+        """Guard is based on extension, not file name — README.py would NOT trigger it."""
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from code_review_graph.tools.review import get_review_context
+
+        # README.py has .py extension → NOT a doc file → guard should not fire
+        mock_store = self._make_mock_store()
+        mock_store.get_impact_radius.return_value = {
+            "changed_nodes": [], "impacted_nodes": [], "impacted_files": [], "edges": []
+        }
+        with (
+            patch("code_review_graph.tools.review._get_store") as mock_gs,
+            patch(
+                "code_review_graph.tools.review.get_changed_files",
+                return_value=["README.py"],
+            ),
+        ):
+            mock_gs.return_value = (mock_store, Path("/fake/repo"))
+            result = get_review_context(repo_root="/fake/repo")
+
+        # Guard should NOT have fired (code_changes == 0 only if it fired)
+        assert result.get("code_changes") != 0 or "message" not in result

@@ -239,6 +239,27 @@ class TestFlows:
         assert len(multi) == 1
         assert multi[0]["criticality"] >= single[0]["criticality"]
 
+    def test_criticality_test_entry_point_demoted(self):
+        """Test entry-point flows score 10x lower than equivalent production flows."""
+        # Production entry point
+        self._add_func("prod_entry", path="main.py", is_test=False)
+        self._add_func("prod_helper", path="main.py", is_test=False)
+        self._add_call("main.py::prod_entry", "main.py::prod_helper", "main.py")
+
+        # Test entry point — same structure, same node count
+        self._add_func("test_something", path="test_main.py", is_test=True)
+        self._add_func("test_helper", path="test_main.py", is_test=False)
+        self._add_call("test_main.py::test_something", "test_main.py::test_helper", "test_main.py")
+
+        flows = trace_flows(self.store)
+        prod_flows = [f for f in flows if f["entry_point"] == "main.py::prod_entry"]
+        test_flows = [f for f in flows if f["entry_point"] == "test_main.py::test_something"]
+
+        assert len(prod_flows) == 1
+        assert len(test_flows) == 1
+        # Test entry-point flow must score below production flow
+        assert test_flows[0]["criticality"] < prod_flows[0]["criticality"]
+
     # ---------------------------------------------------------------
     # store_flows + get_flows roundtrip
     # ---------------------------------------------------------------
@@ -750,3 +771,138 @@ class TestListFlowsBugFixes:
         hints = result.get("_hints", {})
         next_actions = hints.get("next_actions", [])
         assert "list_flows_tool" in next_actions
+
+    # -------------------------------------------------------------------
+    # F-04 / N-03: language filter on list_flows_tool
+    # -------------------------------------------------------------------
+
+    def test_list_flows_language_filter_returns_only_matching(self):
+        """F-04: list_flows(language='python') returns only Python entry-point flows."""
+        from code_review_graph.tools.flows_tools import list_flows
+
+        # Python flow
+        py_ep = NodeInfo(
+            kind="Function", name="py_handler", file_path=str(self.tmpdir / "app.py"),
+            line_start=1, line_end=10, language="python", is_test=False,
+        )
+        py_ep_id = self.store.upsert_node(py_ep, file_hash="py1")
+        py_helper = NodeInfo(
+            kind="Function", name="py_helper", file_path=str(self.tmpdir / "app.py"),
+            line_start=12, line_end=20, language="python", is_test=False,
+        )
+        py_helper_id = self.store.upsert_node(py_helper, file_hash="py1")
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS",
+            source=str(self.tmpdir / "app.py") + "::py_handler",
+            target=str(self.tmpdir / "app.py") + "::py_helper",
+            file_path=str(self.tmpdir / "app.py"),
+            line=5,
+        ))
+
+        # TypeScript flow
+        ts_ep = NodeInfo(
+            kind="Function", name="tsHandler", file_path=str(self.tmpdir / "ext.ts"),
+            line_start=1, line_end=10, language="typescript", is_test=False,
+        )
+        ts_ep_id = self.store.upsert_node(ts_ep, file_hash="ts1")
+        ts_helper = NodeInfo(
+            kind="Function", name="tsHelper", file_path=str(self.tmpdir / "ext.ts"),
+            line_start=12, line_end=20, language="typescript", is_test=False,
+        )
+        self.store.upsert_node(ts_helper, file_hash="ts1")
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS",
+            source=str(self.tmpdir / "ext.ts") + "::tsHandler",
+            target=str(self.tmpdir / "ext.ts") + "::tsHelper",
+            file_path=str(self.tmpdir / "ext.ts"),
+            line=5,
+        ))
+        self.store.commit()
+
+        stored = trace_flows(self.store)
+        store_flows(self.store, stored)
+
+        # Without filter: should see both flows
+        result_all = list_flows(repo_root=str(self.tmpdir))
+        assert result_all["status"] == "ok"
+        assert result_all["total_count"] >= 2
+
+        # With language="python": only Python entry-point flows
+        result_py = list_flows(repo_root=str(self.tmpdir), language="python")
+        assert result_py["status"] == "ok"
+        for flow in result_py["flows"]:
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node = self.store.get_node_by_id(ep_id)
+                if node is not None:
+                    assert (node.language or "").lower() == "python", (
+                        f"Non-Python flow slipped through language filter: "
+                        f"node={node.name!r}, language={node.language!r}"
+                    )
+        # Must contain the Python flow
+        py_ep_names = set()
+        for flow in result_py["flows"]:
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node = self.store.get_node_by_id(ep_id)
+                if node is not None:
+                    py_ep_names.add(node.name)
+        assert "py_handler" in py_ep_names, "Python flow 'py_handler' missing from language=python result"
+
+        # With language="typescript": only TypeScript entry-point flows
+        result_ts = list_flows(repo_root=str(self.tmpdir), language="typescript")
+        assert result_ts["status"] == "ok"
+        for flow in result_ts["flows"]:
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node = self.store.get_node_by_id(ep_id)
+                if node is not None:
+                    assert (node.language or "").lower() == "typescript"
+        ts_ep_names = set()
+        for flow in result_ts["flows"]:
+            ep_id = flow.get("entry_point_id")
+            if ep_id is not None:
+                node = self.store.get_node_by_id(ep_id)
+                if node is not None:
+                    ts_ep_names.add(node.name)
+        assert "tsHandler" in ts_ep_names, "TypeScript flow 'tsHandler' missing from language=typescript result"
+
+    def test_list_flows_language_filter_case_insensitive(self):
+        """F-04: language filter is case-insensitive."""
+        from code_review_graph.tools.flows_tools import list_flows
+
+        py_ep = NodeInfo(
+            kind="Function", name="case_ep", file_path=str(self.tmpdir / "app.py"),
+            line_start=1, line_end=10, language="python", is_test=False,
+        )
+        self.store.upsert_node(py_ep, file_hash="py2")
+        py_helper = NodeInfo(
+            kind="Function", name="case_helper", file_path=str(self.tmpdir / "app.py"),
+            line_start=12, line_end=20, language="python", is_test=False,
+        )
+        self.store.upsert_node(py_helper, file_hash="py2")
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS",
+            source=str(self.tmpdir / "app.py") + "::case_ep",
+            target=str(self.tmpdir / "app.py") + "::case_helper",
+            file_path=str(self.tmpdir / "app.py"),
+            line=5,
+        ))
+        self.store.commit()
+
+        stored = trace_flows(self.store)
+        store_flows(self.store, stored)
+
+        # Both "Python" and "python" should match
+        result_upper = list_flows(repo_root=str(self.tmpdir), language="Python")
+        result_lower = list_flows(repo_root=str(self.tmpdir), language="python")
+        assert result_upper["total_count"] == result_lower["total_count"]
+
+    def test_list_flows_language_filter_tool_signature(self):
+        """F-04: list_flows_tool MCP wrapper exposes language parameter."""
+        import inspect
+
+        from code_review_graph.main import list_flows_tool
+
+        sig = inspect.signature(list_flows_tool)
+        assert "language" in sig.parameters, "list_flows_tool is missing the language parameter"

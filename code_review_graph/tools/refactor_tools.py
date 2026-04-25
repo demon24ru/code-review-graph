@@ -31,6 +31,7 @@ def refactor_func(
     kind: str | None = None,
     file_pattern: str | None = None,
     exclude_paths: list[str] | None = None,
+    exclude_known_false_positives: bool = True,
     repo_root: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -50,6 +51,9 @@ def refactor_func(
         file_pattern: (dead_code mode) Optional file path substring filter.
         exclude_paths: (dead_code mode) List of path substrings to exclude.
             Nodes in matching files are omitted from results.
+        exclude_known_false_positives: When True (default), suppress common
+            false positives: ``__init__`` constructors, abstract methods, and
+            TypeScript/TSX nodes. Only applies to dead_code mode.
         repo_root: Repository root path. Auto-detected if omitted.
         limit: Maximum number of results to return. Default: 50.
             Use smaller values (10-20) for initial exploration.
@@ -93,7 +97,11 @@ def refactor_func(
 
         elif mode == "dead_code":
             dead = find_dead_code(
-                store, kind=kind, file_pattern=file_pattern, exclude_paths=exclude_paths
+                store,
+                kind=kind,
+                file_pattern=file_pattern,
+                exclude_paths=exclude_paths,
+                exclude_known_false_positives=exclude_known_false_positives,
             )
             total = len(dead)
             dead = dead[:limit]

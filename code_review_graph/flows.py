@@ -281,6 +281,14 @@ def compute_criticality(flow: dict, store: GraphStore) -> float:
         + test_gap * 0.15
         + depth_score * 0.10
     )
+
+    # Demote test entry-point flows so production flows always rank above them.
+    entry_point_id = flow.get("entry_point_id")
+    if entry_point_id is not None:
+        ep_node = store.get_node_by_id(entry_point_id)
+        if ep_node is not None and ep_node.is_test:
+            criticality *= 0.1
+
     return round(min(max(criticality, 0.0), 1.0), 4)
 
 

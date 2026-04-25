@@ -202,7 +202,9 @@ _SKILLS: dict[str, dict[str, str]] = {
             "  `task_link_code(task_id=.., links=[{\"ref_type\": .., \"qualified_name\": ..}])` — link code nodes\n"
             "  `task_move(task_ids=[..], new_parent_id=...)` — restructure the tree\n"
             "  `task_archive(task_ids=[..], reason=...)` — selective archiving when changing approach\n"
-            "  `note_add(task_id=.., notes=[{\"note_type\": .., \"content\": ..}])` — add brainstorm notes\n"
+             "  `note_add(task_id=.., notes=[{\"note_type\": .., \"content\": ..}])` — add brainstorm notes\n"
+             "  `note_update(updates=[{\"note_id\": .., \"status\": ..}])` — batch resolve notes\n"
+            "  `contract_delete(contract_id=..)` — remove a contract and its participant links\n"
             "Run `task_validate` before handing off.\n\n"
             "See the full workflow in `skills/brainstorm-task/SKILL.md`."
         ),

@@ -10,7 +10,7 @@
   - `parser.py` — Tree-sitter multi-language AST parser (19 languages including Vue SFC, Solidity, Dart, R, Perl, Lua + Jupyter/Databricks notebooks)
   - `graph.py` — SQLite-backed graph store (nodes, edges, BFS impact analysis)
   - `tools.py` — 28 MCP tool implementations (code-graph layer)
-  - `main.py` — FastMCP server entry point (stdio transport), registers 68 tools (28 code-graph + 40 task DAG) + 5 prompts
+  - `main.py` — FastMCP server entry point (stdio transport), registers 71 tools (30 code-graph + 41 task DAG) + 5 prompts
   - `incremental.py` — Git-based change detection, file watching
   - `embeddings.py` — Optional vector embeddings (Local sentence-transformers, Google Gemini, MiniMax)
   - `visualization.py` — D3.js interactive HTML graph generator

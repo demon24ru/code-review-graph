@@ -1923,3 +1923,167 @@ class TestActiveRootIdleKey:
             "response['active_root'] would get a KeyError"
         )
         assert result["active_root"] is None
+
+
+# ---------------------------------------------------------------------------
+# N-11: contract_delete
+# ---------------------------------------------------------------------------
+
+
+class TestContractDelete(TestTaskBase):
+
+    def setup_method(self):
+        super().setup_method()
+        self.root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+        self.t1 = tasks.create_task(self.conn, [{"title": "T1"}], parent_id=self.root["id"])["tasks"][0]
+
+    def _add_contract(self, name="C"):
+        return tasks.add_contract(
+            self.conn,
+            contract_type="interface",
+            definition="interface C {}",
+            name=name,
+            scope_task_id=self.root["id"],
+            provider_task_id=self.t1["id"],
+        )
+
+    def test_delete_contract_ok(self):
+        c = self._add_contract("ToDelete")
+        result = tasks.delete_contract(self.conn, c["id"])
+        assert result["status"] == "ok"
+        assert result["deleted_contract_id"] == c["id"]
+        assert result["name"] == "ToDelete"
+
+    def test_delete_contract_removes_links(self):
+        c = self._add_contract("WithLinks")
+        cid = c["id"]
+        # Verify link exists before deletion
+        row = self.conn.execute(
+            "SELECT 1 FROM contract_links WHERE contract_id = ?", (cid,)
+        ).fetchone()
+        assert row is not None
+        # Delete
+        tasks.delete_contract(self.conn, cid)
+        # Links should be gone
+        row = self.conn.execute(
+            "SELECT 1 FROM contract_links WHERE contract_id = ?", (cid,)
+        ).fetchone()
+        assert row is None
+
+    def test_delete_contract_not_found_raises(self):
+        with pytest.raises(KeyError, match="not found"):
+            tasks.delete_contract(self.conn, "nonexistent-id")
+
+    def test_delete_contract_idempotent_raises_second(self):
+        c = self._add_contract("Idempotent")
+        tasks.delete_contract(self.conn, c["id"])
+        # Second delete should raise
+        with pytest.raises(KeyError):
+            tasks.delete_contract(self.conn, c["id"])
+
+
+# ---------------------------------------------------------------------------
+# N-13: note_list multi-type filter
+# ---------------------------------------------------------------------------
+
+
+class TestNoteListMultiType(TestTaskBase):
+
+    def setup_method(self):
+        super().setup_method()
+        self.t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        tasks.add_note(self.conn, self.t["id"], [
+            {"note_type": "decision", "content": "Use JWT"},
+            {"note_type": "question", "content": "WebSocket or polling?"},
+            {"note_type": "assumption", "content": "Existing user model"},
+            {"note_type": "risk", "content": "Rate limit exceeded"},
+        ])
+
+    def test_single_type_filter_unchanged(self):
+        notes = tasks.list_notes(self.conn, self.t["id"], note_type="decision",
+                                  include_parent=False)
+        assert all(n["note_type"] == "decision" for n in notes)
+        assert len(notes) == 1
+
+    def test_list_type_filter(self):
+        notes = tasks.list_notes(self.conn, self.t["id"],
+                                  note_type=["decision", "question"],
+                                  include_parent=False)
+        types = {n["note_type"] for n in notes}
+        assert types == {"decision", "question"}
+        assert len(notes) == 2
+
+    def test_list_type_filter_all_types(self):
+        notes = tasks.list_notes(self.conn, self.t["id"],
+                                  note_type=["decision", "question", "assumption", "risk"],
+                                  include_parent=False)
+        assert len(notes) == 4
+
+    def test_list_type_filter_invalid_raises(self):
+        with pytest.raises(ValueError, match="Invalid note_type"):
+            tasks.list_notes(self.conn, self.t["id"], note_type=["decision", "memo"],
+                              include_parent=False)
+
+    def test_list_type_none_returns_all(self):
+        notes = tasks.list_notes(self.conn, self.t["id"], note_type=None,
+                                  include_parent=False)
+        assert len(notes) == 4
+
+
+# ---------------------------------------------------------------------------
+# N-14: update_notes (batch-only API)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateNotes(TestTaskBase):
+
+    def setup_method(self):
+        super().setup_method()
+        self.t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+        added = tasks.add_note(self.conn, self.t["id"], [
+            {"note_type": "question", "content": "Q1"},
+            {"note_type": "question", "content": "Q2"},
+            {"note_type": "assumption", "content": "A1"},
+        ])
+        self.notes = added["notes"]
+
+    def test_update_notes_all_succeed(self):
+        updates = [
+            {"note_id": self.notes[0]["id"], "status": "resolved", "resolution": "done"},
+            {"note_id": self.notes[1]["id"], "content": "Q2 updated"},
+        ]
+        result = tasks.update_notes(self.conn, updates)
+        assert len(result["notes"]) == 2
+        assert len(result["errors"]) == 0
+        n0 = tasks._get_note(self.conn, self.notes[0]["id"])
+        assert n0["status"] == "resolved"
+        n1 = tasks._get_note(self.conn, self.notes[1]["id"])
+        assert n1["content"] == "Q2 updated"
+
+    def test_update_notes_partial_errors(self):
+        updates = [
+            {"note_id": self.notes[0]["id"], "status": "resolved"},
+            {"note_id": "nonexistent", "status": "resolved"},
+        ]
+        result = tasks.update_notes(self.conn, updates)
+        assert len(result["notes"]) == 1
+        assert self.notes[0]["id"] == result["notes"][0]["id"]
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["note_id"] == "nonexistent"
+
+    def test_update_notes_missing_note_id(self):
+        updates = [{"status": "resolved"}]  # no note_id key
+        result = tasks.update_notes(self.conn, updates)
+        assert len(result["notes"]) == 0
+        assert len(result["errors"]) == 1
+        assert "missing note_id" in result["errors"][0]["error"]
+
+    def test_update_notes_empty_list(self):
+        result = tasks.update_notes(self.conn, [])
+        assert result == {"notes": [], "errors": []}
+
+    def test_update_notes_invalid_status_adds_error(self):
+        updates = [{"note_id": self.notes[0]["id"], "status": "invalid_status"}]
+        result = tasks.update_notes(self.conn, updates)
+        assert len(result["notes"]) == 0
+        assert len(result["errors"]) == 1
