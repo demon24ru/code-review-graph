@@ -20,11 +20,17 @@ The architecture overview groups code into communities (clusters of tightly rela
 ## Step 2: Explore Communities
 
 ```
-list_communities_tool(sort_by="size")        # all communities sorted by size
-list_communities_tool(sort_by="cohesion")    # tightest clusters first
-get_community_tool(community_name="auth")    # details + member list
+# exclude_tests=True is the DEFAULT for communities and architecture tools.
+# Without it, ~40% of communities are test files and dominate the overview.
+list_communities_tool(sort_by="size")                    # production communities (default)
+list_communities_tool(sort_by="cohesion")                # tightest clusters first
+list_communities_tool(exclude_tests=False)               # include test communities too
+get_community_tool(community_name="auth")                # details + member list
 # If multiple communities share the name → status:"ambiguous" + matches:[{id,name}...]
 # Use community_id= to select unambiguously
+
+get_architecture_overview_tool()                         # production coupling map (default)
+get_architecture_overview_tool(exclude_tests=False)      # show test communities in coupling too
 ```
 
 Communities are detected automatically via the Leiden algorithm. Each community represents a logical module boundary — useful for understanding ownership and change impact.
@@ -36,6 +42,14 @@ Communities are detected automatically via the Leiden algorithm. Each community 
 semantic_search_nodes_tool(query="authentication", kind="Function", limit=10)
 semantic_search_nodes_tool(query="GraphStore",     kind="Class")
 semantic_search_nodes_tool(query="migrations",     kind="File")
+
+# exclude_tests=True is the DEFAULT — test helpers are filtered automatically.
+# Pass exclude_tests=False only when you explicitly want test nodes in results.
+semantic_search_nodes_tool(query="create_task")                          # production only (default)
+semantic_search_nodes_tool(query="create_task", exclude_tests=False)     # include test helpers too
+
+# Filter by language — useful in mixed-language repos (Python + TypeScript):
+semantic_search_nodes_tool(query="build_graph", language="python")       # Python only
 
 # Bulk multi-symbol lookup in one call:
 semantic_search_nodes_tool(query="create_task add_task_edge move_task archive_task")
@@ -66,8 +80,11 @@ find_large_functions_tool(min_lines=200, kind="File")      # oversized files
 ## Step 4: Trace Relationships
 
 ```
-query_graph_tool(pattern="callers_of",   target="create_task")       # who calls this
-query_graph_tool(pattern="callees_of",   target="export_task")       # what this calls
+query_graph_tool(pattern="callers_of",   target="create_task")                    # who calls this
+query_graph_tool(pattern="callers_of",   target="create_task", exclude_tests=True) # production callers only
+query_graph_tool(pattern="callers_of",   target="create_task", limit=20)           # cap large result sets
+query_graph_tool(pattern="callees_of",   target="export_task")                    # what this calls
+query_graph_tool(pattern="callees_of",   target="export_task", kind="Function")   # only Function callees
 query_graph_tool(pattern="imports_of",   target="code_review_graph/tasks.py")
 query_graph_tool(pattern="importers_of", target="code_review_graph/graph.py")
 query_graph_tool(pattern="children_of",  target="code_review_graph/tasks.py")  # file contents
@@ -78,12 +95,17 @@ query_graph_tool(pattern="file_summary", target="code_review_graph/main.py")
 
 All results include `id` and `qualified_name` for direct use in task/contract linking.
 
+`exclude_tests=True` (default) filters test callers/importers. Popular functions can have 100+ test callers — always use `limit=20` as a starting point and add `exclude_tests=True` to see only production call sites.
+
 ## Step 5: Understand Execution Flows
 
 ```
-list_flows_tool(sort_by="criticality", limit=20)   # most critical entry points first
-list_flows_tool(sort_by="depth")                   # deepest call chains
-list_flows_tool(kind="Test")                       # test entry points only
+list_flows_tool(sort_by="criticality", limit=20)            # most critical entry points first
+list_flows_tool(sort_by="depth")                            # deepest call chains
+list_flows_tool(kind="Test")                                # test entry points only
+list_flows_tool(is_test=False, language="python", limit=20) # production Python flows only
+# Without is_test=False, test functions dominate by criticality score.
+# Without language="python", TypeScript VS Code extension flows may appear.
 
 get_flow_tool(flow_name="handle_request")          # full call path with line numbers
 get_flow_tool(flow_id=42, include_source=True)     # with source snippets
@@ -127,7 +149,8 @@ query_graph_tool(pattern="children_of", target="path/to/module.py")
 **"Where are the largest/most complex functions?"**
 ```
 find_large_functions_tool(min_lines=50, kind="Function")
-audit_workspace_tool()    # dead code + large functions + cycles in one call
+audit_workspace_tool(limit=20)    # dead code + large functions + cycles; start with limit=20
+# Full audit without limit can return 100KB+ — always use limit= for initial exploration
 ```
 
 **"Is there circular dependency between A and B?"**
@@ -167,3 +190,5 @@ It does NOT replace grep for searching inside function bodies.
 - Communities are automatically named by dominant file paths — search by partial name
 - For new codebases, run `embed_graph_tool` once for much better semantic search quality
 - Always use `line_end` from search results to scope `Read` calls — never read whole files to find function boundaries
+- `list_communities_tool` and `get_architecture_overview_tool` default to `exclude_tests=True` — test communities are hidden unless you pass `exclude_tests=False`
+- `semantic_search_nodes_tool` defaults to `exclude_tests=True` — test helpers are filtered automatically

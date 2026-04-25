@@ -13,9 +13,11 @@ Use the knowledge graph to plan and execute refactoring safely — with full bla
 Run a comprehensive health check before any refactoring:
 
 ```
-audit_workspace_tool()
+audit_workspace_tool(limit=20)
 # Returns: health_score, dead_code[], large_functions[], import_cycles[]
 # Equivalent to running dead_code + find_large_functions + cycle detection together
+# IMPORTANT: without limit=, full audit returns 100KB+ and truncates. Start with limit=20.
+# Response includes truncated:true + total_dead_code/total_large_functions scalar counts.
 ```
 
 **Interpret results:**
@@ -33,20 +35,28 @@ audit_workspace_tool(exclude_paths=["vscode", "generated/"])  # exclude paths fr
 ## Find Dead Code
 
 ```
-refactor_tool(mode="dead_code")                    # all unreferenced code
-refactor_tool(mode="dead_code", kind="Function")   # only functions
+refactor_tool(mode="dead_code", limit=20)                              # start with limit=20 (default 50)
+refactor_tool(mode="dead_code", kind="Function", limit=20)             # only functions
 refactor_tool(mode="dead_code", file_pattern="code_review_graph/")
 refactor_tool(mode="dead_code", exclude_paths=["vscode/", "generated/"])  # exclude paths
+# Response: dead_code[] capped at limit + truncated:true + total:N scalar count
 ```
 
 Dead code = no callers + no tests + no importers + not an entry point.
 Before deleting: verify with `query_graph_tool(pattern="callers_of", target=name)` to confirm 0 callers.
 
+**False positives to watch for** (use `exclude_known_false_positives=True`, which is the default):
+- `__init__` constructors — called implicitly
+- Abstract base class methods — implemented by subclasses
+- TypeScript/TSX nodes in VS Code extension — instantiated via `package.json` contribution points
+- Symbols used only via `isinstance()` checks
+
 ## Get Refactoring Suggestions
 
 ```
-refactor_tool(mode="suggest")
+refactor_tool(mode="suggest", limit=20)
 # Returns: misplaced functions (wrong community), dead code, large decomposition targets
+# Without limit=, returns 150KB+ truncated. Always use limit= for initial exploration.
 ```
 
 Suggestions are community-driven: if a function is used predominantly by community B but lives in community A, it's a candidate for relocation.
@@ -68,9 +78,9 @@ apply_refactor_tool(refactor_id="ref_abc123")
 
 After applying:
 ```
-build_or_update_graph_tool()                   # update graph to reflect rename
-detect_changes_tool(summary_only=True)         # quick impact check (counts only)
-detect_changes_tool()                          # full impact if needed
+build_or_update_graph_tool()      # update graph to reflect rename
+detect_changes_tool()             # impact check — summary_only=True by default (counts only)
+detect_changes_tool(summary_only=False)  # full details if needed
 ```
 
 ## Find Large Functions (Decomposition Targets)
@@ -117,6 +127,8 @@ import_scip_tool(scip_path=".code-review-graph/export.scip.json")
 
 - Never skip the preview step — `refactor_tool` is safe, `apply_refactor_tool` is irreversible
 - Dead code scan can have false positives for dynamic dispatch / plugin systems — verify manually
+- `exclude_known_false_positives=True` (default) suppresses `__init__`, ABC methods, and TypeScript nodes — disable only if you want to see everything
 - Large functions with high caller counts are high-risk to decompose — check `callers_of` first
 - SCIP export is useful for sharing graph state between CI runs or team members
 - `refactor_tool(mode="suggest")` is a great starting point for a new codebase audit
+- Always use `limit=20` first for dead_code and suggest — full output is 100-150KB and truncates

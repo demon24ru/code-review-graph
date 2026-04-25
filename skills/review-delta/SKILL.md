@@ -20,6 +20,7 @@ Perform a focused, token-efficient code review of only the changed code and its 
    - Source code snippets for changed areas
    - Review guidance (test coverage gaps, wide impact warnings, inheritance concerns)
    - Tip: call with `summary_only=True` first on large diffs to see scope (counts only, <1 KB), then without it for full details
+   - **Doc-only commits** (`.md`, `.txt`, `.yaml`, `.json`, etc.) return `code_changes: 0` immediately with no snippets — no wasted tokens
 
 3. **Analyze the blast radius** by reviewing the `impacted_nodes` and `impacted_files` in the context. Focus on:
    - Functions whose callers changed (may need signature/behavior verification)

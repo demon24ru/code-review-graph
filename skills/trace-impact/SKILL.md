@@ -22,6 +22,10 @@ analyze_edit_region_tool(
 #   overlapping_nodes — functions/classes in this line range
 #   external_callers  — who calls into this region from outside
 #   downstream        — what this region calls
+#   test_coverage     — count of test callers found via reverse BFS (depth ≤ 3)
+#                       NOTE: test_coverage=0 is expected for functions called through
+#                       higher-order function parameters (e.g. _run(repo_root, fn, ...))
+#                       — this is a known limitation of static analysis, not a bug
 ```
 
 This is more precise than `get_impact_radius_tool` (which operates at file level) — it shows blast radius for a specific line range rather than a whole file.
@@ -45,12 +49,21 @@ trace_dataflow_tool(
     sink="execute_query",
     max_depth=6
 )
-# Returns: path[] if reachable, or "not reachable"
+# Returns:
+#   reaches_sink: true/false  — always present when sink is specified,
+#                               even if sink is not in the graph (false in that case)
+#   paths: [[...]]            — call path(s) found
+#   diagnostic                — present when reachable_count=0; explains why
+#                               (e.g. unresolved outbound edges, sink not found)
 
 # All symbols reachable from a function (no sink = full reachability)
 trace_dataflow_tool(source="hybrid_search")
 # Returns: all functions/classes reachable via CALLS + IMPORTS_FROM edges
 ```
+
+**Known limitation:** `trace_dataflow_tool` cannot follow calls through higher-order function
+parameters (e.g. `_run(repo_root, fn, ...)` where `fn` is passed as a callback). Only direct
+call expressions are tracked. Expect `reachable_count=0` + diagnostic for such patterns.
 
 **Use cases:**
 - Security: can untrusted input reach a dangerous sink (SQL, shell, file write)?
@@ -101,8 +114,10 @@ Results include `repo_path` and `repo_id` so you can distinguish same-named func
 ## Affected Flows (Execution Path Impact)
 
 ```
-get_affected_flows_tool(changed_files=["auth.py"])   # filename, relative, or absolute
-get_affected_flows_tool(base="HEAD~1")               # auto-detect from git
+get_affected_flows_tool(changed_files=["auth.py"])              # filename, relative, or absolute
+get_affected_flows_tool(base="HEAD~1")                          # auto-detect from git
+get_affected_flows_tool(changed_files=["auth.py"], is_test=False)  # production flows only
+# Without is_test=False, test flows dominate results — use it to see only production paths
 ```
 
 Returns: which execution flows (entry point → end) pass through the changed code. Sorted by criticality — highest-impact flows first.
@@ -150,6 +165,8 @@ ends bloats input context while yielding no extra output — always scope your r
 
 - `analyze_edit_region_tool` uses 1-indexed line numbers matching your editor
 - `trace_dataflow_tool` traverses CALLS and IMPORTS_FROM edges — not data types
+- `trace_dataflow_tool` cannot resolve calls through function variables or callbacks — `diagnostic` field explains when this happens
 - For `cross_repo_search_tool` to work, repos must first be registered — use `register_repo_tool(path=...)` from MCP or `code-review-graph register <path>` from CLI
 - `task_find_for_impact` bridges code graph and task DAG — shows open tasks for the same blast radius
 - Use `trace_dataflow_tool(source=X, sink=Y)` for security reviews to check injection paths
+- `get_affected_flows_tool` has `is_test` filter (same as `list_flows_tool`) — use `is_test=False` to see only production execution paths
