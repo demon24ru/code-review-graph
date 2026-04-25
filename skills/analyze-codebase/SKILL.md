@@ -100,10 +100,12 @@ All results include `id` and `qualified_name` for direct use in task/contract li
 ## Step 5: Understand Execution Flows
 
 ```
-list_flows_tool(sort_by="criticality", limit=20)            # most critical entry points first
-list_flows_tool(sort_by="depth")                            # deepest call chains
+list_flows_tool(is_test=False, language="python", sort_by="depth", limit=20)
+# ↑ RECOMMENDED for /design-feature: surfaces real user-facing entry points (deep call chains)
+# sort_by="criticality" ranks by number of callers — helper functions outrank MCP handlers.
+# sort_by="depth" ranks by call chain length — actual entry points (CLI, MCP) have deepest paths.
+list_flows_tool(sort_by="criticality", limit=20)            # most called functions (often helpers)
 list_flows_tool(kind="Test")                                # test entry points only
-list_flows_tool(is_test=False, language="python", limit=20) # production Python flows only
 # Without is_test=False, test functions dominate by criticality score.
 # Without language="python", TypeScript VS Code extension flows may appear.
 
@@ -192,3 +194,5 @@ It does NOT replace grep for searching inside function bodies.
 - Always use `line_end` from search results to scope `Read` calls — never read whole files to find function boundaries
 - `list_communities_tool` and `get_architecture_overview_tool` default to `exclude_tests=True` — test communities are hidden unless you pass `exclude_tests=False`
 - `semantic_search_nodes_tool` defaults to `exclude_tests=True` — test helpers are filtered automatically
+- `query_graph_tool` with `exclude_tests=True` filters BOTH results AND edges — test caller edges are suppressed, not just test nodes in results
+- `list_flows_tool(sort_by="criticality")` surfaces helper functions (many callers) not user-facing entry points — use `sort_by="depth"` for actual CLI/MCP entry points

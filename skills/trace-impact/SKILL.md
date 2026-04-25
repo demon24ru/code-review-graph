@@ -14,18 +14,23 @@ Precision impact analysis — from line-level edit regions to multi-repository c
 
 ```
 analyze_edit_region_tool(
-    file_path="code_review_graph/tasks.py",
-    line_start=100,
-    line_end=140
+    file_path="code_review_graph/graph.py",
+    line_start=588,
+    line_end=621
 )
 # Returns:
 #   overlapping_nodes — functions/classes in this line range
 #   external_callers  — who calls into this region from outside
 #   downstream        — what this region calls
 #   test_coverage     — count of test callers found via reverse BFS (depth ≤ 3)
-#                       NOTE: test_coverage=0 is expected for functions called through
-#                       higher-order function parameters (e.g. _run(repo_root, fn, ...))
-#                       — this is a known limitation of static analysis, not a bug
+
+# IMPORTANT: line range must contain a function/method body for test_coverage > 0.
+# Lines with only imports, type aliases, or dataclass fields → overlapping_nodes=[]
+# → test_coverage=0 (no functions to cover, not a bug).
+
+# KNOWN LIMITATION: test_coverage=0 is expected for functions called through
+# higher-order function parameters (e.g. _run(repo_root, fn, ...))
+# — this is a known limitation of static analysis, not a bug.
 ```
 
 This is more precise than `get_impact_radius_tool` (which operates at file level) — it shows blast radius for a specific line range rather than a whole file.

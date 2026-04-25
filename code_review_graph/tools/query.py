@@ -394,6 +394,17 @@ def query_graph(
                 if r.get("kind", "").lower() == kind.lower()
             ]
 
+        # Filter edges to match results when exclude_tests is active.
+        # Without this, all raw edges (including test callers) leak into the
+        # response even when results are filtered to production nodes only.
+        if exclude_tests and pattern != "tests_for":
+            result_qns = {r.get("qualified_name") for r in results}
+            edges_out = [
+                e for e in edges_out
+                if e.get("source") in result_qns
+                or e.get("target") in result_qns
+            ]
+
         # Apply limit truncation (edges are preserved in full; only results are capped)
         total_before_limit = len(results)
         truncated = False
