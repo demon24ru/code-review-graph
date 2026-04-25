@@ -1147,11 +1147,22 @@ def trace_dataflow(
                     }
                 )
 
-        reaches_sink = len(paths_to_sink) > 0 if sink_qn else None
+        # reaches_sink: False when sink specified but not found OR no path found
+        if sink is not None and sink_qn is None:
+            reaches_sink = False  # sink specified but not in graph
+        elif sink_qn:
+            reaches_sink = len(paths_to_sink) > 0
+        else:
+            reaches_sink = None  # no sink specified
 
         # Build summary
         sink_name = sink_node.name if sink_node else sink
-        if sink_qn:
+        if sink is not None and sink_qn is None:
+            summary = (
+                f"Data from '{source_node.name}' CANNOT reach '{sink_name}' "
+                f"— sink '{sink_name}' was not found in the graph."
+            )
+        elif sink_qn:
             if reaches_sink:
                 summary = (
                     f"Data from '{source_node.name}' CAN reach '{sink_name}' "
@@ -1185,12 +1196,12 @@ def trace_dataflow(
             "sink_node": node_to_dict(sink_node) if sink_node else None,
             "reachable_count": len(reachable_nodes),
             "reachable": reachable_nodes,
-            "paths": paths_to_sink,
+            "paths": paths_to_sink if paths_to_sink is not None else [],
         }
         
         # Always include reaches_sink when a sink was provided so the caller
         # gets a definitive reachability answer even when resolution was ambiguous.
-        if sink_qn:
+        if sink is not None:
             result["reaches_sink"] = reaches_sink
         
         # Add ambiguity metadata if present
