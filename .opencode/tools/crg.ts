@@ -689,9 +689,10 @@ export const crg_task_blast_radius = tool({
 })
 
 export const crg_task_execution_order = tool({
-  description: "Compute parallelism-aware execution order for leaf tasks. [BRAINSTORM] Groups leaf tasks into levels. Tasks in the same level can run in parallel. Based on depends_on edges.",
+  description: "Compute parallelism-aware execution order for leaf tasks. [BRAINSTORM] Groups leaf tasks into levels. Tasks in the same level can run in parallel. Based on depends_on edges. Auto-detects root task if omitted.",
   args: {
-    root_task_id: tool.schema.string().describe("Root of the subtree to analyze."),
+    root_task_id: tool.schema.string().optional().describe("Root of the subtree to analyze. Auto-detected if omitted."),
+    skip_statuses: tool.schema.array(tool.schema.string()).optional().describe("List of task statuses to exclude from levels. Defaults to [\"done\", \"archived\", \"in_progress\"]."),
     repo_root: tool.schema.string().optional().describe("Repository root path. Auto-detected if omitted."),
   },
   async execute(args, context) {

@@ -1515,7 +1515,8 @@ def task_blast_radius(
 
 @mcp.tool()
 def task_execution_order(
-    root_task_id: str,
+    root_task_id: Optional[str] = None,
+    skip_statuses: Optional[list[str]] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Compute parallelism-aware execution order for leaf tasks.
@@ -1524,10 +1525,16 @@ def task_execution_order(
     can run in parallel. Based on depends_on edges.
 
     Args:
-        root_task_id: Root of the subtree to analyze.
+        root_task_id: Root of the subtree to analyze. Auto-detected if omitted.
+        skip_statuses: List of task statuses to exclude from levels.
+            Defaults to ["done", "archived", "in_progress"].
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_execution_order_func(root_task_id=root_task_id, repo_root=repo_root)
+    return task_execution_order_func(
+        root_task_id=root_task_id,
+        skip_statuses=skip_statuses,
+        repo_root=repo_root,
+    )
 
 
 # --- Validation & Context (3) ---

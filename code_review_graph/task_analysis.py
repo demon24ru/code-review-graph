@@ -451,19 +451,33 @@ def blast_radius(
 def execution_order(
     conn: sqlite3.Connection,
     root_task_id: str,
-) -> list[dict[str, Any]]:
+    skip_statuses: Optional[set[str]] = None,
+) -> dict[str, Any]:
     """Group leaf tasks into parallelism levels based on *depends_on* edges.
 
     Level 0 = no dependencies; level N = depends only on level < N tasks.
 
+    Args:
+        conn: Database connection.
+        root_task_id: Root of the subtree to analyze.
+        skip_statuses: Set of task statuses to exclude from levels. Defaults to
+            {"done", "archived", "in_progress"}. Empty levels are skipped.
+
     Returns::
 
-        [
-            { "level": 0, "tasks": [task_dict, ...] },
-            { "level": 1, "tasks": [...] },
-            ...
-        ]
+        {
+            "levels": [
+                { "level": 0, "tasks": [task_dict, ...] },
+                { "level": 1, "tasks": [...] },
+                ...
+            ],
+            "total_levels": N,
+            "total_actionable": M
+        }
     """
+    if skip_statuses is None:
+        skip_statuses = {"done", "archived", "in_progress"}
+
     get_task(conn, root_task_id)
     subtree_ids = set(_collect_subtree_ids(conn, root_task_id))
 
@@ -480,7 +494,11 @@ def execution_order(
     leaf_ids = [tid for tid in subtree_ids if tid not in parent_ids]
 
     if not leaf_ids:
-        return []
+        return {
+            "levels": [],
+            "total_levels": 0,
+            "total_actionable": 0
+        }
 
     leaf_set = set(leaf_ids)
 
@@ -525,15 +543,28 @@ def execution_order(
     id_to_row: dict[str, dict[str, Any]] = {r["id"]: _row_to_dict(r) for r in rows}
 
     result = []
+    total_actionable = 0
     for i, level in enumerate(levels):
         missing = [tid for tid in level if tid not in id_to_row]
         if missing:
             logger.debug("execution_order: %d task(s) missing from id_to_row at level %d: %s", len(missing), i, missing)
-        result.append({
-            "level": i,
-            "tasks": [id_to_row[tid] for tid in level if tid in id_to_row],
-        })
-    return result
+        filtered_tasks = [
+            id_to_row[tid]
+            for tid in level
+            if tid in id_to_row and id_to_row[tid]["status"] not in skip_statuses
+        ]
+        if filtered_tasks:
+            result.append({
+                "level": len(result),
+                "tasks": filtered_tasks,
+            })
+            total_actionable += len(filtered_tasks)
+
+    return {
+        "levels": result,
+        "total_levels": len(result),
+        "total_actionable": total_actionable
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1137,7 +1168,8 @@ def roadmap(
 
     # Build phases via execution_order — exclude archived tasks unless requested
     try:
-        phases_raw = execution_order(conn, root_task_id)
+        result = execution_order(conn, root_task_id)
+        phases_raw = result["levels"]
         phases = []
         for phase in phases_raw:
             phase_tasks = []

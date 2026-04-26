@@ -245,7 +245,8 @@ class TestFullWorkflow(TestIntegrationBase):
         assert 0.0 <= iso["isolation_score"] <= 1.0
 
         # Step 9: Execution order
-        levels = task_analysis.execution_order(self.conn, root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
+        levels = result["levels"]
         assert len(levels) >= 1
         # t_interface and t_jwt should be in level 0 (no dependencies)
         level_0_ids = {t["id"] for t in levels[0]["tasks"]}

@@ -902,7 +902,8 @@ def task_blast_radius_func(
 
 
 def task_execution_order_func(
-    root_task_id: str,
+    root_task_id: Optional[str] = None,
+    skip_statuses: Optional[list[str]] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Compute parallelism-aware execution order for leaf tasks.
@@ -912,18 +913,21 @@ def task_execution_order_func(
     Tasks in the same level can run in parallel.
 
     Args:
-        root_task_id: Root of the subtree to analyze.
+        root_task_id: Root of the subtree to analyze. Auto-detected if omitted.
+        skip_statuses: List of task statuses to exclude from levels.
+            Defaults to ["done", "archived", "in_progress"].
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        List of levels, each with tasks that can run in parallel.
+        Execution plan with levels, total_levels, total_actionable, and note.
     """
     def _fn(conn, root_task_id):
-        levels = task_analysis.execution_order(conn, root_task_id)
-        total_leaves = sum(len(lvl["tasks"]) for lvl in levels)
+        resolved = task_analysis._resolve_root(conn, root_task_id, "task_execution_order")
+        ss = set(skip_statuses) if skip_statuses else None
+        result = task_analysis.execution_order(conn, resolved, skip_statuses=ss)
         return _ok(
-            f"Execution plan: {len(levels)} level(s), {total_leaves} leaf task(s)",
-            levels=levels,
+            f"Execution plan: {result['total_levels']} level(s), {result['total_actionable']} actionable task(s)",
+            **result,
         )
     return _run(repo_root, _fn, root_task_id)
 

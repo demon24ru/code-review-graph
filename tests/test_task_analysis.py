@@ -372,7 +372,8 @@ class TestExecutionOrder(TestAnalysisBase):
         self._task("A", parent_id=root["id"])
         self._task("B", parent_id=root["id"])
         self._task("C", parent_id=root["id"])
-        levels = task_analysis.execution_order(self.conn, root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
+        levels = result["levels"]
         assert len(levels) == 1
         assert levels[0]["level"] == 0
         assert len(levels[0]["tasks"]) == 3
@@ -384,7 +385,8 @@ class TestExecutionOrder(TestAnalysisBase):
         c = self._task("C", parent_id=root["id"])
         tasks.add_task_edge(self.conn, b["id"], a["id"], "depends_on")
         tasks.add_task_edge(self.conn, c["id"], b["id"], "depends_on")
-        levels = task_analysis.execution_order(self.conn, root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
+        levels = result["levels"]
         assert len(levels) == 3
         assert len(levels[0]["tasks"]) == 1  # a
         assert levels[0]["tasks"][0]["id"] == a["id"]
@@ -398,7 +400,8 @@ class TestExecutionOrder(TestAnalysisBase):
         right = self._task("Right", parent_id=root["id"])
         tasks.add_task_edge(self.conn, left["id"], base["id"], "depends_on")
         tasks.add_task_edge(self.conn, right["id"], base["id"], "depends_on")
-        levels = task_analysis.execution_order(self.conn, root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
+        levels = result["levels"]
         assert len(levels) == 2
         level1_ids = {t["id"] for t in levels[1]["tasks"]}
         assert left["id"] in level1_ids
@@ -412,8 +415,9 @@ class TestExecutionOrder(TestAnalysisBase):
         c = self._task("C", parent_id=root["id"])
         tasks.add_task_edge(self.conn, c["id"], a["id"], "depends_on")
         tasks.add_task_edge(self.conn, c["id"], b["id"], "depends_on")
-        levels = task_analysis.execution_order(self.conn, root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
         # A and B have no deps → level 0; C depends on both → level 1
+        levels = result["levels"]
         assert len(levels) == 2
         level0_ids = {t["id"] for t in levels[0]["tasks"]}
         level1_ids = {t["id"] for t in levels[1]["tasks"]}
@@ -443,7 +447,8 @@ class TestExecutionOrder(TestAnalysisBase):
         tasks.add_task_edge(self.conn, r["id"], q["id"], "depends_on")
 
         # execution_order for tree 1 must be unaffected by tree 2's edges
-        levels1 = task_analysis.execution_order(self.conn, root1["id"])
+        result1 = task_analysis.execution_order(self.conn, root1["id"])
+        levels1 = result1["levels"]
         assert len(levels1) == 2
         level0_ids = {t["id"] for t in levels1[0]["tasks"]}
         level1_ids = {t["id"] for t in levels1[1]["tasks"]}
@@ -456,7 +461,8 @@ class TestExecutionOrder(TestAnalysisBase):
         assert r["id"] not in all_ids
 
         # execution_order for tree 2 must also be unaffected by tree 1's edges
-        levels2 = task_analysis.execution_order(self.conn, root2["id"])
+        result2 = task_analysis.execution_order(self.conn, root2["id"])
+        levels2 = result2["levels"]
         assert len(levels2) == 2
         level0_ids2 = {t["id"] for t in levels2[0]["tasks"]}
         level1_ids2 = {t["id"] for t in levels2[1]["tasks"]}
