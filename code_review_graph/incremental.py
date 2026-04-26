@@ -232,6 +232,32 @@ def get_all_tracked_files(repo_root: Path) -> list[str]:
         return []
 
 
+def _filter_gitignored(repo_root: Path, candidates: list[str]) -> list[str]:
+    """Remove files that git would ignore, using ``git check-ignore``.
+
+    Used only in the fallback path (no commits yet / git ls-files empty) where
+    ``--exclude-standard`` is not available. Sends all paths in one subprocess
+    call to minimise overhead. If git is unavailable, returns candidates unchanged.
+    """
+    if not candidates:
+        return candidates
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin", "-z"],
+            input="\0".join(candidates),
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root),
+            timeout=_GIT_TIMEOUT,
+        )
+        # git check-ignore exits 0 when at least one path is ignored, 1 when none are.
+        # Both are valid — only non-zero due to a real error (exit 128) is a problem.
+        ignored = set(result.stdout.split("\0")) if result.stdout else set()
+        return [f for f in candidates if f not in ignored]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return candidates
+
+
 def collect_all_files(repo_root: Path) -> list[str]:
     """Collect all parseable files in the repo, respecting ignore patterns.
 
@@ -250,8 +276,10 @@ def collect_all_files(repo_root: Path) -> list[str]:
         seen = set(tracked)
         candidates = list(tracked) + [f for f in untracked if f not in seen]
     else:
-        # Fallback: walk directory when git is not available
+        # Fallback: walk directory when git is not available or repo has no commits.
+        # Use git check-ignore to honour .gitignore even in this path.
         candidates = [str(p.relative_to(repo_root)) for p in repo_root.rglob("*") if p.is_file()]
+        candidates = _filter_gitignored(repo_root, candidates)
 
     for rel_path in candidates:
         if _should_ignore(rel_path, ignore_patterns):
