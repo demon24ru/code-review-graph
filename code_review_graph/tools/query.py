@@ -31,21 +31,21 @@ _QUERY_PATTERNS = {
     "file_summary": "Get a summary of all nodes in a file",
 }
 
-# Python stdlib/builtin names for callees_of categorization
-_PYTHON_STDLIB_NAMES = {
-    "isinstance", "issubclass", "type", "len", "range", "enumerate",
-    "zip", "map", "filter", "sorted", "reversed", "list", "dict", "set",
-    "tuple", "str", "int", "float", "bool", "print", "input", "open",
-    "repr", "hash", "id", "abs", "min", "max", "sum", "any", "all",
-    "hasattr", "getattr", "setattr", "delattr", "vars", "dir",
-    "super", "next", "iter", "callable", "format", "hex", "oct",
-}
-
-# DB operation names for callees_of categorization
-_DB_OPERATION_NAMES = {
-    "execute", "executemany", "executescript", "commit", "rollback",
-    "cursor", "fetchone", "fetchall", "fetchmany", "close", "connect",
-}
+# # Python stdlib/builtin names for callees_of categorization
+# _PYTHON_STDLIB_NAMES = {
+#     "isinstance", "issubclass", "type", "len", "range", "enumerate",
+#     "zip", "map", "filter", "sorted", "reversed", "list", "dict", "set",
+#     "tuple", "str", "int", "float", "bool", "print", "input", "open",
+#     "repr", "hash", "id", "abs", "min", "max", "sum", "any", "all",
+#     "hasattr", "getattr", "setattr", "delattr", "vars", "dir",
+#     "super", "next", "iter", "callable", "format", "hex", "oct",
+# }
+#
+# # DB operation names for callees_of categorization
+# _DB_OPERATION_NAMES = {
+#     "execute", "executemany", "executescript", "commit", "rollback",
+#     "cursor", "fetchone", "fetchall", "fetchmany", "close", "connect",
+# }
 
 
 
@@ -269,7 +269,7 @@ def query_graph(
                     caller = store.get_node(e.source_qualified)
                     if caller:
                         results.append(node_to_dict(caller))
-                    edges_out.append(edge_to_dict(e))
+                        edges_out.append(edge_to_dict(e))  # only add edge when caller node exists
             # Fallback: CALLS edges store unqualified target names
             # (e.g. "generateTestCode") while qn is fully qualified
             # (e.g. "file.ts::generateTestCode"). Search by plain name too.
@@ -278,7 +278,7 @@ def query_graph(
                     caller = store.get_node(e.source_qualified)
                     if caller:
                         results.append(node_to_dict(caller))
-                    edges_out.append(edge_to_dict(e))
+                        edges_out.append(edge_to_dict(e))  # only add edge when caller node exists
 
         elif pattern == "callees_of":
             seen_callees: set[str] = set()
@@ -297,7 +297,13 @@ def query_graph(
         elif pattern == "imports_of":
             for e in store.get_edges_by_source(qn):
                 if e.kind == "IMPORTS_FROM":
-                    results.append({"import_target": e.target_qualified})
+                    # Resolve the target node to get is_test flag for exclude_tests filtering.
+                    target_node = store.get_node(e.target_qualified)
+                    entry: dict[str, Any] = {"import_target": e.target_qualified}
+                    if target_node:
+                        entry["is_test"] = target_node.is_test
+                        entry["qualified_name"] = target_node.qualified_name
+                    results.append(entry)
                     edges_out.append(edge_to_dict(e))
 
         elif pattern == "importers_of":
@@ -307,12 +313,16 @@ def query_graph(
             abs_target = str((root / target).resolve()) if node is None else node.file_path
             for e in store.get_edges_by_target(abs_target):
                 if e.kind == "IMPORTS_FROM":
-                    results.append(
-                        {
-                            "importer": e.source_qualified,
-                            "file": e.file_path,
-                        }
-                    )
+                    # Resolve the importer node to get is_test flag for exclude_tests filtering.
+                    importer_node = store.get_node(e.source_qualified)
+                    entry: dict[str, Any] = {
+                        "importer": e.source_qualified,
+                        "file": e.file_path,
+                        "qualified_name": e.source_qualified,
+                    }
+                    if importer_node:
+                        entry["is_test"] = importer_node.is_test
+                    results.append(entry)
                     edges_out.append(edge_to_dict(e))
 
         elif pattern == "children_of":
@@ -358,7 +368,7 @@ def query_graph(
                     if child and e.source_qualified not in seen_sources:
                         results.append(node_to_dict(child))
                         seen_sources.add(e.source_qualified)
-                    edges_out.append(edge_to_dict(e))
+                        edges_out.append(edge_to_dict(e))  # only add edge when child node exists
             # Fallback: INHERITS edges store bare target names (e.g. "BaseService")
             # rather than fully qualified names (e.g. "file.py::BaseService").
             # Search by bare name too so callers get results even when the
@@ -370,7 +380,7 @@ def query_graph(
                         if child:
                             results.append(node_to_dict(child))
                             seen_sources.add(e.source_qualified)
-                        edges_out.append(edge_to_dict(e))
+                            edges_out.append(edge_to_dict(e))  # only add edge when child node exists
 
         elif pattern == "file_summary":
             abs_path = str(root / target)
