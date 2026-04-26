@@ -31,23 +31,6 @@ _QUERY_PATTERNS = {
     "file_summary": "Get a summary of all nodes in a file",
 }
 
-# # Python stdlib/builtin names for callees_of categorization
-# _PYTHON_STDLIB_NAMES = {
-#     "isinstance", "issubclass", "type", "len", "range", "enumerate",
-#     "zip", "map", "filter", "sorted", "reversed", "list", "dict", "set",
-#     "tuple", "str", "int", "float", "bool", "print", "input", "open",
-#     "repr", "hash", "id", "abs", "min", "max", "sum", "any", "all",
-#     "hasattr", "getattr", "setattr", "delattr", "vars", "dir",
-#     "super", "next", "iter", "callable", "format", "hex", "oct",
-# }
-#
-# # DB operation names for callees_of categorization
-# _DB_OPERATION_NAMES = {
-#     "execute", "executemany", "executescript", "commit", "rollback",
-#     "cursor", "fetchone", "fetchall", "fetchmany", "close", "connect",
-# }
-
-
 
 def get_impact_radius(
     changed_files: list[str] | None = None,
