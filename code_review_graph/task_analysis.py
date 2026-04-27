@@ -910,7 +910,13 @@ def validate_dag(
     ]
     if missing_ac:
         for t in missing_ac:
-            warnings.append(f"Leaf task ({t['id']}) '{t['title']}' has no acceptance_criteria please should fill them")
+            if t['status'] in ("ready", "in_progress"):
+                errors.append(
+                    f"Leaf task ({t['id']}) '{t['title']}' is {t['status']} "
+                    f"but has no acceptance_criteria"
+                )
+            else:
+                warnings.append(f"Leaf task ({t['id']}) '{t['title']}' has no acceptance_criteria please should fill them")
     else:
         ok.append("All active leaf tasks have acceptance_criteria")
 
