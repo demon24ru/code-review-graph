@@ -794,8 +794,8 @@ def validate_dag(
                 dep_task = tasks_by_id.get(dep_id)
                 if dep_task and dep_task["status"] != "done":
                     blocked_ready.append(
-                        f"task '{task['title']}' is 'ready' but depends on "
-                        f"'{dep_task['title']}' which is '{dep_task['status']}'"
+                        f"task ({task['id']}) '{task['title']}' is 'ready' but depends on "
+                        f"({dep_task['id']}) '{dep_task['title']}' which is '{dep_task['status']}'"
                     )
 
     if blocked_ready:
@@ -818,7 +818,7 @@ def validate_dag(
     if no_refs:
         for t in no_refs:
             warnings.append(
-                f"Leaf task '{t['title']}' has no code refs — impact on codebase is unknown"
+                f"Leaf task ({t['id']}) '{t['title']}' has no code refs — impact on codebase is unknown"
             )
     else:
         ok.append("All leaf tasks have at least one code ref")
@@ -893,8 +893,8 @@ def validate_dag(
             t = tasks_by_id.get(ptask_id)
             if t and t.get("status") in ("ready", "in_progress"):
                 active_proposed.append(
-                    f"Contract '{cname}' is still 'proposed' but task "
-                    f"'{t['title']}' is '{t['status']}'"
+                    f"Contract ({cid}) '{cname}' is still 'proposed' but task "
+                    f"'({t['id']}) {t['title']}' is '{t['status']}'"
                 )
                 break
 
@@ -910,7 +910,7 @@ def validate_dag(
     ]
     if missing_ac:
         for t in missing_ac:
-            warnings.append(f"Leaf task '{t['title']}' has no acceptance_criteria")
+            warnings.append(f"Leaf task ({t['id']}) '{t['title']}' has no acceptance_criteria please should fill them")
     else:
         ok.append("All active leaf tasks have acceptance_criteria")
 
@@ -921,7 +921,7 @@ def validate_dag(
     ]
     if missing_desc:
         for t in missing_desc:
-            errors.append(f"Leaf task '{t['title']}' has no description — coder cannot proceed")
+            errors.append(f"Leaf task ({t['id']}) '{t['title']}' has no description — coder cannot proceed")
     else:
         ok.append("All active leaf tasks have descriptions")
 
@@ -950,12 +950,12 @@ def validate_dag(
                         "SELECT code_node_id FROM task_code_refs WHERE task_id = ?", (tid,)
                     ).fetchall()
                 ]
-                mixed_tasks.append((name, ref_ids))
+                mixed_tasks.append((name, tid, ref_ids))
     if mixed_tasks:
-        for name, ref_ids in mixed_tasks:
+        for name, tid, ref_ids in mixed_tasks:
             refs_hint = f" (code_node_ids: {', '.join(ref_ids)})" if ref_ids else ""
             warnings.append(
-                f"Parent task '{name}' has direct code_refs or contract links "
+                f"Parent task ({tid}) '{name}' has direct code_refs or contract links "
                 f"but also has subtasks — move refs to leaf tasks{refs_hint}"
             )
     else:
@@ -967,8 +967,6 @@ def validate_dag(
 # ---------------------------------------------------------------------------
 # 6. build_context
 # ---------------------------------------------------------------------------
-
-
 
 
 def _find_sibling_conflicts(
@@ -1560,22 +1558,22 @@ def check_parent_rollup(
         if can_close and current_status != "done":
             suggestion = (
                 f"All {total} subtask(s) are done. "
-                f"Consider closing parent '{parent['title']}' → status='done'."
+                f"Consider closing parent ({parent['id']}) '{parent['title']}' → status='done'."
             )
         elif can_archive and current_status != "archived":
             suggestion = (
                 f"All {total} subtask(s) are archived. "
-                f"Consider archiving parent '{parent['title']}' → status='archived'."
+                f"Consider archiving parent ({parent['id']}) '{parent['title']}' → status='archived'."
             )
         elif can_complete and current_status not in _TERMINAL_STATUSES:
             suggestion = (
                 f"{done_count} done, {archived_count} archived out of {total}. "
                 f"All subtasks are resolved. Consider closing or archiving "
-                f"'{parent['title']}' depending on outcome."
+                f"({parent['id']}) '{parent['title']}' depending on outcome."
             )
         elif blocking:
             blocking_summary = ", ".join(
-                f"'{c['title']}' ({c['status']})" for c in blocking[:3]
+                f"({c['id']}) '{c['title']}' ({c['status']})" for c in blocking[:3]
             )
             if len(blocking) > 3:
                 blocking_summary += f" (+{len(blocking) - 3} more)"
@@ -1584,7 +1582,7 @@ def check_parent_rollup(
                 f"Blocking: {blocking_summary}."
             )
         else:
-            suggestion = f"Parent '{parent['title']}' status '{current_status}' — no action needed."
+            suggestion = f"Parent ({parent['id']}) '{parent['title']}' status '{current_status}' — no action needed."
 
         # Determine suggested_action
         if can_archive and not can_close:
