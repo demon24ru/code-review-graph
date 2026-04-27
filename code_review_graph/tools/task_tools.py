@@ -411,8 +411,8 @@ def task_move_func(
 
 
 def task_search_func(
-    root_task_id: str,
     query: str,
+    root_task_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Keyword search within a task subtree.
@@ -421,8 +421,8 @@ def task_search_func(
     (case-insensitive) within the entire subtree rooted at *root_task_id*.
 
     Args:
-        root_task_id: Root of the subtree to search within.
         query: Search string.
+        root_task_id: Root of the subtree to search within, If *root_task_id* is None, auto-detects the active root task.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:

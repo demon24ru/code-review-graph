@@ -1198,7 +1198,7 @@ def task_search(
         root_task_id: Root of the subtree to search, If *root_task_id* is None, auto-detects the active root task.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_search_func(root_task_id=root_task_id, query=query, repo_root=repo_root)
+    return task_search_func(query=query, root_task_id=root_task_id, repo_root=repo_root)
 
 
 @mcp.tool()
