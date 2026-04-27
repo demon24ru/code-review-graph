@@ -695,7 +695,7 @@ def execution_order(
     all_leaf_ids = [tid for level in levels for tid in level]
     ph = ", ".join("?" * len(all_leaf_ids))
     rows = conn.execute(  # noqa: S608
-        f"SELECT * FROM tasks WHERE id IN ({ph})", all_leaf_ids
+        f"SELECT id, title, status FROM tasks WHERE id IN ({ph})", all_leaf_ids
     ).fetchall()
     id_to_row: dict[str, dict[str, Any]] = {r["id"]: _row_to_dict(r) for r in rows}
 
