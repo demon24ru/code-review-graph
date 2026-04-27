@@ -916,7 +916,7 @@ def validate_dag(
                     f"but has no acceptance_criteria"
                 )
             else:
-                warnings.append(f"Leaf task ({t['id']}) '{t['title']}' has no acceptance_criteria please should fill them")
+                warnings.append(f"Leaf task ({t['id']}) '{t['title']}' has no acceptance_criteria should fill them")
     else:
         ok.append("All active leaf tasks have acceptance_criteria")
 
