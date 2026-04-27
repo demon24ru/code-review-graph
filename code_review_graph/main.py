@@ -65,6 +65,7 @@ from .tools.task_tools import (
     task_blast_radius_func,
     task_check_isolation_func,
     task_check_rollup_func,
+    task_contradiction_report_func,
     task_create_func,
     task_delete_func,
     task_edit_func,
@@ -1455,18 +1456,47 @@ def task_suggest_code_links(
 @mcp.tool()
 def task_find_conflicts(
     root_task_id: str,
+    depth: int = 0,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Find conflicting leaf tasks whose code refs intersect.
 
     [BRAINSTORM] Algorithmically detects tasks that touch the same code nodes.
+    Conflict types: both_modify, read_write, shared_ref (direct), indirect (via code graph).
     Run this after decomposing tasks to catch coordination issues early.
+
+    Args:
+        root_task_id: Root of the subtree to analyze.
+        depth: Code graph BFS hops for indirect conflict detection (default 0).
+            0 = direct code ref overlap only.
+            1+ = also detect tasks connected through code graph edges.
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return task_find_conflicts_func(root_task_id=root_task_id, depth=depth, repo_root=repo_root)
+
+
+@mcp.tool()
+def task_contradiction_report(
+    root_task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Gather compact contradiction analysis data for LLM review.
+
+    [BRAINSTORM] Collects code conflicts (direct + indirect via code graph),
+    all decisions, constraints, contracts, and leaf task summaries in one call.
+    Pass the result to an LLM to detect semantic contradictions that cannot
+    be found algorithmically (e.g. conflicting architectural choices in
+    different branches of the task tree).
+
+    Rule of 3-Ps (Problems / Gaps / Contradictions):
+    - Code-level contradictions → code_conflicts (algorithmic, depth=1)
+    - Semantic contradictions → decisions + constraints + contracts (LLM analysis)
 
     Args:
         root_task_id: Root of the subtree to analyze.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_find_conflicts_func(root_task_id=root_task_id, repo_root=repo_root)
+    return task_contradiction_report_func(root_task_id=root_task_id, repo_root=repo_root)
 
 
 @mcp.tool()

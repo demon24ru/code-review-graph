@@ -191,14 +191,21 @@ def _get_all_covered_node_ids(
 def find_conflicts(
     conn: sqlite3.Connection,
     root_task_id: str,
+    depth: int = 0,
 ) -> list[dict[str, Any]]:
     """Find pairs of leaf tasks whose code_refs intersect.
 
     Intersection of code_node_ids indicates potential conflicts:
     - ``both_modify``  — both tasks have a *modifies/creates/deletes* ref
     - ``read_write``   — one reads while the other writes
+    - ``shared_ref``   — both reference the same node (other ref types)
 
-    Returns a list of conflict records.
+    When *depth* >= 1, also detects indirect conflicts: task A modifies node X,
+    task B modifies node Y, and X and Y are connected via code graph edges within
+    *depth* hops. Indirect conflicts have ``conflict_type: "indirect"`` and a
+    ``coupling_nodes`` list of bridging node IDs.
+
+    Returns a list of conflict records (direct conflicts first, then indirect).
     """
     get_task(conn, root_task_id)
     subtree_ids = _collect_subtree_ids(conn, root_task_id)
@@ -230,12 +237,15 @@ def find_conflicts(
     _write_types = frozenset({"modifies", "creates", "deletes"})
 
     conflicts: list[dict[str, Any]] = []
+    direct_pairs: set[tuple[str, str]] = set()
     leaf_list = list(leaf_ids)
     for i, ta in enumerate(leaf_list):
         for tb in leaf_list[i + 1 :]:
             shared = set(ref_map[ta].keys()) & set(ref_map[tb].keys())
             if not shared:
                 continue
+
+            direct_pairs.add((ta, tb))
 
             # Determine conflict type per shared node
             shared_nodes: list[dict[str, Any]] = []
@@ -274,7 +284,154 @@ def find_conflicts(
                 "conflict_type": overall_type,
             })
 
+    # Indirect conflict detection (depth >= 1)
+    if depth >= 1:
+        for i, ta in enumerate(leaf_list):
+            refs_a = set(ref_map[ta].keys())
+            if not refs_a:
+                continue
+            expanded_a = refs_a | _bfs_code_graph(conn, refs_a, "both", depth)
+
+            for tb in leaf_list[i + 1 :]:
+                if (ta, tb) in direct_pairs:
+                    continue
+
+                refs_b = set(ref_map[tb].keys())
+                if not refs_b:
+                    continue
+                expanded_b = refs_b | _bfs_code_graph(conn, refs_b, "both", depth)
+
+                # Nodes that bridge the two tasks
+                indirect_overlap = (expanded_a & refs_b) | (refs_a & expanded_b)
+                if not indirect_overlap:
+                    continue
+
+                conflicts.append({
+                    "task_a": ta,
+                    "task_b": tb,
+                    "shared_nodes": [],
+                    "conflict_type": "indirect",
+                    "coupling_nodes": [{"code_node_id": nid} for nid in indirect_overlap],
+                })
+
     return conflicts
+
+
+# ---------------------------------------------------------------------------
+# 1b. contradiction_report
+# ---------------------------------------------------------------------------
+
+
+def contradiction_report(
+    conn: sqlite3.Connection,
+    root_task_id: str,
+) -> dict[str, Any]:
+    """Gather compact data for LLM contradiction analysis.
+
+    Returns a single dict with five keys:
+    - ``code_conflicts``     — result of find_conflicts(depth=1)
+    - ``all_decisions``      — all decision notes in the subtree
+    - ``all_constraints``    — all constraint notes in the subtree
+    - ``all_contracts``      — all contracts scoped to root_task_id
+    - ``leaf_tasks_summary`` — compact leaf task summary with ref_types
+    """
+    get_task(conn, root_task_id)
+    subtree_ids = _collect_subtree_ids(conn, root_task_id)
+
+    # --- code_conflicts ---
+    code_conflicts = find_conflicts(conn, root_task_id, depth=1)
+
+    # --- leaf task detection ---
+    ph_st = ", ".join("?" * len(subtree_ids))
+    parent_ids_set = set(
+        r[0]
+        for r in conn.execute(  # noqa: S608
+            f"SELECT DISTINCT parent_id FROM tasks WHERE parent_id IN ({ph_st})",
+            subtree_ids,
+        ).fetchall()
+    )
+    leaf_ids = [tid for tid in subtree_ids if tid not in parent_ids_set]
+
+    # --- all_decisions and all_constraints ---
+    ph = ", ".join("?" * len(subtree_ids))
+    note_rows = conn.execute(  # noqa: S608
+        f"SELECT n.task_id, n.note_type, n.content, n.resolution, n.status, t.title "
+        f"FROM notes n JOIN tasks t ON t.id = n.task_id "
+        f"WHERE n.task_id IN ({ph}) AND n.note_type IN ('decision', 'constraint')",
+        subtree_ids,
+    ).fetchall()
+
+    all_decisions: list[dict[str, Any]] = []
+    all_constraints: list[dict[str, Any]] = []
+    for r in note_rows:
+        if r[1] == "decision":
+            all_decisions.append({
+                "task_id": r[0],
+                "task_title": r[5],
+                "content": r[2],
+                "resolution": r[3],
+                "status": r[4],
+            })
+        else:
+            all_constraints.append({
+                "task_id": r[0],
+                "task_title": r[5],
+                "content": r[2],
+                "status": r[4],
+            })
+
+    # --- all_contracts ---
+    contracts_raw = list_contracts(conn, scope_task_id=root_task_id)
+    all_contracts = [
+        {
+            "id": c["id"],
+            "name": c["name"],
+            "definition": c["definition"],
+            "contract_type": c["contract_type"],
+            "status": c["status"],
+            "provider_task_ids": c.get("provider_task_ids", []),
+            "consumer_task_ids": c.get("consumer_task_ids", []),
+        }
+        for c in contracts_raw
+    ]
+
+    # --- leaf_tasks_summary ---
+    leaf_tasks_summary: list[dict[str, Any]] = []
+    if leaf_ids:
+        ph_leaf = ", ".join("?" * len(leaf_ids))
+        task_rows = conn.execute(  # noqa: S608
+            f"SELECT id, title, description FROM tasks WHERE id IN ({ph_leaf})",
+            leaf_ids,
+        ).fetchall()
+        id_to_task = {r[0]: r for r in task_rows}
+
+        ref_type_rows = conn.execute(  # noqa: S608
+            f"SELECT task_id, ref_type FROM task_code_refs WHERE task_id IN ({ph_leaf})",
+            leaf_ids,
+        ).fetchall()
+        ref_types_by_task: dict[str, set[str]] = {lid: set() for lid in leaf_ids}
+        for r in ref_type_rows:
+            ref_types_by_task[r[0]].add(r[1])
+
+        for lid in leaf_ids:
+            row = id_to_task.get(lid)
+            if row is None:
+                continue
+            desc = row[2] or ""
+            leaf_tasks_summary.append({
+                "id": lid,
+                "title": row[1],
+                "short_description": desc[:200],
+                "ref_types": sorted(ref_types_by_task[lid]),
+            })
+
+    return {
+        "code_conflicts": code_conflicts,
+        "all_decisions": all_decisions,
+        "all_constraints": all_constraints,
+        "all_contracts": all_contracts,
+        "leaf_tasks_summary": leaf_tasks_summary,
+    }
 
 
 # ---------------------------------------------------------------------------

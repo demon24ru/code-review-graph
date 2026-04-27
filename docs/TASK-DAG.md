@@ -94,7 +94,8 @@ Use `semantic_search_nodes_tool` to find `code_node_id` values from descriptions
 
 | Tool | Description |
 |------|-------------|
-| `task_find_conflicts` | Leaf tasks with overlapping code refs. Types: both_modify, read_write, shared_ref. |
+| `task_find_conflicts` | Leaf tasks with overlapping code refs. `depth=0` (default): direct overlap only. `depth=1+`: also detects indirect conflicts via code graph edges (`conflict_type: "indirect"`, includes `coupling_nodes`). |
+| `task_contradiction_report` | Compile compact contradiction report for LLM analysis: code_conflicts (depth=1), all_decisions, all_constraints, all_contracts, leaf_tasks_summary. Use for semantic contradiction detection (P3 in the Rule of 3 Ps). |
 | `task_check_isolation` | isolation_score = internal / (internal + external). Score <0.5 → consider splitting. |
 | `task_blast_radius` | BFS from task's code refs into code graph (configurable depth). |
 | `task_execution_order` | Group leaf tasks by parallelism level based on depends_on. |
@@ -149,6 +150,29 @@ Use `semantic_search_nodes_tool` to find `code_node_id` values from descriptions
 | Leaf tasks have acceptance_criteria | warning |
 
 A task with `errors=[]` is safe to hand to a coder. Warnings are advisory.
+
+---
+
+## Rule of 3 Ps: Brainstorm Completeness Check
+
+Before implementation, verify three categories of risk are resolved:
+
+| P | Category | Tool |
+|---|----------|------|
+| P1 | **Problems** | `task_validate` · `task_blast_radius` · `task_check_isolation` |
+| P2 | **Gaps** | `task_blast_radius.uncovered_nodes` · `task_suggest_contracts` |
+| P3 | **Contradictions** | `task_find_conflicts(depth=1)` · `task_contradiction_report` |
+
+### P3 in detail: Contradiction levels
+
+| Level | Type | Detection | Tool |
+|-------|------|-----------|------|
+| 1 | Direct code overlap | Algorithmic | `task_find_conflicts(depth=0)` |
+| 2 | Indirect code coupling | Algorithmic | `task_find_conflicts(depth=1)` |
+| 3 | Semantic | LLM-driven | `task_contradiction_report` |
+
+`task_contradiction_report` returns all decisions, constraints, contracts, and leaf task summaries
+in one call so the LLM can identify architectural contradictions across branches.
 
 ---
 
@@ -229,7 +253,7 @@ WORKFLOW:
 3. Decompose into subtasks with task_create (parent_id=root).
 4. Add dependency edges with task_add_edge.
 5. Link code nodes with task_link_code (use semantic_search_nodes_tool to find IDs).
-6. Run task_find_conflicts. Add contracts with contract_add for any conflicts.
+6. Run task_find_conflicts(root_id, depth=1) for direct + indirect conflicts. Run task_contradiction_report(root_id) and ask LLM to identify semantic contradictions. Record contradictions via task_add_edge(conflicts_with) and note_add(risk). Add contracts with contract_add for interface conflicts.
 7. Run task_check_isolation on each leaf. If score < 0.5, consider splitting.
 8. Run task_validate. Fix all errors. Address warnings where possible.
 9. Call task_roadmap at any time to show the user where we stand.

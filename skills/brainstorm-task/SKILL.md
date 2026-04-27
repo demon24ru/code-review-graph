@@ -317,7 +317,9 @@ Duplicate edges are idempotent — adding the same edge twice returns `already_e
 ## Phase 6: Run Analysis
 
 ```
-task_find_conflicts(root_task_id)     # tasks sharing same code nodes
+task_find_conflicts(root_task_id)            # tasks sharing same code nodes (direct, depth=0)
+task_find_conflicts(root_task_id, depth=1)   # + indirect: tasks connected via code graph edges
+task_contradiction_report(root_task_id)      # compile full report for LLM semantic analysis
 task_check_isolation(task_id)         # isolation_score < 0.5 → too coupled, split
 task_blast_radius(task_id, depth=2)   # code impact radius (affected_nodes_count + uncovered_nodes)
 task_execution_order(root_task_id)    # parallelism-aware order (levels)
@@ -338,6 +340,65 @@ Summary includes both `external_dependencies` (callees this task calls) and `ext
 - `uncovered_nodes` — actionable list: nodes in blast radius not covered by any task
 - `include_affected_nodes=True` — opt-in to get full `affected_nodes` list (can be large)
 - `status: "not_applicable"` → task has no code refs linked yet
+
+## Rule of 3 Ps: Problems / Gaps / Contradictions
+
+Brainstorming should resolve three categories of risk before implementation:
+
+```
+P1 — Problems      → task_validate + task_blast_radius + task_check_isolation
+P2 — Gaps          → task_blast_radius.uncovered_nodes + task_find_for_impact
+P3 — Contradictions → task_find_conflicts(depth=1) + task_contradiction_report
+```
+
+### P1: Problems
+Algorithmic checks that catch structural issues:
+- `task_validate()` — gate-check: 9 algorithmic checks (missing code refs, open questions, unsatisfied deps)
+- `task_blast_radius(task_id)` — code graph impact; uncovered_nodes = code this task touches but no subtask explains
+- `task_check_isolation(task_id)` — score < 0.5 → task too coupled, consider splitting
+
+### P2: Gaps
+Cross-layer coverage queries:
+- `task_blast_radius(task_id).uncovered_nodes` — nodes in blast radius not covered by any task
+- `task_find_for_impact(file_paths)` — open tasks in blast radius of changed files
+- `task_suggest_contracts(root_task_id)` — hidden code dependencies needing interface contracts
+
+### P3: Contradictions
+Three-level detection:
+
+**Level 1 — Direct code overlap** (algorithmic):
+```
+task_find_conflicts(root_task_id, depth=0)
+```
+→ tasks that modify the same code nodes: `both_modify`, `read_write`, `shared_ref`
+
+**Level 2 — Indirect code coupling** (algorithmic):
+```
+task_find_conflicts(root_task_id, depth=1)
+```
+→ tasks whose nodes are connected via code graph edges (calls/imports). Returned as `conflict_type: "indirect"` with `coupling_nodes`.
+
+**Level 3 — Semantic contradictions** (LLM-driven):
+```
+task_contradiction_report(root_task_id)
+```
+Returns a compact report:
+```
+{
+  code_conflicts:      [...],   # depth=1 conflicts — algorithmic
+  all_decisions:       [...],   # every decision note in the subtree
+  all_constraints:     [...],   # every constraint note
+  all_contracts:       [...],   # all interface contracts
+  leaf_tasks_summary:  [...]    # compact: title + first 200 chars + ref_types
+}
+```
+Pass this to the LLM as a single prompt: *"Find semantic contradictions between these decisions, constraints, and contracts."* The LLM looks for things like `"All APIs synchronous"` + `"Realtime WebSocket notifications"` — architectural conflicts across different branches of the task tree.
+
+Record found contradictions as:
+```
+task_add_edge(edge_type="conflicts_with", edges=[{"source_id": t5_id, "target_id": t8_id}])
+note_add(task_id=root_id, notes=[{"note_type": "risk", "content": "Sync-only API conflicts with WebSocket requirement"}])
+```
 
 ## Phase 7: Validate Before Implementation
 
@@ -441,3 +502,5 @@ task_execution_order(root_task_id)   # returns parallel levels
 - **Questions UI**: use `code-review-graph questions` to let users answer open questions asynchronously — survives session restarts; answers stored in SQLite
 - **`answered` notes**: after user answers via UI, `task_roadmap()` shows them in `attention.answered_notes`; process each with note_update before `task_validate` passes cleanly
 - Contract `status` auto-upgrades when provider task status changes (draft→proposed→acknowledged→implemented)
+- **Rule of 3 Ps**: after decomposition, verify P1 (task_validate + blast_radius), P2 (uncovered_nodes), P3 (task_find_conflicts depth=1 + task_contradiction_report)
+- **Semantic contradictions**: task_contradiction_report gives LLM everything to find conflicts in decisions/constraints — one call, compact output

@@ -1543,3 +1543,122 @@ class TestPathNormalisation(TestAnalysisBase):
         )
         assert result["tasks"] == []
         assert "note" in result
+
+
+# ---------------------------------------------------------------------------
+# find_conflicts with depth parameter
+# ---------------------------------------------------------------------------
+
+class TestFindConflictsDepth(TestAnalysisBase):
+
+    def test_depth0_no_indirect(self):
+        """depth=0: tasks with no direct overlap but connected via code graph → no conflict."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        t2 = self._task("T2", parent_id=root["id"])
+        n1 = self._node("fn_a", "a.py")
+        n2 = self._node("fn_b", "b.py")
+        self._code_edge("fn_a", "fn_b")  # fn_a calls fn_b
+        self._link(t1["id"], n1, "modifies")
+        self._link(t2["id"], n2, "modifies")
+        # depth=0: no direct overlap → no conflicts
+        conflicts = task_analysis.find_conflicts(self.conn, root["id"], depth=0)
+        assert len(conflicts) == 0
+
+    def test_depth1_finds_indirect(self):
+        """depth=1: t1 modifies fn_caller, t2 modifies fn_callee, fn_caller calls fn_callee → indirect conflict."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        t2 = self._task("T2", parent_id=root["id"])
+        n1 = self._node("fn_caller", "a.py")
+        n2 = self._node("fn_callee", "b.py")
+        self._code_edge("fn_caller", "fn_callee")
+        self._link(t1["id"], n1, "modifies")
+        self._link(t2["id"], n2, "modifies")
+        conflicts = task_analysis.find_conflicts(self.conn, root["id"], depth=1)
+        indirect = [c for c in conflicts if c["conflict_type"] == "indirect"]
+        assert len(indirect) == 1
+        assert indirect[0]["task_a"] in (t1["id"], t2["id"])
+        assert indirect[0]["task_b"] in (t1["id"], t2["id"])
+        assert len(indirect[0]["coupling_nodes"]) >= 1
+
+    def test_depth1_direct_conflict_not_duplicated(self):
+        """When two tasks have a direct conflict, depth=1 does not report it as indirect too."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        t2 = self._task("T2", parent_id=root["id"])
+        n1 = self._node("shared_fn", "a.py")
+        self._link(t1["id"], n1, "modifies")
+        self._link(t2["id"], n1, "modifies")
+        conflicts = task_analysis.find_conflicts(self.conn, root["id"], depth=1)
+        # Only one conflict, and it should be direct (both_modify), not indirect
+        assert len(conflicts) == 1
+        assert conflicts[0]["conflict_type"] == "both_modify"
+        assert "coupling_nodes" not in conflicts[0]
+
+    def test_depth1_no_indirect_when_no_code_edges(self):
+        """depth=1: tasks with different nodes and no code graph edges → no indirect conflict."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        t2 = self._task("T2", parent_id=root["id"])
+        n1 = self._node("fn_isolated_a", "a.py")
+        n2 = self._node("fn_isolated_b", "b.py")
+        # No _code_edge between them
+        self._link(t1["id"], n1, "modifies")
+        self._link(t2["id"], n2, "modifies")
+        conflicts = task_analysis.find_conflicts(self.conn, root["id"], depth=1)
+        assert len(conflicts) == 0
+
+
+# ---------------------------------------------------------------------------
+# contradiction_report
+# ---------------------------------------------------------------------------
+
+class TestContradictionReport(TestAnalysisBase):
+
+    def test_empty_subtree_returns_all_keys(self):
+        """contradiction_report returns all 5 keys even for a subtree with no code refs."""
+        root = self._task("Root")
+        # Add a child so root is not itself a leaf; child has no code refs
+        self._task("Child", parent_id=root["id"])
+        report = task_analysis.contradiction_report(self.conn, root["id"])
+        assert set(report.keys()) == {
+            "code_conflicts", "all_decisions", "all_constraints",
+            "all_contracts", "leaf_tasks_summary"
+        }
+        assert report["code_conflicts"] == []
+        assert report["all_decisions"] == []
+        assert report["all_constraints"] == []
+        assert report["all_contracts"] == []
+        # leaf_tasks_summary may include the child leaf (with empty ref_types)
+        for entry in report["leaf_tasks_summary"]:
+            assert "id" in entry
+            assert "title" in entry
+            assert "ref_types" in entry
+
+    def test_collects_decisions_and_constraints(self):
+        """all_decisions and all_constraints pick up notes from the subtree."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        tasks.add_note(self.conn, t1["id"], "decision", "Use JWT", status="resolved")
+        tasks.add_note(self.conn, t1["id"], "constraint", "No external SaaS")
+        tasks.add_note(self.conn, t1["id"], "question", "WebSocket or SSE?")  # should NOT appear
+        report = task_analysis.contradiction_report(self.conn, root["id"])
+        assert len(report["all_decisions"]) == 1
+        assert report["all_decisions"][0]["content"] == "Use JWT"
+        assert report["all_decisions"][0]["task_title"] == "T1"
+        assert len(report["all_constraints"]) == 1
+        assert report["all_constraints"][0]["content"] == "No external SaaS"
+
+    def test_leaf_tasks_summary_has_ref_types(self):
+        """leaf_tasks_summary includes ref_types for each leaf."""
+        root = self._task("Root")
+        t1 = self._task("T1", parent_id=root["id"])
+        n1 = self._node("fn_leaf", "x.py")
+        self._link(t1["id"], n1, "modifies")
+        report = task_analysis.contradiction_report(self.conn, root["id"])
+        assert len(report["leaf_tasks_summary"]) == 1
+        summary = report["leaf_tasks_summary"][0]
+        assert summary["id"] == t1["id"]
+        assert summary["title"] == "T1"
+        assert "modifies" in summary["ref_types"]

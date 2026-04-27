@@ -198,7 +198,7 @@ The blast-radius analysis never misses an actually impacted file (perfect recall
 | **Multi-repo registry** | Register multiple repos, search across all of them |
 | **MCP prompts** | 5 workflow templates: review, architecture, debug, onboard, pre-merge |
 | **Full-text search** | FTS5-powered hybrid search combining keyword and vector similarity |
-| **Task DAG** | Brainstorm-driven task planning with conflict detection, isolation scoring, and blast-radius analysis — stored in the same SQLite graph |
+| **Task DAG** | Brainstorm-driven task planning with Rule of 3-Ps: conflict detection (direct + indirect), isolation scoring, blast-radius analysis, and semantic contradiction report — stored in the same SQLite graph |
 
 ---
 
@@ -242,7 +242,7 @@ code-review-graph serve            # Start MCP server
 </details>
 
 <details>
-<summary><strong>70 MCP tools (30 code-graph + 40 task DAG)</strong></summary>
+<summary><strong>71 MCP tools (30 code-graph + 41 task DAG)</strong></summary>
 <br>
 
 Your AI assistant uses these automatically once the graph is built.
@@ -282,7 +282,7 @@ Your AI assistant uses these automatically once the graph is built.
 | `export_scip_tool` | Export graph to SCIP-compatible JSON |
 | `import_scip_tool` | Import SCIP JSON document into the graph |
 
-**Task DAG tools (40) — brainstorm-driven task planning:**
+**Task DAG tools (41) — brainstorm-driven task planning:**
 
 > **Single-pipeline discipline**: at most one root task may be open at a time.
 > Workflow: brainstorm fully → validate → implement → close → next task.
@@ -311,7 +311,8 @@ Your AI assistant uses these automatically once the graph is built.
 | `task_get_code_refs` | Get code nodes linked to a task                                                                                                                                                                   |
 | `task_find_by_code_node` | Find open tasks referencing a code node (`open_only=True` by default)                                                                                                                             |
 | `task_suggest_code_links` | Keyword-based code node suggestions — scored by match count, already-linked nodes excluded, `limit` param (default 20)                                                                            |
-| `task_find_conflicts` | Leaf tasks with overlapping code refs                                                                                                                                                             |
+| `task_find_conflicts` | Leaf tasks with overlapping code refs. `depth=0` (default): direct only. `depth=1+`: also detects indirect conflicts via code graph edges |
+| `task_contradiction_report` | Compile compact contradiction report for LLM: code_conflicts (depth=1), all_decisions, all_constraints, all_contracts, leaf_tasks_summary. Use for semantic P3 contradiction detection |
 | `task_check_isolation` | Isolation score: internal / (internal + external). Returns `status: not_applicable` with null score if task has no code refs                                                                      |
 | `task_blast_radius` | BFS impact from task's code refs. Returns `affected_nodes_count` + full `uncovered_nodes`. Use `include_affected_nodes=True` for full list. Returns `status: not_applicable` if no code refs      |
 | `task_execution_order` | Parallelism-aware execution levels from depends_on                                                                                                                                                |

@@ -11,7 +11,7 @@ Groups:
                       task_get_dag, task_topological_sort
   Code Links (5):     task_link_code, task_unlink_code, task_get_code_refs,
                       task_find_by_code_node, task_suggest_code_links
-  Analysis (4):       task_find_conflicts, task_check_isolation,
+   Analysis (5):       task_find_conflicts, task_contradiction_report,
                       task_blast_radius, task_execution_order
   Validation (3):     task_validate, task_build_context, task_export
    Notes (4):          note_add, note_update, note_list, note_delete
@@ -804,24 +804,60 @@ def task_suggest_code_links_func(
 
 def task_find_conflicts_func(
     root_task_id: str,
+    depth: int = 0,
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Find conflicting leaf tasks whose code refs intersect.
 
     [BRAINSTORM] Algorithmically detects tasks that touch the same code nodes.
-    Conflict types: both_modify, read_write, shared_ref.
+    Conflict types: both_modify, read_write, shared_ref (direct), indirect (via code graph).
     Use this after decomposing tasks to catch coordination issues early.
 
     Args:
         root_task_id: Root of the subtree to analyze.
+        depth: Code graph BFS hops for indirect conflict detection.
+            0 = direct code ref overlap only (default).
+            1+ = also detect tasks connected through code graph edges.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
         List of conflict records with task pairs and shared nodes.
     """
     def _fn(conn, root_task_id):
-        conflicts = task_analysis.find_conflicts(conn, root_task_id)
+        conflicts = task_analysis.find_conflicts(conn, root_task_id, depth=depth)
         return _ok(f"Found {len(conflicts)} conflict(s)", conflicts=conflicts)
+    return _run(repo_root, _fn, root_task_id)
+
+
+def task_contradiction_report_func(
+    root_task_id: str,
+    repo_root: Optional[str] = None,
+) -> dict[str, Any]:
+    """Gather compact contradiction analysis data for LLM review.
+
+    [BRAINSTORM] Collects code conflicts (direct + indirect), all decisions,
+    constraints, contracts, and leaf task summaries into one compact report.
+    Pass this to an LLM to detect semantic contradictions that cannot be
+    found algorithmically.
+
+    Args:
+        root_task_id: Root of the subtree to analyze.
+        repo_root: Repository root path. Auto-detected if omitted.
+
+    Returns:
+        Dict with keys: code_conflicts, all_decisions, all_constraints,
+        all_contracts, leaf_tasks_summary.
+    """
+    def _fn(conn, root_task_id):
+        report = task_analysis.contradiction_report(conn, root_task_id)
+        n_conflicts = len(report["code_conflicts"])
+        n_decisions = len(report["all_decisions"])
+        n_constraints = len(report["all_constraints"])
+        return _ok(
+            f"Report: {n_conflicts} code conflict(s), "
+            f"{n_decisions} decision(s), {n_constraints} constraint(s)",
+            **report,
+        )
     return _run(repo_root, _fn, root_task_id)
 
 
