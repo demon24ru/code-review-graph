@@ -429,7 +429,8 @@ def task_search_func(
         List of matching task dicts.
     """
     def _fn(conn, root_task_id, query):
-        results = tasks.search_tasks(conn, root_task_id, query)
+        resolved = task_analysis._resolve_root(conn, root_task_id, "task_search")
+        results = tasks.search_tasks(conn, resolved, query)
         return _ok(f"Found {len(results)} task(s) matching '{query}'", tasks=results)
     return _run(repo_root, _fn, root_task_id, query)
 

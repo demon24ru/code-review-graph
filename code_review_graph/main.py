@@ -1185,8 +1185,8 @@ def task_move(
 
 @mcp.tool()
 def task_search(
-    root_task_id: str,
     query: str,
+    root_task_id: Optional[str] = None,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Keyword search within a task subtree.
@@ -1194,8 +1194,8 @@ def task_search(
     [BRAINSTORM] Searches title, description, and spec (case-insensitive).
 
     Args:
-        root_task_id: Root of the subtree to search.
         query: Search string.
+        root_task_id: Root of the subtree to search, If *root_task_id* is None, auto-detects the active root task.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return task_search_func(root_task_id=root_task_id, query=query, repo_root=repo_root)
