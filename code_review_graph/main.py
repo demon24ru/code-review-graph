@@ -1300,7 +1300,7 @@ def task_remove_edge(
 @mcp.tool()
 def task_get_dag(
     root_task_id: str,
-    compact: bool = False,
+    compact: bool = True,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Get the full DAG rooted at a task.
@@ -1312,7 +1312,7 @@ def task_get_dag(
 
     Args:
         root_task_id: Root of the DAG to retrieve.
-        compact: If True, return only {id, title, status, depth, parent_id} per node.
+        compact: If True, return only {id, title, status, depth, parent_id} per node, default True.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return task_get_dag_func(root_task_id=root_task_id, compact=compact, repo_root=repo_root)
