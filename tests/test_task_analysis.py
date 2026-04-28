@@ -1662,3 +1662,239 @@ class TestContradictionReport(TestAnalysisBase):
         assert summary["id"] == t1["id"]
         assert summary["title"] == "T1"
         assert "modifies" in summary["ref_types"]
+
+
+# ---------------------------------------------------------------------------
+# generate_mermaid_dag — pure function tests (no DB needed)
+# ---------------------------------------------------------------------------
+
+class TestGenerateMermaidDag:
+    """Tests for the pure generate_mermaid_dag function (no database access)."""
+
+    def test_empty_input_returns_graph_td(self):
+        """Empty tasks list must return exactly 'graph TD'."""
+        result = task_analysis.generate_mermaid_dag([], [])
+        assert result == "graph TD"
+
+    def test_single_leaf_node(self):
+        """Single task with no children renders as a plain node declaration."""
+        tasks = [{"id": "t1", "title": "My Task", "parent_id": None, "status": "draft"}]
+        result = task_analysis.generate_mermaid_dag(tasks, [])
+        assert result.startswith("graph TD")
+        assert 't1["My Task"]' in result
+        assert "subgraph" not in result
+
+    def test_parent_with_children_renders_subgraph(self):
+        """Parent node with children must render as a subgraph."""
+        tasks = [
+            {"id": "root", "title": "Root", "parent_id": None, "status": "draft"},
+            {"id": "child", "title": "Child", "parent_id": "root", "status": "draft"},
+        ]
+        result = task_analysis.generate_mermaid_dag(tasks, [])
+        assert "subgraph cluster_root" in result
+        assert '"Root"' in result
+        assert 'child["Child"]' in result
+        assert "end" in result
+
+    def test_multi_level_hierarchy_with_dependencies(self):
+        """Three-level hierarchy renders nested subgraphs and dependency arrows."""
+        tasks = [
+            {"id": "root", "title": "Root", "parent_id": None, "status": "draft"},
+            {"id": "mid", "title": "Mid", "parent_id": "root", "status": "draft"},
+            {"id": "leaf1", "title": "Leaf1", "parent_id": "mid", "status": "draft"},
+            {"id": "leaf2", "title": "Leaf2", "parent_id": "root", "status": "draft"},
+        ]
+        deps = [("leaf2", "leaf1")]
+        result = task_analysis.generate_mermaid_dag(tasks, deps)
+        assert result.startswith("graph TD")
+        assert "subgraph cluster_root" in result
+        assert "subgraph cluster_mid" in result
+        assert 'leaf1["Leaf1"]' in result
+        assert 'leaf2["Leaf2"]' in result
+        assert "%% Dependencies" in result
+        assert "leaf2 --> leaf1" in result
+
+    def test_dependency_edge_uses_cluster_prefix_for_parent_nodes(self):
+        """When src or tgt of a dep edge is a parent (subgraph), the edge must
+        reference ``cluster_<id>`` not the bare id."""
+        # parent_a has children → rendered as subgraph cluster_parent_a
+        # leaf_b is a leaf → rendered as leaf_b[...]
+        # deps: ("leaf_b", "parent_a") → leaf_b --> cluster_parent_a
+        tasks = [
+            {"id": "root", "title": "Root", "parent_id": None, "status": "draft"},
+            {"id": "parent_a", "title": "Parent A", "parent_id": "root", "status": "draft"},
+            {"id": "child_a", "title": "Child A", "parent_id": "parent_a", "status": "draft"},
+            {"id": "leaf_b", "title": "Leaf B", "parent_id": "root", "status": "draft"},
+        ]
+        deps = [("leaf_b", "parent_a")]  # leaf_b depends_on parent_a (src --> tgt)
+        result = task_analysis.generate_mermaid_dag(tasks, deps)
+        # tgt parent_a is a subgraph — reference must use cluster_ prefix
+        assert "leaf_b --> cluster_parent_a" in result, (
+            f"Expected 'leaf_b --> cluster_parent_a' but got:\n{result}"
+        )
+        # bare id must NOT appear as the target side of an edge
+        assert "leaf_b --> parent_a" not in result.replace("leaf_b --> cluster_parent_a", "")
+
+    def test_dependency_edge_cluster_on_both_sides(self):
+        """An edge between two parent nodes must use cluster_ on both sides."""
+        tasks = [
+            {"id": "root", "title": "Root", "parent_id": None, "status": "draft"},
+            {"id": "grp1", "title": "Group 1", "parent_id": "root", "status": "draft"},
+            {"id": "c1", "title": "C1", "parent_id": "grp1", "status": "draft"},
+            {"id": "grp2", "title": "Group 2", "parent_id": "root", "status": "draft"},
+            {"id": "c2", "title": "C2", "parent_id": "grp2", "status": "draft"},
+        ]
+        deps = [("grp2", "grp1")]  # grp2 depends_on grp1
+        result = task_analysis.generate_mermaid_dag(tasks, deps)
+        assert "cluster_grp2 --> cluster_grp1" in result, (
+            f"Expected 'cluster_grp2 --> cluster_grp1' but got:\n{result}"
+        )
+
+    def test_escapes_double_quotes_in_title(self):
+        """Double-quotes in titles must be replaced with &quot;."""
+        tasks = [{"id": "t1", "title": 'Task "Alpha"', "parent_id": None, "status": "draft"}]
+        result = task_analysis.generate_mermaid_dag(tasks, [])
+        assert "&quot;" in result
+        # Raw unescaped quoted word must not appear (only the escaped version)
+        assert '"Alpha"' not in result
+
+    def test_no_dependency_section_when_empty(self):
+        """No %% Dependencies line must appear when there are no dependency edges."""
+        tasks = [{"id": "t1", "title": "Single", "parent_id": None, "status": "draft"}]
+        result = task_analysis.generate_mermaid_dag(tasks, [])
+        assert "%% Dependencies" not in result
+
+    def test_multiple_roots_rendered_sequentially(self):
+        """Tasks without a parent that is in the task list are treated as roots."""
+        tasks = [
+            {"id": "a", "title": "A", "parent_id": None, "status": "draft"},
+            {"id": "b", "title": "B", "parent_id": None, "status": "draft"},
+        ]
+        result = task_analysis.generate_mermaid_dag(tasks, [])
+        assert 'a["A"]' in result
+        assert 'b["B"]' in result
+
+
+# ---------------------------------------------------------------------------
+# _compute_task_priority / execution_order priority sorting tests
+# ---------------------------------------------------------------------------
+
+class TestExecutionOrderPriority(TestAnalysisBase):
+    """Tests for priority scoring added to execution_order levels."""
+
+    def test_priority_score_and_signals_present(self):
+        """All tasks in execution levels must contain priority_score and ranking_signals."""
+        root = self._task("Root")
+        self._task("A", parent_id=root["id"])
+        self._task("B", parent_id=root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
+        assert len(result["levels"]) > 0
+        for level in result["levels"]:
+            for t in level["tasks"]:
+                assert "priority_score" in t, f"priority_score missing from task {t}"
+                assert "ranking_signals" in t, f"ranking_signals missing from task {t}"
+                signals = t["ranking_signals"]
+                assert "isolation_score" in signals
+                assert "dependents_count" in signals
+                assert "provider_count" in signals
+
+    def test_priority_score_is_float_between_0_and_1(self):
+        """priority_score must be a float in [0, 1]."""
+        root = self._task("Root")
+        self._task("Leaf", parent_id=root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
+        for level in result["levels"]:
+            for t in level["tasks"]:
+                score = t["priority_score"]
+                assert isinstance(score, float), f"expected float, got {type(score)}"
+                assert 0.0 <= score <= 1.0, f"score {score} out of [0,1]"
+
+    def test_tasks_within_level_sorted_descending_by_priority(self):
+        """Tasks within each level must be sorted by priority_score descending."""
+        root = self._task("Root")
+        # Three tasks in same level (no dependencies between them)
+        self._task("X", parent_id=root["id"])
+        self._task("Y", parent_id=root["id"])
+        self._task("Z", parent_id=root["id"])
+        result = task_analysis.execution_order(self.conn, root["id"])
+        for level in result["levels"]:
+            scores = [t["priority_score"] for t in level["tasks"]]
+            assert scores == sorted(scores, reverse=True), (
+                f"Level {level['level']} tasks are not sorted by priority_score desc: {scores}"
+            )
+
+    def test_blocker_has_higher_score_when_depended_on(self):
+        """A task that other tasks depend_on should have a higher dependents_count signal."""
+        root = self._task("Root")
+        blocker = self._task("Blocker", parent_id=root["id"])
+        dep1 = self._task("Dep1", parent_id=root["id"])
+        dep2 = self._task("Dep2", parent_id=root["id"])
+        # dep1 and dep2 both depend on blocker
+        tasks.add_task_edge(self.conn, dep1["id"], blocker["id"], "depends_on")
+        tasks.add_task_edge(self.conn, dep2["id"], blocker["id"], "depends_on")
+        result = task_analysis.execution_order(self.conn, root["id"])
+        # Find blocker in level 0
+        level0_tasks = result["levels"][0]["tasks"]
+        blocker_task = next((t for t in level0_tasks if t["id"] == blocker["id"]), None)
+        assert blocker_task is not None
+        assert blocker_task["ranking_signals"]["dependents_count"] == 2
+        # Blocker should have the highest priority in its level
+        assert blocker_task["priority_score"] == max(
+            t["priority_score"] for t in level0_tasks
+        )
+
+
+# ---------------------------------------------------------------------------
+# export_task mermaid_diagram tests
+# ---------------------------------------------------------------------------
+
+class TestExportTaskMermaid(TestAnalysisBase):
+    """Tests that export_task always includes the mermaid_diagram field."""
+
+    def test_mermaid_diagram_key_always_present(self):
+        """mermaid_diagram must be in the export_task result regardless of flags."""
+        root = self._task("Root")
+        ctx = task_analysis.export_task(self.conn, root["id"])
+        assert "mermaid_diagram" in ctx
+
+    def test_mermaid_diagram_not_gated_by_include_analysis(self):
+        """mermaid_diagram must be present even when include_analysis=False."""
+        root = self._task("Root")
+        ctx = task_analysis.export_task(self.conn, root["id"], include_analysis=False)
+        assert "mermaid_diagram" in ctx
+        assert isinstance(ctx["mermaid_diagram"], str)
+        assert len(ctx["mermaid_diagram"]) > 0
+
+    def test_mermaid_diagram_starts_with_graph_td(self):
+        """mermaid_diagram must start with 'graph TD'."""
+        root = self._task("Root")
+        ctx = task_analysis.export_task(self.conn, root["id"])
+        assert ctx["mermaid_diagram"].startswith("graph TD")
+
+    def test_mermaid_diagram_includes_subtask_titles(self):
+        """mermaid_diagram for a root task must mention all subtask titles."""
+        root = self._task("Alpha Root")
+        self._task("Beta Child", parent_id=root["id"])
+        ctx = task_analysis.export_task(self.conn, root["id"])
+        diagram = ctx["mermaid_diagram"]
+        assert "Alpha Root" in diagram
+        assert "Beta Child" in diagram
+
+    def test_mermaid_diagram_with_include_analysis_true(self):
+        """mermaid_diagram must also be present with include_analysis=True."""
+        root = self._task("Root")
+        ctx = task_analysis.export_task(self.conn, root["id"], include_analysis=True)
+        assert "mermaid_diagram" in ctx
+        assert ctx["mermaid_diagram"].startswith("graph TD")
+
+    def test_mermaid_diagram_deps_section_present_when_edges_exist(self):
+        """mermaid_diagram must include a %% Dependencies section when edges exist."""
+        root = self._task("Root")
+        a = self._task("A", parent_id=root["id"])
+        b = self._task("B", parent_id=root["id"])
+        tasks.add_task_edge(self.conn, b["id"], a["id"], "depends_on")
+        ctx = task_analysis.export_task(self.conn, root["id"])
+        diagram = ctx["mermaid_diagram"]
+        assert "%% Dependencies" in diagram
+        # b depends_on a → b --> a in mermaid
+        assert f"{b['id']} --> {a['id']}" in diagram

@@ -605,6 +605,64 @@ def blast_radius(
 # ---------------------------------------------------------------------------
 
 
+def _compute_task_priority(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> tuple[float, dict[str, Any]]:
+    """Compute a priority score [0..1] for ranking a task within an execution level.
+
+    Signals:
+    1. isolation_score (0..1) — from check_isolation. None if no code_refs.
+    2. dependents_count — tasks that depend_on this task (it is a blocker).
+    3. provider_count — contracts where this task is provider.
+
+    Formula:
+    - With code_refs:    isolation*0.6 + min(dependents/5,1.0)*0.3 + min(provider/3,1.0)*0.1
+    - Without code_refs: min(dependents/5,1.0)*0.7 + min(provider/3,1.0)*0.3
+
+    Returns:
+        (priority_score, ranking_signals) where ranking_signals is a dict with
+        raw signal values: isolation_score, dependents_count, provider_count.
+    """
+    # 1. isolation_score — None if task has no code refs
+    isolation_result = check_isolation(conn, task_id)
+    if isolation_result.get("status") == "not_applicable":
+        isolation_score: Optional[float] = None
+    else:
+        isolation_score = isolation_result.get("isolation_score")
+
+    # 2. dependents_count — tasks that list task_id as a dependency (blocker count)
+    dep_row = conn.execute(
+        "SELECT COUNT(*) FROM task_edges WHERE type='depends_on' AND target_task_id=?",
+        (task_id,),
+    ).fetchone()
+    dependents_count: int = dep_row[0] if dep_row else 0
+
+    # 3. provider_count — contracts where this task is the provider
+    try:
+        contracts = list_contracts(conn, task_id=task_id)
+        provider_count: int = sum(
+            1 for c in contracts if task_id in c.get("provider_task_ids", [])
+        )
+    except Exception:
+        provider_count = 0
+
+    signals: dict[str, Any] = {
+        "isolation_score": isolation_score,
+        "dependents_count": dependents_count,
+        "provider_count": provider_count,
+    }
+
+    dep_term = min(dependents_count / 5.0, 1.0)
+    prov_term = min(provider_count / 3.0, 1.0)
+    if isolation_score is not None:
+        score = isolation_score * 0.6 + dep_term * 0.3 + prov_term * 0.1
+    else:
+        score = dep_term * 0.7 + prov_term * 0.3
+
+    return round(score, 4), signals
+
+
 def execution_order(
     conn: sqlite3.Connection,
     root_task_id: str,
@@ -699,7 +757,7 @@ def execution_order(
     ).fetchall()
     id_to_row: dict[str, dict[str, Any]] = {r["id"]: _row_to_dict(r) for r in rows}
 
-    result = []
+    result: list[dict[str, Any]] = []
     total_actionable = 0
     for i, level in enumerate(levels):
         missing = [tid for tid in level if tid not in id_to_row]
@@ -710,6 +768,12 @@ def execution_order(
             for tid in level
             if tid in id_to_row and id_to_row[tid]["status"] not in skip_statuses
         ]
+        # Add priority scoring and sort within level (highest priority first)
+        for _td in filtered_tasks:
+            _score, _signals = _compute_task_priority(conn, _td["id"])
+            _td["priority_score"] = _score
+            _td["ranking_signals"] = _signals
+        filtered_tasks.sort(key=lambda t: t["priority_score"], reverse=True)
         if filtered_tasks:
             result.append({
                 "level": len(result),
@@ -934,7 +998,7 @@ def validate_dag(
     # --- Check 9: Non-leaf tasks with direct code_refs or contract_links ---
     # When a parent task has been further decomposed, its code_refs and
     # contract_links should live on the leaves, not the parent.
-    mixed_tasks: list[str] = []
+    mixed_tasks: list[tuple[str, str, list[str]]] = []
     for tid in subtree_ids:
         if tid in parent_ids_in_subtree:  # this task has children
             has_refs = conn.execute(
@@ -1010,6 +1074,79 @@ def _find_sibling_conflicts(
             })
 
     return conflicts
+
+
+def generate_mermaid_dag(
+    tasks: list[dict[str, Any]],
+    dependencies: list[tuple[str, str]],
+) -> str:
+    """Generate a Mermaid TD diagram for a task hierarchy with dependency edges.
+
+    Args:
+        tasks: List of dicts with keys: id, title, parent_id, status.
+        dependencies: List of (source_id, target_id) tuples for depends_on edges.
+
+    Returns:
+        A Mermaid ``graph TD`` string with subgraphs for nodes that have
+        children and plain node declarations for leaves.  Double-quotes in
+        titles are escaped as ``&quot;``.  Subgraph blocks are indented with
+        2 extra spaces relative to their parent.
+    """
+    lines: list[str] = ["graph TD"]
+
+    if not tasks:
+        return "\n".join(lines)
+
+    def _escape(text: str) -> str:
+        return (text or "").replace('"', "&quot;")
+
+    task_ids: set[str] = {t["id"] for t in tasks}
+    task_map: dict[str, dict[str, Any]] = {t["id"]: t for t in tasks}
+
+    # Build parent → children mapping and identify roots
+    children_map: dict[str, list[str]] = {t["id"]: [] for t in tasks}
+    roots: list[str] = []
+    for t in tasks:
+        pid = t.get("parent_id")
+        if pid and pid in task_ids:
+            children_map[pid].append(t["id"])
+        else:
+            roots.append(t["id"])
+
+    def _render(task_id: str, indent: int) -> None:
+        t = task_map[task_id]
+        prefix = "  " * indent
+        title = _escape(t.get("title") or "")
+        children = children_map.get(task_id, [])
+        if children:
+            lines.append(f'{prefix}subgraph cluster_{task_id} ["{title}"]')
+            for child_id in children:
+                _render(child_id, indent + 1)
+            lines.append(f"{prefix}end")
+        else:
+            lines.append(f'{prefix}{task_id}["{title}"]')
+
+    # Identify which task ids are rendered as subgraphs (have children)
+    parent_ids: set[str] = {tid for tid, children in children_map.items() if children}
+
+    def _mermaid_ref(task_id: str) -> str:
+        """Return the Mermaid node reference for a task id.
+
+        Tasks with children are rendered as ``subgraph cluster_<id>`` so their
+        reference in edge declarations must also use the ``cluster_`` prefix.
+        Leaf tasks are plain nodes referenced by their bare id.
+        """
+        return f"cluster_{task_id}" if task_id in parent_ids else task_id
+
+    for root_id in roots:
+        _render(root_id, 1)
+
+    if dependencies:
+        lines.append("  %% Dependencies")
+        for src, tgt in dependencies:
+            lines.append(f"  {_mermaid_ref(src)} --> {_mermaid_ref(tgt)}")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1175,6 +1312,31 @@ def export_task(
     )
     pending_contracts = sum(1 for c in contracts_raw if c.get("status") == "proposed")
 
+    # Mermaid DAG diagram — always generated for the full subtree
+    _mermaid_subtree_ids = list(_collect_subtree_ids(conn, task_id))
+    if _mermaid_subtree_ids:
+        _ph_m = ", ".join("?" * len(_mermaid_subtree_ids))
+        _mermaid_task_rows = conn.execute(  # noqa: S608
+            f"SELECT id, title, parent_id, status FROM tasks WHERE id IN ({_ph_m})",
+            _mermaid_subtree_ids,
+        ).fetchall()
+        _mermaid_tasks_list: list[dict[str, Any]] = [
+            _row_to_dict(r) for r in _mermaid_task_rows
+        ]
+        _mermaid_dep_rows = conn.execute(  # noqa: S608
+            f"SELECT source_task_id, target_task_id FROM task_edges "
+            f"WHERE type='depends_on' AND source_task_id IN ({_ph_m})",
+            _mermaid_subtree_ids,
+        ).fetchall()
+        _mermaid_subtree_set = set(_mermaid_subtree_ids)
+        _mermaid_deps: list[tuple[str, str]] = [
+            (r[0], r[1]) for r in _mermaid_dep_rows if r[1] in _mermaid_subtree_set
+        ]
+    else:
+        _mermaid_tasks_list = []
+        _mermaid_deps = []
+    mermaid_diagram = generate_mermaid_dag(_mermaid_tasks_list, _mermaid_deps)
+
     result: dict[str, Any] = {
         "task": task,
         "parent_chain": parent_chain,
@@ -1194,6 +1356,7 @@ def export_task(
             "pending_contracts": pending_contracts,
         },
         "subtask_code_refs_summary": subtask_code_refs_summary,
+        "mermaid_diagram": mermaid_diagram,
     }
 
     if include_analysis:
@@ -1329,8 +1492,8 @@ def roadmap(
 
     # Build phases via execution_order — exclude archived tasks unless requested
     try:
-        result = execution_order(conn, root_task_id)
-        phases_raw = result["levels"]
+        _exec_order = execution_order(conn, root_task_id)
+        phases_raw = _exec_order["levels"]
         phases = []
         for phase in phases_raw:
             phase_tasks = []

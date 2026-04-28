@@ -12,11 +12,59 @@ Use the Task DAG system to plan implementation work with full traceability to th
 
 **One root task at a time.** Before creating a new root task, call `task_get_active_root` to check if a pipeline is already running. Only create a new root task when the current pipeline is fully done or archived.
 
+Full pipeline — strictly in order:
+
+```
+BRAINSTORM → VALIDATE → DESIGN (root) → [PLAN → IMPLEMENT] × N leaves → CLOSE
+```
+
+Each stage answers a different question:
+
+| Stage | Question | Scope | Output |
+|---|---|---|---|
+| **Brainstorm** | WHAT and WHY? | Root | DAG: tasks, notes, contracts |
+| **Validate** | Are we ready? | Root | `task_validate` errors = 0 |
+| **Design** | WHAT does it consist of? | Root (1×) | Design docs: architecture, behavior, contracts, testing |
+| **Plan** | WHERE in files, in what order? | 1 leaf (N×) | `plan.md` — step-by-step checklist |
+| **Implement** | CONCRETE CODE | 1 leaf (N×) | Files, functions, tests |
+| **Close** | Mark done, propagate up | Root | `task_update(done)` |
+
+### Why the Design and Plan stages matter
+
+After brainstorm, the DAG has specs and acceptance criteria but no file paths or step order. The coder receiving a leaf task still asks: *"Where does this class go? What file to create? Which DI container to update?"*
+
+- **Design** (1 session, root-level): produces `docs/feature-name/01-architecture.md`, `02-behavior.md`, `04-testing.md`, etc. Uses `task_export(root_id, include_analysis=True)` as input. Human approves. Then `task_update` each leaf to `status="ready"` with finalized spec + AC.
+- **Plan** (per leaf): reads `task_export(leaf_id, include_source=True)` + design docs + real file structure (`find_files_by_pattern`, `query_graph`). Produces `plan.md` — ordered checklist of file operations, edits, test cases. No new MCP tools needed — all data is already available.
+
+### Inputs and outputs per stage
+
+```
+# Design input (once per root)
+task_export(root_id, include_analysis=True)   # full subtree spec
+→ design docs: 01-architecture.md … 08-api-contract.md
+→ human approval ✅
+→ task_update each leaf: status="ready", spec=..., acceptance_criteria=...
+
+# Plan input (per leaf, after design)
+task_export(leaf_id, include_source=True)     # spec, AC, contracts, code_refs
+find_files_by_pattern(["src/auth/*"])         # actual file structure
+query_graph(pattern="children_of", target="src/auth/")
+contract_list(task_id=leaf_id)
+→ plan.md with step-by-step checklist (mkdir, create file, edit DI, write tests)
+
+# Implement (per leaf)
+Follow plan.md checklist.
+task_update([{task_id, status: "done"}])
+task_check_rollup(leaf_id)
+```
+
 Workflow phases — strictly in order:
 1. **Brainstorm** — full task tree with notes, contracts, code links
-2. **Validate** — `task_validate` must pass (0 errors) before implementation
-3. **Implement** — task by task, leaf-first, following `task_execution_order`
-4. **Close** — mark done, `task_check_rollup` to propagate up the tree
+2. **Validate** — `task_validate` must pass (0 errors) before design
+3. **Design** — architecture + behavior docs for the root (1 session)
+4. **Plan** — step-by-step file checklist for each leaf (N sessions)
+5. **Implement** — code each leaf following its plan
+6. **Close** — mark done, `task_check_rollup` to propagate up the tree
 
 ## Phase 1: Create the Task Tree
 
@@ -423,6 +471,37 @@ task_export(task_id, include_analysis=True) # + isolation, conflicts, pipeline_s
 task_roadmap()                             # progress snapshot + attention block
 ```
 
+Every `task_export` response includes a `mermaid_diagram` field — a `graph TD` Mermaid diagram
+of the **full subtree** with subgraphs for parent tasks and `depends_on` edges between leaves.
+
+### Mermaid diagram for the Designer
+
+The `mermaid_diagram` from `task_export(root_id)` gives the designer the complete task skeleton
+at a glance — all mid-level groups and their leaf tasks, with dependency arrows showing what
+must be done before what. Use it to:
+
+- **Understand scope instantly** — one look shows all nested levels without scrolling through task lists
+- **Spot deep nesting** — if a subtree has 3+ levels of nesting and many leaves, that branch is a
+  candidate for a dedicated sub-agent design session rather than a single monolithic design pass
+- **Distribute design work across sub-agents** — when the tree is large, split by top-level mid-task:
+
+```
+# Full tree too large for one design session? Use mermaid to identify natural splits:
+task_export(root_id)
+→ mermaid_diagram shows:
+    subgraph cluster_t2 [JWT Token Service]      ← 8 leaves
+    subgraph cluster_t3 [Google OAuth Flow]      ← 6 leaves
+    subgraph cluster_t4 [Login Endpoint]         ← 4 leaves
+
+# Hand each cluster to a separate designer sub-agent:
+task_export(t2_id, include_analysis=True)   # → designer agent A (JWT)
+task_export(t3_id, include_analysis=True)   # → designer agent B (Google OAuth)
+task_export(t4_id, include_analysis=True)   # → designer agent C (Login)
+```
+
+Rule of thumb: if a single mid-level subtree has **more than 8 leaves**, spawn a dedicated
+design sub-agent for it. The `mermaid_diagram` makes this split decision visual and obvious.
+
 CLI equivalent (generates markdown file for humans + LLM):
 ```bash
 code-review-graph task-report
@@ -492,6 +571,8 @@ task_execution_order(root_task_id)   # returns parallel levels
   - `task_archive(task_ids=[...], reason=...)` — selective archiving
   - `note_add(task_id=.., notes=[...])` — add brainstorm notes
 - **Handoff**: designer gets `task_export(mid_task_id)`, coder gets `task_export(leaf_task_id, include_analysis=True)`
+- **`mermaid_diagram`**: every `task_export` returns this field — use it to instantly see the full subtree skeleton (subgraphs = parent tasks, arrows = `depends_on` edges). For deep trees (3+ levels, many leaves), use it to identify subtree boundaries and distribute design/plan work across sub-agents — one sub-agent per top-level cluster
+- **`priority_score` in execution levels**: `task_execution_order` now returns each task enriched with `priority_score` (0..1) and `ranking_signals` (`isolation_score`, `dependents_count`, `provider_count`). Tasks within each level are sorted by score descending — the most foundational (many dependents) and most isolated (safe to implement alone) tasks come first. Start with the highest-score tasks in each level
 - Always link leaf tasks to code before `task_validate` — unlisted code refs are a warning
 - Use `note_list(include_children=True)` to search decisions across the whole brainstorm
 - `task_suggest_code_links(task_id)` — scored by keyword match count, already-linked nodes excluded, `limit=20` default
