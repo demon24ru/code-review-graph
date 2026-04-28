@@ -877,7 +877,7 @@ def task_check_isolation_func(
     """
     def _fn(conn, task_id):
         result = task_analysis.check_isolation(conn, task_id)
-        score = result["isolation_score"]
+        score = result["isolation_score"] if result["isolation_score"] else 0.0
         quality = "good" if score >= 0.7 else ("marginal" if score >= 0.4 else "poor")
         return _ok(
             f"Isolation score: {score:.2f} ({quality}) — "
