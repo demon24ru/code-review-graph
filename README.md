@@ -294,7 +294,7 @@ Your AI assistant uses these automatically once the graph is built.
 |------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `task_get_active_root` | Return the single open root task (or null if idle)                                                                                                                                                |
 | `task_create` | Create tasks under a shared parent — batch list API: `tasks=[{title, description?}]`; optional `edges=[{from, to, type?}]` for atomic decomposition + wiring                                      |
-| `task_update` | Update title, description, status, spec, acceptance_criteria                                                                                                                                      |
+| `task_update` | Update title, description, status, spec, acceptance_criteria — batch list API: `updates=[{task_id, title?, description?, status?, spec?, acceptance_criteria?}]`                                                                                                                      |
 | `task_edit` | Surgically edit a text field: search/replace or line-range                                                                                                                                        |
 | `task_delete` | Delete a task. `cascade=True` deletes subtree. `dry_run=True` previews `would_delete` list without executing. Response echoes `deleted_tasks: [{id, title}]`                                      |
 | `task_get` | Get a task by ID                                                                                                                                                                                  |
@@ -450,7 +450,7 @@ task_create("Refresh rotation", parent=..)  # L2 subtask under Token storage
 - What existing code does this touch? → `semantic_search_nodes_tool`, `task_link_code`
 - What new structures does this introduce? → `contract_add` (design entities)
 - What does this depend on? → `task_add_edge(type="depends_on")`
-- What are the acceptance criteria? → `task_update(acceptance_criteria=...)`
+- What are the acceptance criteria? → `task_update(updates=[{task_id, acceptance_criteria: ...}])`
 - Are there open questions? → `note_add(type="question")`
 - Are there assumptions to verify? → `note_add(type="assumption")`
 - Are there constraints? → `note_add(type="constraint")`
@@ -522,7 +522,7 @@ This gives the coder:
 As each leaf is completed:
 
 ```
-task_update(task_id, status="done")
+task_update(updates=[{"task_id": task_id, "status": "done"}])
 task_check_rollup(task_id)          # Can the parent close too?
 ```
 
@@ -534,7 +534,7 @@ When all subtasks are done:
 
 ```
 task_roadmap()     # progress: 100%, all phases done
-task_update(root_id, status="done")
+task_update(updates=[{"task_id": root_id, "status": "done"}])
 ```
 
 The pipeline is now idle. `task_get_active_root` returns `null`. A new root task can be created.
@@ -714,11 +714,11 @@ task_validate()                                     # must be error-free
 
 # Implement
 task_export(leaf_task_id, include_analysis=True)    # full context for coder
-task_update(leaf_task_id, status="done")
+task_update(updates=[{"task_id": leaf_task_id, "status": "done"}])
 task_check_rollup(leaf_task_id)                     # can parent close?
 
 # Close
-task_update(root_id, status="done")
+task_update(updates=[{"task_id": root_id, "status": "done"}])
 task_get_active_root()                              # → null, pipeline idle
 ```
 

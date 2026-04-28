@@ -409,7 +409,7 @@ task_validate()   # auto-detects active root, runs 9 checks
 Required: **0 errors** before handing off to coder. Warnings are advisory.
 
 Common errors to fix:
-- Missing `acceptance_criteria` on leaf tasks → add via `task_update`
+- Missing `acceptance_criteria` on leaf tasks → add via `task_update(updates=[{task_id, acceptance_criteria: "..."}])`
 - Open questions → resolve via `note_update(note_id, status="resolved", resolution="...")`
 - Proposed contracts between ready tasks → `contract_update(id, status="agreed")`
   # Backward transition (e.g. implemented→proposed) returns a "warning" field in response
@@ -431,8 +431,8 @@ code-review-graph task-report
 ## Phase 9: Implementation Tracking
 
 ```
-task_update(task_id, status="in_progress")
-task_update(task_id, status="done")
+task_update(updates=[{"task_id": task_id, "status": "in_progress"}])
+task_update(updates=[{"task_id": task_id, "status": "done"}])
 task_check_rollup(task_id)    # check if parent can be closed
 ```
 

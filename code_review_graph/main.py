@@ -1039,31 +1039,32 @@ def task_create(
 
 @mcp.tool()
 def task_update(
-    task_id: str,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    status: Optional[str] = None,
-    spec: Optional[str] = None,
-    acceptance_criteria: Optional[str] = None,
+    updates: list,
     repo_root: Optional[str] = None,
 ) -> dict:
-    """Update fields of an existing task.
+    """Update fields of one or more existing tasks.
 
-    [BRAINSTORM] Only supplied (non-None) fields are changed.
+    [BRAINSTORM] Batch-only API: always pass a list, even for a single task.
+    Only supplied (non-None) fields in each item are changed.
     Valid status: draft | refined | ready | in_progress | done | archived.
 
+    Single task:
+        task_update(updates=[{"task_id": "t1", "status": "done"}])
+
+    Batch update (common when closing multiple leaf tasks at once):
+        task_update(updates=[
+            {"task_id": "t2", "status": "done"},
+            {"task_id": "t3", "status": "done"},
+            {"task_id": "t4", "acceptance_criteria": "All edge cases handled"},
+        ])
+
     Args:
-        task_id: Task ID to update.
-        title: New title.
-        description: New description.
-        status: New status.
-        spec: Full coder specification.
-        acceptance_criteria: Verification criteria.
+        updates: List of dicts — each with ``task_id`` (required) plus any of:
+            ``title``, ``description``, ``status``, ``spec``,
+            ``acceptance_criteria``.
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return task_update_func(task_id=task_id, title=title, description=description,
-                            status=status, spec=spec,
-                            acceptance_criteria=acceptance_criteria, repo_root=repo_root)
+    return task_update_func(updates=updates, repo_root=repo_root)
 
 
 @mcp.tool()

@@ -334,6 +334,49 @@ def update_task(
     return get_task(conn, task_id)
 
 
+def update_tasks(
+    conn: sqlite3.Connection,
+    updates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Update multiple tasks in a single transaction.
+
+    Batch-only API: always pass a list, even for a single task.
+
+    Each item in *updates* must have ``task_id`` plus any of:
+    ``title``, ``description``, ``status``, ``spec``, ``acceptance_criteria``.
+
+    Args:
+        updates: List of dicts, each with ``task_id`` (required) and optional
+            ``title``, ``description``, ``status``, ``spec``,
+            ``acceptance_criteria``.
+
+    Returns:
+        ``{"tasks": [updated_task_objects], "errors": [{task_id, error}, ...]}``
+    """
+    updated_tasks: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for item in updates:
+        task_id = item.get("task_id")
+        if not task_id:
+            errors.append({"task_id": "", "error": "missing task_id"})
+            continue
+        try:
+            task = update_task(
+                conn, task_id,
+                title=item.get("title"),
+                description=item.get("description"),
+                status=item.get("status"),
+                spec=item.get("spec"),
+                acceptance_criteria=item.get("acceptance_criteria"),
+            )
+            updated_tasks.append(task)
+        except (KeyError, ValueError) as exc:
+            errors.append({"task_id": task_id, "error": str(exc)})
+
+    return {"tasks": updated_tasks, "errors": errors}
+
+
 def _propagate_contract_status(
     conn: sqlite3.Connection, task_id: str, contract_status: str
 ) -> None:

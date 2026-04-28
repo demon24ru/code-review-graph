@@ -58,7 +58,7 @@ Lifecycle: `proposed → agreed → implemented → verified`
 | Tool | Description |
 |------|-------------|
 | `task_create` | Create a task. Optionally supply `parent_id` for subtasks. |
-| `task_update` | Update title, description, status, spec, acceptance_criteria. |
+| `task_update` | Update title, description, status, spec, acceptance_criteria — batch list API: `updates=[{task_id, ...}]`. |
 | `task_edit` | Surgically edit a text field: search/replace or line-range mode. |
 | `task_get` | Get a task by ID. |
 | `task_list` | List tasks with filters: parent_id, status, root_only. |
@@ -221,10 +221,12 @@ User: "Add OAuth authorization via Google and GitHub"
 18. task_validate(root_id)
     → errors: 0, warnings: 2 (no acceptance_criteria)
 
-19. task_update(t_iface, acceptance_criteria="OAuthProvider interface defined")
-    task_update(t_jwt, acceptance_criteria="Token generated and validated")
-    task_update(t_google, acceptance_criteria="Google OAuth flow working")
-    task_update(t_login, acceptance_criteria="Login with Google/GitHub works")
+19. task_update(updates=[
+        {"task_id": t_iface, "acceptance_criteria": "OAuthProvider interface defined"},
+        {"task_id": t_jwt, "acceptance_criteria": "Token generated and validated"},
+        {"task_id": t_google, "acceptance_criteria": "Google OAuth flow working"},
+        {"task_id": t_login, "acceptance_criteria": "Login with Google/GitHub works"},
+    ])
 
 20. task_validate(root_id)
     → errors: 0, warnings: 0, ready for coder: True

@@ -107,6 +107,51 @@ class TestTaskCRUD(TestTaskBase):
         updated = tasks.update_task(self.conn, t["id"])
         assert updated["title"] == "T"
 
+    def test_update_tasks_batch_single(self):
+        t = tasks.create_task(self.conn, [{"title": "Batch"}])["tasks"][0]
+        result = tasks.update_tasks(self.conn, [{"task_id": t["id"], "title": "BatchNew"}])
+        assert result["errors"] == []
+        assert len(result["tasks"]) == 1
+        assert result["tasks"][0]["title"] == "BatchNew"
+
+    def test_update_tasks_batch_multiple(self):
+        t1 = tasks.create_task(self.conn, [{"title": "T1"}])["tasks"][0]
+        t2 = tasks.create_task(self.conn, [{"title": "T2"}], parent_id=t1["id"])["tasks"][0]
+        result = tasks.update_tasks(self.conn, [
+            {"task_id": t1["id"], "status": "in_progress"},
+            {"task_id": t2["id"], "title": "T2-updated", "status": "ready"},
+        ])
+        assert result["errors"] == []
+        assert len(result["tasks"]) == 2
+        titles = {t["id"]: t["title"] for t in result["tasks"]}
+        statuses = {t["id"]: t["status"] for t in result["tasks"]}
+        assert titles[t2["id"]] == "T2-updated"
+        assert statuses[t1["id"]] == "in_progress"
+        assert statuses[t2["id"]] == "ready"
+
+    def test_update_tasks_batch_missing_task_id(self):
+        result = tasks.update_tasks(self.conn, [{"title": "No ID"}])
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["error"] == "missing task_id"
+        assert result["tasks"] == []
+
+    def test_update_tasks_batch_nonexistent_id(self):
+        result = tasks.update_tasks(self.conn, [{"task_id": "no-such-id", "title": "X"}])
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["task_id"] == "no-such-id"
+        assert result["tasks"] == []
+
+    def test_update_tasks_batch_partial_errors(self):
+        t = tasks.create_task(self.conn, [{"title": "Good"}])["tasks"][0]
+        result = tasks.update_tasks(self.conn, [
+            {"task_id": t["id"], "title": "Updated"},
+            {"task_id": "bad-id", "status": "done"},
+        ])
+        assert len(result["tasks"]) == 1
+        assert result["tasks"][0]["title"] == "Updated"
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["task_id"] == "bad-id"
+
     def test_list_tasks_all(self):
         root = tasks.create_task(self.conn, [{"title": "A"}])["tasks"][0]
         tasks.create_task(self.conn, [{"title": "B"}], parent_id=root["id"])

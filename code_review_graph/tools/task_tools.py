@@ -207,40 +207,33 @@ def task_create_func(
 
 
 def task_update_func(
-    task_id: str,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    status: Optional[str] = None,
-    spec: Optional[str] = None,
-    acceptance_criteria: Optional[str] = None,
+    updates: list[dict],
     repo_root: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Update fields of an existing task.
+    """Update one or more tasks.
 
-    [BRAINSTORM] Updates one or more fields. Only supplied (non-None) fields
-    are changed. Valid status values: draft, refined, ready, in_progress, done,
-    archived.
+    [BRAINSTORM] Batch-only API: always pass a list, even for a single task.
+    Only supplied (non-None) fields in each item are changed.
+    Valid status values: draft, refined, ready, in_progress, done, archived.
 
     Args:
-        task_id: ID of the task to update.
-        title: New title.
-        description: New description.
-        status: New status.
-        spec: Full specification for the coder.
-        acceptance_criteria: How to verify completion.
+        updates: List of dicts, each with ``task_id`` (required) plus any of:
+            ``title``, ``description``, ``status``, ``spec``,
+            ``acceptance_criteria``.
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
-        The updated task dict.
+        ``{"tasks": [updated_task_objects], "errors": [{task_id, error}, ...]}``
     """
-    def _fn(conn, task_id, title, description, status, spec, ac):
-        task = tasks.update_task(
-            conn, task_id,
-            title=title, description=description, status=status,
-            spec=spec, acceptance_criteria=ac,
+    def _fn(conn, updates):
+        result = tasks.update_tasks(conn, updates)
+        n_ok = len(result["tasks"])
+        n_err = len(result["errors"])
+        return _ok(
+            f"Updated {n_ok} task(s)" + (f", {n_err} error(s)" if n_err else ""),
+            **result,
         )
-        return _ok(f"Updated task '{task['title']}'", task=task)
-    return _run(repo_root, _fn, task_id, title, description, status, spec, acceptance_criteria)
+    return _run(repo_root, _fn, updates)
 
 
 def task_edit_func(
