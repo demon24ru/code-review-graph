@@ -35,6 +35,7 @@ from .tools import (
     get_docs_section,
     get_flow,
     get_impact_radius,
+    get_project_standards_func,
     get_review_context,
     get_wiki_page_func,
     import_scip_func,
@@ -49,6 +50,11 @@ from .tools import (
     trace_dataflow,
     unregister_repo_func,
 )
+from .tools.c4_tools import (
+    get_architecture_skeleton_func,
+    update_architecture_skeleton_func,
+)
+from .tools.sequence_tools import generate_sequence_func
 from .tools.task_tools import (
     contract_add_func,
     contract_delete_func,
@@ -338,6 +344,29 @@ def get_docs_section_tool(
         section_name: The section to retrieve (e.g. "review-delta", "usage").
     """
     return get_docs_section(section_name=section_name, repo_root=_default_repo_root)
+
+
+@mcp.tool()
+def get_project_standards_tool(
+    section: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Read project standards from prompts/ directory.
+
+    Returns content of standard files that define coding patterns,
+    architecture principles, and conventions for this project.
+
+    Args:
+        section: Specific file to read (without .md extension).
+                 E.g. "patterns", "stack", "conventions".
+                 Omit to get index of available sections.
+        repo_root: Repository root path.
+
+    Returns:
+        If section specified: { status, section, content }
+        If no section: { status, sections: [{name, size_bytes}] }
+    """
+    return get_project_standards_func(section=section, repo_root=repo_root)
 
 
 @mcp.tool()
@@ -2030,6 +2059,86 @@ def task_check_rollup(
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return task_check_rollup_func(task_id=task_id, repo_root=repo_root)
+
+
+@mcp.tool()
+def generate_sequence_tool(
+    task_id: Optional[str] = None,
+    flow_id: Optional[int] = None,
+    flow_name: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Auto-generate a Mermaid sequence diagram from flows or task contracts.
+
+    Dispatches to the appropriate mode based on which arguments are provided:
+
+    - **Flow mode** (``flow_id`` or ``flow_name``): Reads the stored execution
+      flow from the code graph and converts its call chain into a Mermaid
+      ``sequenceDiagram``.  Participants are grouped by source file.
+
+    - **Contract mode** (``task_id``): Uses task contracts and execution order
+      from the Task DAG to build a sequence diagram.  Each contract becomes an
+      arrow from provider to consumer.  Gaps (missing error cases, etc.) are
+      reported in the ``gaps`` field.
+
+    Args:
+        task_id: Root task ID for contract-based generation.
+        flow_id: Integer flow ID for flow-based generation.
+        flow_name: Partial flow name for flow-based generation (ignored if flow_id given).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return generate_sequence_func(
+        task_id=task_id, flow_id=flow_id, flow_name=flow_name, repo_root=repo_root
+    )
+
+
+@mcp.tool()
+def get_architecture_skeleton_tool(
+    level: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Get the persistent C4 architecture skeleton.
+
+    Returns contents of .code-review-graph/architecture.c4.
+    Primary orientation tool for any LLM agent working on architecture design.
+
+    Args:
+        level: Optional filter:
+            - None → full file content
+            - "context" → C4Context diagram only
+            - "containers" → C4Container diagram only
+            - "components" → all C4Component diagrams
+            - "components:MODULE_SLUG" → specific module's components (case-insensitive)
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return get_architecture_skeleton_func(level=level, repo_root=repo_root)
+
+
+@mcp.tool()
+def update_architecture_skeleton_tool(
+    feature_tag: str,
+    operations: list,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Structured editing of architecture.c4 — add/modify/remove elements.
+
+    LLM describes WHAT to change; the tool handles HOW in valid Mermaid C4.
+    Only [FEATURE] sections are writable. [AUTO] sections are read-only.
+
+    Operations:
+        add:    {"op": "add",    "diagram": "Containers", "element": {kind, id, label, ...}}
+        modify: {"op": "modify", "diagram": "Containers", "element_id": "auth",
+                 "changes": {"description": "new desc"}}
+        remove: {"op": "remove", "diagram": "Containers", "element_id": "oauth"}
+
+    Args:
+        feature_tag: Feature identifier, e.g. "oauth:t1".
+        operations: List of structured operations (see above).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return update_architecture_skeleton_func(
+        feature_tag=feature_tag, operations=operations, repo_root=repo_root
+    )
 
 
 def main(repo_root: str | None = None) -> None:

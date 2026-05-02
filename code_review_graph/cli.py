@@ -10,10 +10,12 @@ Usage:
     code-review-graph serve
     code-review-graph visualize
     code-review-graph wiki
+    code-review-graph c4 [--rebuild]
     code-review-graph detect-changes [--base BASE] [--brief]
     code-review-graph register <path> [--alias name]
     code-review-graph unregister <path_or_alias>
     code-review-graph repos
+    code-review-graph dashboard [--port PORT] [--task ID] [--no-browser]
 """
 
 from __future__ import annotations
@@ -82,12 +84,14 @@ def _print_banner() -> None:
     {g}status{r}      Show graph statistics
     {g}visualize{r}   Generate interactive HTML graph
     {g}wiki{r}        Generate markdown wiki from communities
+    {g}c4{r}          Generate C4 architecture diagram
     {g}detect-changes{r} Analyze change impact {d}(risk-scored review){r}
     {g}task-report{r}  Generate markdown report of the full task tree
     {g}register{r}    Register a repository in the multi-repo registry
     {g}unregister{r}  Remove a repository from the registry
     {g}repos{r}       List registered repositories
     {g}questions{r}   Open web UI for answering brainstorm questions
+    {g}dashboard{r}   Launch interactive dashboard
     {g}eval{r}        Run evaluation benchmarks
     {g}serve{r}       Start MCP server
 
@@ -152,7 +156,97 @@ def _handle_init(args: argparse.Namespace) -> None:
     print("  2. Restart your AI coding tool to pick up the new config")
 
 
+def _cmd_c4(args: argparse.Namespace) -> None:
+    """Generate or rebuild architecture.c4 from the code graph."""
+    from .c4_generator import build_c4, get_c4_path, rebuild_c4
+    from .graph import GraphStore
+    from .incremental import find_project_root, get_db_path
+
+    root = Path(args.repo) if args.repo else find_project_root()
+    if not root:
+        root = Path.cwd()
+
+    db = get_db_path(root)
+    if not db.exists():
+        print("No graph database found. Run 'code-review-graph build' first.")
+        sys.exit(1)
+
+    store = GraphStore(str(db))
+    try:
+        c4_path = get_c4_path(str(root))
+        repo_name = root.name  # use directory name as repo name
+
+        if args.rebuild and c4_path.exists():
+            existing = c4_path.read_text(encoding="utf-8")
+            content = rebuild_c4(store, existing, repo_name)
+            action = "Rebuilt"
+        else:
+            content = build_c4(store, repo_name)
+            action = "Generated"
+
+        # Ensure parent directory exists
+        c4_path.parent.mkdir(parents=True, exist_ok=True)
+        c4_path.write_text(content, encoding="utf-8")
+
+        # Count diagrams for user feedback
+        line_count = len(content.strip().split("\n"))
+        print(f"{action} architecture.c4 ({line_count} lines)")
+        print(f"  Path: {c4_path}")
+    finally:
+        store.close()
+
+
+def _cmd_dashboard(args: argparse.Namespace) -> None:
+    """Launch the dashboard web UI."""
+    from .dashboard_ui import start_dashboard
+    from .incremental import find_project_root, get_db_path
+
+    root = Path(args.repo) if args.repo else find_project_root()
+    if not root:
+        root = Path.cwd()
+
+    db = get_db_path(root)
+    if not db.exists():
+        print("No graph database found. Run 'code-review-graph build' first.")
+        sys.exit(1)
+
+    # Auto-detect active root task if not specified
+    root_task_id = args.task
+    if not root_task_id:
+        import sqlite3
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        try:
+            from .tasks import get_active_root
+            active = get_active_root(conn)
+            if active:
+                root_task_id = active["id"]
+        finally:
+            conn.close()
+
+    start_dashboard(
+        port=args.port,
+        root_task_id=root_task_id,
+        repo_root=str(root),
+        open_browser=not args.no_browser,
+    )
+
+
+def _activate_windows_ansi():
+    """Включает поддержку ANSI-последовательностей в консоли Windows."""
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # -11 — это стандартный вывод (STD_OUTPUT_HANDLE)
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            # 0x0004 — это ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+
+
 def main() -> None:
+    _activate_windows_ansi()
     """Main CLI entry point."""
     ap = argparse.ArgumentParser(
         prog="code-review-graph",
@@ -258,6 +352,15 @@ def main() -> None:
         help="Regenerate all pages even if content unchanged",
     )
 
+    # c4
+    c4_cmd = sub.add_parser("c4", help="Generate C4 architecture diagram")
+    c4_cmd.add_argument(
+        "--rebuild", action="store_true",
+        help="Update [AUTO] sections, preserve [FEATURE]",
+    )
+    c4_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    c4_cmd.set_defaults(func=_cmd_c4)
+
     # register
     register_cmd = sub.add_parser(
         "register", help="Register a repository in the multi-repo registry"
@@ -292,6 +395,26 @@ def main() -> None:
         help="Don't open browser automatically",
     )
     questions_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+
+    # dashboard
+    dashboard_cmd = sub.add_parser(
+        "dashboard",
+        help="Launch interactive dashboard",
+    )
+    dashboard_cmd.add_argument(
+        "--port", type=int, default=6235,
+        help="Local port (default: 6235)",
+    )
+    dashboard_cmd.add_argument(
+        "--task", default=None, metavar="ID",
+        help="Root task ID (auto-detected from active task if omitted)",
+    )
+    dashboard_cmd.add_argument(
+        "--no-browser", action="store_true",
+        help="Don't open browser automatically",
+    )
+    dashboard_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+    dashboard_cmd.set_defaults(func=_cmd_dashboard)
 
     # eval
     eval_cmd = sub.add_parser("eval", help="Run evaluation benchmarks")
@@ -403,7 +526,7 @@ def main() -> None:
         _handle_init(args)
         return
 
-    if args.command in ("register", "unregister", "repos", "questions"):
+    if args.command in ("register", "unregister", "repos", "questions", "dashboard"):
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
         from .registry import Registry
 
@@ -433,8 +556,8 @@ def main() -> None:
                     alias_str = f"  ({alias})" if alias else ""
                     print(f"  {entry['path']}{alias_str}")
         elif args.command == "questions":
-            from .questions_ui import serve as serve_questions
             from .incremental import find_project_root
+            from .questions_ui import serve as serve_questions
             repo_root = Path(args.repo) if args.repo else find_project_root()
             if not repo_root:
                 print("Error: Could not detect repository root.")
@@ -449,6 +572,9 @@ def main() -> None:
             except ValueError as exc:
                 print(f"Error: {exc}")
                 sys.exit(1)
+            return
+        elif args.command == "dashboard":
+            _cmd_dashboard(args)
             return
         return
 
@@ -569,6 +695,9 @@ def main() -> None:
                 f"({total} total pages)"
             )
             print(f"Output: {wiki_dir}")
+
+        elif args.command == "c4":
+            _cmd_c4(args)
 
         elif args.command == "task-report":
             from .task_report import generate_task_report

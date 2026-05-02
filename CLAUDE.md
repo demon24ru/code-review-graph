@@ -10,11 +10,11 @@
   - `parser.py` — Tree-sitter multi-language AST parser (19 languages including Vue SFC, Solidity, Dart, R, Perl, Lua + Jupyter/Databricks notebooks)
   - `graph.py` — SQLite-backed graph store (nodes, edges, BFS impact analysis)
   - `tools.py` — 28 MCP tool implementations (code-graph layer)
-  - `main.py` — FastMCP server entry point (stdio transport), registers 71 tools (30 code-graph + 41 task DAG) + 5 prompts
+  - `main.py` — FastMCP server entry point (stdio transport), registers 75 tools (34 code-graph + 41 task DAG) + 5 prompts
   - `incremental.py` — Git-based change detection, file watching
   - `embeddings.py` — Optional vector embeddings (Local sentence-transformers, Google Gemini, MiniMax)
   - `visualization.py` — D3.js interactive HTML graph generator
-  - `cli.py` — CLI entry point (install, build, update, watch, status, visualize, serve, wiki, detect-changes, task-report, register, unregister, repos, eval)
+  - `cli.py` — CLI entry point (install, build, update, watch, status, visualize, serve, wiki, detect-changes, task-report, register, unregister, repos, eval, c4, dashboard, questions)
   - `task_report.py` — Markdown task-tree report generator (human + LLM readable)
   - `flows.py` — Execution flow detection and criticality scoring
   - `communities.py` — Community detection (Leiden algorithm or file-based grouping) and architecture overview
@@ -26,10 +26,17 @@
   - `wiki.py` — Markdown wiki generation from community structure
   - `skills.py` — Skill definitions for Claude Code plugin
   - `registry.py` — Multi-repo registry with connection pool
-  - `migrations.py` — Database schema migrations (v1-v6)
+  - `migrations.py` — Database schema migrations (v1-v11)
   - `tasks.py` — Task DAG CRUD, edge management, code refs, notes, contracts
   - `task_analysis.py` — Algorithmic analysis: conflicts, isolation, blast_radius, execution_order, validate, build_context, roadmap
   - `tools/task_tools.py` — 35 MCP tool wrappers for Task DAG
+  - `c4_parser.py` — Parse/write Mermaid C4 DSL with round-trip fidelity (4 dataclasses + parser + writer)
+  - `c4_generator.py` — Generate C4 architecture from code graph communities ([AUTO] sections), rebuild preserving [FEATURE] sections
+  - `sequence_generator.py` — Auto-generate Mermaid sequence diagrams from execution flows and task contracts
+  - `dashboard_ui.py` — Interactive web dashboard (stdlib http.server + Vue.js/Cytoscape.js/Mermaid.js via CDN)
+  - `tools/c4_tools.py` — MCP tools: get_architecture_skeleton, update_architecture_skeleton
+  - `tools/standards_tools.py` — MCP tool: get_project_standards (reads prompts/ directory)
+  - `tools/sequence_tools.py` — MCP tool: generate_sequence
   - `tsconfig_resolver.py` — TypeScript path alias resolution
 
 - **VS Code Extension**: `code-review-graph-vscode/` (TypeScript)
@@ -37,12 +44,13 @@
   - Reads from `.code-review-graph/graph.db` via SQLite
 
 - **Database**: `.code-review-graph/graph.db` (SQLite, WAL mode)
+- **Architecture**: `.code-review-graph/architecture.c4` (Mermaid C4 DSL, persisted C4 skeleton)
 
 ## Key Commands
 
 ```bash
 # Development
-uv run pytest tests/ --tb=short -q          # Run tests (658 tests)
+uv run pytest tests/ --tb=short -q          # Run tests (800+ tests)
 uv run ruff check code_review_graph/        # Lint
 uv run mypy code_review_graph/ --ignore-missing-imports --no-strict-optional
 
@@ -57,6 +65,10 @@ uv run code-review-graph detect-changes     # Risk-scored change analysis
 uv run code-review-graph register <path>    # Register repo in multi-repo registry
 uv run code-review-graph repos              # List registered repos
 uv run code-review-graph eval               # Run evaluation benchmarks
+uv run code-review-graph c4                 # Generate C4 architecture diagram
+uv run code-review-graph c4 --rebuild       # Rebuild preserving [FEATURE] sections
+uv run code-review-graph dashboard          # Launch interactive web dashboard
+uv run code-review-graph questions          # Open web UI for answering brainstorm questions
 ```
 
 ## Code Conventions
@@ -105,6 +117,14 @@ uv run code-review-graph eval               # Run evaluation benchmarks
 - `tests/test_tasks.py` — Task DAG CRUD, edges, code refs, notes, contracts (71 tests)
 - `tests/test_task_analysis.py` — Conflicts, isolation, blast_radius, validate, roadmap (26 tests)
 - `tests/test_task_integration.py` — Full brainstorm workflow + cross-layer analysis (8 tests)
+- `tests/test_c4_parser.py` — Mermaid C4 parse/write round-trip (62 tests)
+- `tests/test_c4_generator.py` — C4 generation from code graph communities (30 tests)
+- `tests/test_c4_tools.py` — Architecture skeleton MCP tools (11 tests)
+- `tests/test_sequence_generator.py` — Sequence diagram generation from flows/contracts (18 tests)
+- `tests/test_standards_tools.py` — Project standards tool (11 tests)
+- `tests/test_dashboard.py` — Dashboard UI API endpoints (11 tests)
+- `tests/test_cli_c4.py` — CLI c4 command (4 tests)
+- `tests/test_cli_dashboard.py` — CLI dashboard command (2 tests)
 - `tests/fixtures/` — Sample files for each supported language
 
 ## CI Pipeline

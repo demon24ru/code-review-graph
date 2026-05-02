@@ -366,3 +366,109 @@ class TestMigrationV9:
         assert row is not None
         name = row[0] if isinstance(row, tuple) else row["name"]
         assert name == "IFoo"
+
+
+class TestMigrationV11:
+    """v11 migration: add c4_element_id column to notes table."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+        self.conn = self.store._conn
+
+    def teardown_method(self):
+        self.store.close()
+        try:
+            Path(self.tmp.name).unlink()
+        except PermissionError:
+            pass
+
+    def test_c4_element_id_column_exists(self):
+        """After v11, notes table must have c4_element_id column."""
+        cols = _get_columns(self.conn, "notes")
+        assert "c4_element_id" in cols
+
+    def test_c4_element_id_is_nullable(self):
+        """c4_element_id column must be nullable (TEXT without NOT NULL)."""
+        import time
+        now = time.time()
+        # Insert a task first
+        self.conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("t1", "Test task", "draft", now, now),
+        )
+        # Insert a note without c4_element_id (should work if nullable)
+        self.conn.execute(
+            "INSERT INTO notes (id, task_id, note_type, content, status, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("n1", "t1", "question", "Test note", "open", now, now),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT c4_element_id FROM notes WHERE id = ?", ("n1",)
+        ).fetchone()
+        assert row is not None
+        c4_id = row[0] if isinstance(row, tuple) else row["c4_element_id"]
+        assert c4_id is None
+
+    def test_c4_element_id_can_be_set(self):
+        """c4_element_id column can be set to a value."""
+        import time
+        now = time.time()
+        # Insert a task
+        self.conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("t2", "Test task 2", "draft", now, now),
+        )
+        # Insert a note with c4_element_id
+        self.conn.execute(
+            "INSERT INTO notes (id, task_id, note_type, content, status, "
+            "c4_element_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("n2", "t2", "decision", "C4 annotation", "open", "elem_123", now, now),
+        )
+        self.conn.commit()
+        row = self.conn.execute(
+            "SELECT c4_element_id FROM notes WHERE id = ?", ("n2",)
+        ).fetchone()
+        assert row is not None
+        c4_id = row[0] if isinstance(row, tuple) else row["c4_element_id"]
+        assert c4_id == "elem_123"
+
+    def test_v11_idempotent_rerun(self):
+        """Running v11 migration again on an already-migrated DB is a no-op."""
+        from code_review_graph.migrations import _migrate_v11
+        _migrate_v11(self.conn)  # should not raise
+        cols = _get_columns(self.conn, "notes")
+        assert "c4_element_id" in cols
+
+    def test_v11_migration_preserves_existing_notes(self):
+        """Existing notes data must survive the v11 migration."""
+        import time
+        now = time.time()
+        # Insert a task and note before re-running migration
+        self.conn.execute(
+            "INSERT INTO tasks (id, title, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("t3", "Task 3", "draft", now, now),
+        )
+        self.conn.execute(
+            "INSERT INTO notes (id, task_id, note_type, content, status, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("n3", "t3", "assumption", "Existing note", "open", now, now),
+        )
+        self.conn.commit()
+
+        # Re-run migration (idempotent)
+        from code_review_graph.migrations import _migrate_v11
+        _migrate_v11(self.conn)
+
+        # Verify note still exists
+        row = self.conn.execute(
+            "SELECT content FROM notes WHERE id = ?", ("n3",)
+        ).fetchone()
+        assert row is not None
+        content = row[0] if isinstance(row, tuple) else row["content"]
+        assert content == "Existing note"

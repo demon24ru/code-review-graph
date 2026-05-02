@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS notes (
     resolution TEXT,
     rationale TEXT,
     alternatives TEXT,
+    c4_element_id TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );

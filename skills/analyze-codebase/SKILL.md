@@ -13,9 +13,15 @@ Use the knowledge graph for deep structural analysis — architecture, execution
 ```
 list_graph_stats_tool()              # files, nodes, edges, languages, last updated
 get_architecture_overview_tool()     # community map + coupling warnings
+get_architecture_skeleton(level="containers")   # C4 skeleton — module map in 20 lines
+get_project_standards()                          # project conventions from prompts/
 ```
 
 The architecture overview groups code into communities (clusters of tightly related code) and identifies cross-community coupling. High coupling between communities is a design smell.
+
+The architecture skeleton (`.code-review-graph/architecture.c4`) provides a persistent Mermaid C4 view of the codebase — containers (from communities) and components (from nodes). Read it first for a quick module map. If it doesn't exist yet, run `code-review-graph c4` to generate it.
+
+Project standards (`prompts/` directory) define cross-project conventions: architecture patterns, coding style, tech stack. Use `get_project_standards()` to list available sections, then `get_project_standards(section="patterns")` to read a specific one.
 
 ## Step 2: Explore Communities
 
@@ -134,6 +140,13 @@ After embedding, `semantic_search_nodes_tool` uses vector similarity instead of 
 
 ## Patterns for Common Questions
 
+**"What's the high-level architecture?"**
+```
+get_architecture_skeleton(level="containers")        # C4 containers view
+→ get_architecture_skeleton(level="components:auth")  # drill into specific module
+→ get_architecture_overview_tool()                    # coupling between communities
+```
+
 **"How does X work?"**
 ```
 semantic_search_nodes_tool(query="X")
@@ -196,3 +209,6 @@ It does NOT replace grep for searching inside function bodies.
 - `semantic_search_nodes_tool` defaults to `exclude_tests=True` — test helpers are filtered automatically
 - `query_graph_tool` with `exclude_tests=True` filters BOTH results AND edges — test caller edges are suppressed, not just test nodes in results
 - `list_flows_tool(sort_by="criticality")` surfaces helper functions (many callers) not user-facing entry points — use `sort_by="depth"` for actual CLI/MCP entry points
+- `get_architecture_skeleton()` is the fastest orientation tool — 20 lines of C4 DSL vs hundreds of nodes from `get_architecture_overview_tool`
+- `get_project_standards()` without arguments lists available sections; with `section="patterns"` returns specific content
+- The C4 skeleton has `[AUTO]` sections (from code graph) and `[FEATURE]` sections (from LLM design) — `designed_features` field in the response lists active design work

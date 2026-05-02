@@ -31,14 +31,17 @@ Exposes 68 tools (28 code-graph + 40 task DAG):
 28. trace_dataflow           - forward BFS data-flow tracing (source to sink)
 29. export_scip              - export graph to SCIP JSON
 30. import_scip              - import SCIP JSON into the graph
+31. generate_sequence        - auto-generate Mermaid sequence diagram from flows/contracts
+32. get_architecture_skeleton - read the C4 architecture skeleton file
+33. update_architecture_skeleton - structured editing of architecture.c4
 
 Task DAG tools (40):
-31-64. (see task_tools.py) — CRUD, DAG edges, code links, analysis, notes, contracts, roadmap
-65. task_find_for_impact     - cross-query: open tasks in blast radius of changed files
-66. task_suggest_contracts   - implicit code deps between tasks needing interface contracts
-67. task_check_rollup        - check if parent/ancestors can be closed or archived after subtask completes
-68. contract_link            - attach a task to an existing contract as provider/consumer
-69. contract_unlink          - remove all links between a task and a contract
+34-68. (see task_tools.py) — CRUD, DAG edges, code links, analysis, notes, contracts, roadmap
+69. task_find_for_impact     - cross-query: open tasks in blast radius of changed files
+70. task_suggest_contracts   - implicit code deps between tasks needing interface contracts
+71. task_check_rollup        - check if parent/ancestors can be closed or archived after subtask completes
+72. contract_link            - attach a task to an existing contract as provider/consumer
+73. contract_unlink          - remove all links between a task and a contract
 """
 
 from __future__ import annotations
@@ -108,6 +111,15 @@ from .review import (
 
 # -- scip_tools -------------------------------------------------------------
 from .scip_tools import export_scip_func, import_scip_func
+
+# -- sequence_tools ---------------------------------------------------------
+from .sequence_tools import generate_sequence_func
+
+# -- c4_tools ---------------------------------------------------------------
+from .c4_tools import get_architecture_skeleton_func, update_architecture_skeleton_func
+
+# -- standards_tools --------------------------------------------------------
+from .standards_tools import get_project_standards_func
 
 # -- task_tools -------------------------------------------------------------
 from .task_tools import (
@@ -193,6 +205,13 @@ __all__ = [
     # scip_tools
     "export_scip_func",
     "import_scip_func",
+    # sequence_tools
+    "generate_sequence_func",
+    # c4_tools
+    "get_architecture_skeleton_func",
+    "update_architecture_skeleton_func",
+    # standards_tools
+    "get_project_standards_func",
     # task_tools
     "contract_add_func",
     "contract_list_func",

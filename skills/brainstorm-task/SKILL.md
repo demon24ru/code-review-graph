@@ -15,7 +15,7 @@ Use the Task DAG system to plan implementation work with full traceability to th
 Full pipeline — strictly in order:
 
 ```
-BRAINSTORM → VALIDATE → DESIGN (root) → [PLAN → IMPLEMENT] × N leaves → CLOSE
+BRAINSTORM → VALIDATE → DESIGN (root) → REVIEW (dashboard) → [PLAN → IMPLEMENT] × N leaves → CLOSE
 ```
 
 Each stage answers a different question:
@@ -25,6 +25,7 @@ Each stage answers a different question:
 | **Brainstorm** | WHAT and WHY? | Root | DAG: tasks, notes, contracts |
 | **Validate** | Are we ready? | Root | `task_validate` errors = 0 |
 | **Design** | WHAT does it consist of? | Root (1×) | Design docs: architecture, behavior, contracts, testing |
+| **Review** | Does architecture look right? | Root (1×) | User feedback via dashboard annotations |
 | **Plan** | WHERE in files, in what order? | 1 leaf (N×) | `plan.md` — step-by-step checklist |
 | **Implement** | CONCRETE CODE | 1 leaf (N×) | Files, functions, tests |
 | **Close** | Mark done, propagate up | Root | `task_update(done)` |
@@ -202,6 +203,111 @@ note_list(task_id=root_id, status="answered", include_children=True)
 note_update(note_id, status="resolved", resolution="Accepted: SSE", rationale="...")
 note_update(note_id, status="rejected", resolution="User has no email", rationale="Invalidates t2, t8")
 ```
+
+## Architecture Skeleton: C4 Navigation Layer
+
+The architecture skeleton (`.code-review-graph/architecture.c4`) provides a persistent, token-efficient map of the codebase. It sits between the high-level project standards and the low-level code graph:
+
+```
+prompts/                  ← "HOW we build" (cross-project knowledge)
+architecture.c4           ← "WHAT exists" (module map, per-project)
+code graph + task DAG     ← "WHERE exactly" (files, lines, per-task)
+```
+
+### Reading the skeleton
+
+```
+get_architecture_skeleton()                          # full file
+get_architecture_skeleton(level="containers")         # L2 containers only
+get_architecture_skeleton(level="components:auth")    # specific module
+get_project_standards(section="patterns")             # project conventions
+```
+
+Use the skeleton as the FIRST orientation step in any session — before task_export or code graph queries. It gives module boundaries and relationships in ~20 lines of C4 DSL.
+
+### Writing to the skeleton (Design phase)
+
+During design, add new architectural elements:
+
+```
+update_architecture_skeleton(
+    feature_tag="oauth:t1",
+    operations=[
+        {"op": "add", "diagram": "Containers", "element": {
+            "kind": "Container", "id": "oauth",
+            "label": "OAuth Provider", "technology": "Python",
+            "description": "Google+GitHub OAuth"}},
+        {"op": "add", "diagram": "Containers", "element": {
+            "kind": "Rel", "id": "oauth", "target_id": "auth",
+            "label": "registers provider"}},
+        {"op": "modify", "diagram": "Containers",
+         "element_id": "auth",
+         "changes": {"description": "12 nodes, +OAuth callback"}},
+    ]
+)
+```
+
+Rules:
+- `[AUTO]` sections are read-only (regenerated from code graph by `code-review-graph c4 --rebuild`)
+- `[FEATURE]` sections are writable by LLM via `update_architecture_skeleton`
+- When code is implemented and graph rebuilt, FEATURE elements that now exist in AUTO are "graduated" automatically
+- Dashboard renders AUTO as blue, FEATURE-only as green (new), FEATURE+AUTO overlap as yellow (modified)
+
+### Sequence diagrams
+
+Auto-generate Mermaid sequences from existing flows or task contracts:
+
+```
+generate_sequence(flow_name="login")        # from existing execution flow
+generate_sequence(task_id=root_id)          # from task contracts + execution order
+```
+
+Returns `{mermaid: "sequenceDiagram\n...", gaps: [...]}`. Gaps highlight missing error cases (no risk notes), missing response payloads, etc.
+
+## Interactive Dashboard
+
+The dashboard provides visual review of the brainstorm output. Launch it after the Design phase for human review.
+
+```bash
+code-review-graph dashboard                    # auto-detect root task
+code-review-graph dashboard --task t1 --port 6235
+```
+
+### Tabs
+
+| Tab | Data source | User can |
+|---|---|---|
+| Architecture | `architecture.c4` via Cytoscape.js | Drill-down L2→L3, annotate nodes |
+| Task DAG | `task_get_dag` via Cytoscape.js | View dependencies, select tasks |
+| Contracts | `contract_list` | View definitions, comment |
+| Notes & Questions | `note_list` | Answer open questions, edit answers |
+| Roadmap | `task_roadmap` | See progress, attention items |
+| Timeline | `task_execution_order` | See parallel execution levels |
+| Sequence | `generate_sequence` via Mermaid.js | View auto-generated sequences |
+
+### Annotations (c4_element_id)
+
+Users can pin notes to C4 diagram elements by right-clicking nodes in the Architecture tab:
+
+```
+# Dashboard creates:
+note_add(task_id=relevant_task, notes=[{
+    "note_type": "question",
+    "content": "Why separate OAuthProvider?",
+    "status": "answered",
+    "resolution": "Suggest merging into AuthController",
+    "c4_element_id": "comm_5"
+}])
+```
+
+The `c4_element_id` field links the note to a specific C4 element (container, component, or contract). Values like `"comm_5"` (community/container), `"node_123"` (component), `"contract_X"` (contract).
+
+### Dashboard principles
+
+- Dashboard NEVER changes: task.status, task.description, contracts, task structure
+- Dashboard ONLY: answers questions (open→answered), creates annotations (new notes)
+- ALL structural changes go through LLM in the next session
+- LLM is the sole writer of structure; user is reviewer + answerer
 
 ## Phase 3: Link Code to Tasks
 
@@ -585,3 +691,7 @@ task_execution_order(root_task_id)   # returns parallel levels
 - Contract `status` auto-upgrades when provider task status changes (draft→proposed→acknowledged→implemented)
 - **Rule of 3 Ps**: after decomposition, verify P1 (task_validate + blast_radius), P2 (uncovered_nodes), P3 (task_find_conflicts depth=1 + task_contradiction_report)
 - **Semantic contradictions**: task_contradiction_report gives LLM everything to find conflicts in decisions/constraints — one call, compact output
+- **Architecture skeleton**: `get_architecture_skeleton()` before any design session — 20 lines of C4 beats scrolling through code_refs
+- **Dashboard for review**: after Design phase, `code-review-graph dashboard` for human review; annotations become notes for LLM processing
+- **Sequence generation**: `generate_sequence(task_id=root_id)` auto-generates happy-path sequence from contracts; add risk notes for error cases
+- **`c4_element_id` in notes**: pin annotations to specific architecture elements; group by element in dashboard

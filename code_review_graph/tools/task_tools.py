@@ -1095,7 +1095,7 @@ def note_add_func(
 
     Each item requires ``note_type`` and ``content``.
     Optional per-item: ``status`` (default "open"), ``resolution``,
-    ``rationale``, ``alternatives``.
+    ``rationale``, ``alternatives``, ``c4_element_id``.
 
     Args:
         task_id: Task to attach the notes to.

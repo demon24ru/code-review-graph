@@ -1693,7 +1693,7 @@ def add_note(
 
     Each item requires ``note_type`` and ``content``.
     Optional per-item fields: ``status`` (default "open"), ``resolution``,
-    ``rationale``, ``alternatives``.
+    ``rationale``, ``alternatives``, ``c4_element_id``.
 
     Note types: decision | question | assumption | constraint | risk
 
@@ -1714,6 +1714,7 @@ def add_note(
         resolution = item.get("resolution")
         rationale = item.get("rationale")
         alternatives = item.get("alternatives")
+        c4_element_id = item.get("c4_element_id")
         _require(content, "content")
         _check_enum(note_type, NOTE_TYPES, "note_type")
         _check_enum(status, NOTE_STATUSES, "status")
@@ -1723,11 +1724,11 @@ def add_note(
             """
             INSERT INTO notes
                 (id, task_id, note_type, content, status, resolution, rationale, alternatives,
-                 created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 c4_element_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (note_id, task_id, note_type, content, status, resolution, rationale,
-             alternatives_json, now, now),
+             alternatives_json, c4_element_id, now, now),
         )
         created_ids.append(note_id)
 

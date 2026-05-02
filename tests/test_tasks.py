@@ -1027,71 +1027,98 @@ class TestCodeRefs(TestTaskBase):
 
 class TestNotes(TestTaskBase):
 
-    def test_add_note(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        note = tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "Use JWT", "status": "resolved", "resolution": "stateless"}])["notes"][0]
-        assert note["note_type"] == "decision"
-        assert note["status"] == "resolved"
-        assert note["resolution"] == "stateless"
+     def test_add_note(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         note = tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "Use JWT", "status": "resolved", "resolution": "stateless"}])["notes"][0]
+         assert note["note_type"] == "decision"
+         assert note["status"] == "resolved"
+         assert note["resolution"] == "stateless"
 
-    def test_add_note_invalid_type(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        with pytest.raises(ValueError, match="Invalid note_type"):
-            tasks.add_note(self.conn, t["id"], [{"note_type": "memo", "content": "X"}])
+     def test_add_note_invalid_type(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         with pytest.raises(ValueError, match="Invalid note_type"):
+             tasks.add_note(self.conn, t["id"], [{"note_type": "memo", "content": "X"}])
 
-    def test_add_note_invalid_status(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        with pytest.raises(ValueError, match="Invalid status"):
-            tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "X", "status": "pending"}])
+     def test_add_note_invalid_status(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         with pytest.raises(ValueError, match="Invalid status"):
+             tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "X", "status": "pending"}])
 
-    def test_update_note(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        note = tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "WebSocket?"}])["notes"][0]
-        updated = tasks.update_note(self.conn, note["id"],
-                                    status="resolved", resolution="Use polling")
-        assert updated["status"] == "resolved"
-        assert updated["resolution"] == "Use polling"
+     def test_update_note(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         note = tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "WebSocket?"}])["notes"][0]
+         updated = tasks.update_note(self.conn, note["id"],
+                                     status="resolved", resolution="Use polling")
+         assert updated["status"] == "resolved"
+         assert updated["resolution"] == "Use polling"
 
-    def test_delete_note(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        note = tasks.add_note(self.conn, t["id"], [{"note_type": "constraint", "content": "No external deps"}])["notes"][0]
-        tasks.delete_note(self.conn, note["id"])
-        rows = self.conn.execute("SELECT * FROM notes WHERE id=?", (note["id"],)).fetchall()
-        assert len(rows) == 0
+     def test_delete_note(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         note = tasks.add_note(self.conn, t["id"], [{"note_type": "constraint", "content": "No external deps"}])["notes"][0]
+         tasks.delete_note(self.conn, note["id"])
+         rows = self.conn.execute("SELECT * FROM notes WHERE id=?", (note["id"],)).fetchall()
+         assert len(rows) == 0
 
-    def test_list_notes_own_task(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "D1"}])
-        tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "Q1"}])
-        notes = tasks.list_notes(self.conn, t["id"], include_parent=False)
-        assert len(notes) == 2
+     def test_list_notes_own_task(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "D1"}])
+         tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "Q1"}])
+         notes = tasks.list_notes(self.conn, t["id"], include_parent=False)
+         assert len(notes) == 2
 
-    def test_list_notes_include_parent_chain(self):
-        root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
-        child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
-        grandchild = tasks.create_task(self.conn, [{"title": "GC"}], parent_id=child["id"])["tasks"][0]
-        tasks.add_note(self.conn, root["id"], [{"note_type": "decision", "content": "Root decision"}])
-        tasks.add_note(self.conn, child["id"], [{"note_type": "constraint", "content": "Child constraint"}])
-        tasks.add_note(self.conn, grandchild["id"], [{"note_type": "question", "content": "GC question"}])
-        # grandchild should see all 3 notes
-        notes = tasks.list_notes(self.conn, grandchild["id"], include_parent=True)
-        assert len(notes) == 3
+     def test_list_notes_include_parent_chain(self):
+         root = tasks.create_task(self.conn, [{"title": "Root"}])["tasks"][0]
+         child = tasks.create_task(self.conn, [{"title": "Child"}], parent_id=root["id"])["tasks"][0]
+         grandchild = tasks.create_task(self.conn, [{"title": "GC"}], parent_id=child["id"])["tasks"][0]
+         tasks.add_note(self.conn, root["id"], [{"note_type": "decision", "content": "Root decision"}])
+         tasks.add_note(self.conn, child["id"], [{"note_type": "constraint", "content": "Child constraint"}])
+         tasks.add_note(self.conn, grandchild["id"], [{"note_type": "question", "content": "GC question"}])
+         # grandchild should see all 3 notes
+         notes = tasks.list_notes(self.conn, grandchild["id"], include_parent=True)
+         assert len(notes) == 3
 
-    def test_list_notes_filter_by_type(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "D"}])
-        tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "Q"}])
-        questions = tasks.list_notes(self.conn, t["id"],
-                                     note_type="question", include_parent=False)
-        assert len(questions) == 1
-        assert questions[0]["note_type"] == "question"
+     def test_list_notes_filter_by_type(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "D"}])
+         tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "Q"}])
+         questions = tasks.list_notes(self.conn, t["id"],
+                                      note_type="question", include_parent=False)
+         assert len(questions) == 1
+         assert questions[0]["note_type"] == "question"
 
-    def test_note_alternatives_roundtrip(self):
-        t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
-        alts = ["Option A", "Option B"]
-        tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "Use X", "alternatives": alts}])
-        fetched = tasks.list_notes(self.conn, t["id"], include_parent=False)
-        assert fetched[0]["alternatives"] == alts
+     def test_note_alternatives_roundtrip(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         alts = ["Option A", "Option B"]
+         tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "Use X", "alternatives": alts}])
+         fetched = tasks.list_notes(self.conn, t["id"], include_parent=False)
+         assert fetched[0]["alternatives"] == alts
+
+     def test_add_note_with_c4_element_id(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         note = tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "Container design", "c4_element_id": "comm_5"}])["notes"][0]
+         assert note["c4_element_id"] == "comm_5"
+         # Verify it's stored and retrieved
+         fetched = tasks.list_notes(self.conn, t["id"], include_parent=False)
+         assert fetched[0]["c4_element_id"] == "comm_5"
+
+     def test_add_note_without_c4_element_id(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         note = tasks.add_note(self.conn, t["id"], [{"note_type": "question", "content": "Architecture?"}])["notes"][0]
+         assert note["c4_element_id"] is None
+         # Verify it's None when retrieved
+         fetched = tasks.list_notes(self.conn, t["id"], include_parent=False)
+         assert fetched[0]["c4_element_id"] is None
+
+     def test_list_notes_includes_c4_element_id(self):
+         t = tasks.create_task(self.conn, [{"title": "T"}])["tasks"][0]
+         tasks.add_note(self.conn, t["id"], [{"note_type": "decision", "content": "With C4", "c4_element_id": "node_123"}])
+         tasks.add_note(self.conn, t["id"], [{"note_type": "constraint", "content": "Without C4"}])
+         notes = tasks.list_notes(self.conn, t["id"], include_parent=False)
+         assert len(notes) == 2
+         # First note has c4_element_id
+         assert notes[0]["c4_element_id"] == "node_123"
+         # Second note has None
+         assert notes[1]["c4_element_id"] is None
 
 
 # ---------------------------------------------------------------------------

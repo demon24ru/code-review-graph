@@ -589,6 +589,14 @@ def _migrate_v10(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v11(conn: sqlite3.Connection) -> None:
+    """v11: Add c4_element_id column to notes table for C4 architecture annotations."""
+    if not _has_column(conn, "notes", "c4_element_id"):
+        conn.execute("ALTER TABLE notes ADD COLUMN c4_element_id TEXT")
+        logger.info("Migration v11: added 'c4_element_id' column to notes")
+    _set_schema_version(conn, 11)
+
+
 def _migrate_v9(conn: sqlite3.Connection) -> None:
     """v9: Drop legacy provider_task_id / consumer_task_id columns from contracts.
 
@@ -658,6 +666,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     8: _migrate_v8,
     9: _migrate_v9,
     10: _migrate_v10,
+    11: _migrate_v11,
 }
 
 LATEST_VERSION = max(MIGRATIONS.keys())

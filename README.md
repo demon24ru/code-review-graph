@@ -199,6 +199,10 @@ The blast-radius analysis never misses an actually impacted file (perfect recall
 | **MCP prompts** | 5 workflow templates: review, architecture, debug, onboard, pre-merge |
 | **Full-text search** | FTS5-powered hybrid search combining keyword and vector similarity |
 | **Task DAG** | Brainstorm-driven task planning with Rule of 3-Ps: conflict detection (direct + indirect), isolation scoring, blast-radius analysis, and semantic contradiction report — stored in the same SQLite graph |
+| **C4 architecture visualization** | Auto-generated Mermaid C4 diagrams from code communities. `[AUTO]` sections from graph, `[FEATURE]` sections from LLM design. Persistent `.code-review-graph/architecture.c4` skeleton |
+| **Interactive dashboard** | Local web UI with 7 tabs: Architecture (Cytoscape.js drill-down), Task DAG, Contracts, Notes/Q&A, Roadmap, Timeline, Sequence diagrams (Mermaid.js). Launch: `code-review-graph dashboard` |
+| **Sequence diagram generation** | Auto-generate Mermaid sequence diagrams from execution flows (existing code) or task contracts (designed features) |
+| **Project standards** | Read cross-project knowledge from `prompts/` directory — architecture principles, patterns, conventions |
 
 ---
 
@@ -235,6 +239,10 @@ code-review-graph register <path>  # Register repo in multi-repo registry
 code-review-graph unregister <id>  # Remove repo from registry
 code-review-graph repos            # List registered repositories
 code-review-graph questions        # Open web UI for answering brainstorm questions
+code-review-graph c4               # Generate C4 architecture from code communities
+code-review-graph c4 --rebuild     # Rebuild: refresh [AUTO], preserve [FEATURE]
+code-review-graph dashboard        # Launch interactive web dashboard
+code-review-graph dashboard --port 6235 --task t1  # Specify port and root task
 code-review-graph eval             # Run evaluation benchmarks
 code-review-graph serve            # Start MCP server
 ```
@@ -242,12 +250,12 @@ code-review-graph serve            # Start MCP server
 </details>
 
 <details>
-<summary><strong>71 MCP tools (30 code-graph + 41 task DAG)</strong></summary>
+<summary><strong>75 MCP tools (34 code-graph + 41 task DAG)</strong></summary>
 <br>
 
 Your AI assistant uses these automatically once the graph is built.
 
-**Code-graph tools (30):**
+**Code-graph tools (34):**
 
 | Tool | Description |
 |------|-------------|
@@ -281,6 +289,10 @@ Your AI assistant uses these automatically once the graph is built.
 | `trace_dataflow_tool` | Forward BFS data-flow tracing from source to sink |
 | `export_scip_tool` | Export graph to SCIP-compatible JSON |
 | `import_scip_tool` | Import SCIP JSON document into the graph |
+| `get_architecture_skeleton_tool` | Read the persistent C4 architecture skeleton with optional level filtering (context, containers, components) |
+| `update_architecture_skeleton_tool` | Structured add/modify/remove operations on `[FEATURE]` sections of the C4 skeleton |
+| `get_project_standards_tool` | Read project standards from `prompts/` directory — cross-project knowledge base |
+| `generate_sequence_tool` | Auto-generate Mermaid sequence diagrams from execution flows or task contracts |
 
 **Task DAG tools (41) — brainstorm-driven task planning:**
 
@@ -647,6 +659,47 @@ note_update("n3", status="resolved", resolution="SSE accepted", rationale="Simpl
 
 **Why this design:** The UI is intentionally thin — it is `note_list` + `note_update` wrapped in an HTML form. Zero new dependencies. The LLM remains the sole decision-maker; the UI is just the inbox.
 
+### Interactive Dashboard
+
+The dashboard provides a visual overview of the entire brainstorm: architecture, task DAG, contracts, notes, and progress — in a local web UI.
+
+```bash
+# Auto-detects active root task
+code-review-graph dashboard
+
+# Specify task and port
+code-review-graph dashboard --task t1 --port 6235 --no-browser
+```
+
+This opens `http://localhost:6235` with 7 tabs:
+
+- **Architecture** — C4 drill-down (containers → components) with Cytoscape.js. Nodes colored by status: 🔵 existing, 🟡 modified, 🟢 new. Right-click to annotate.
+- **Task DAG** — Interactive task graph with dependency edges and status colors
+- **Contracts** — Design entity cards with provider/consumer relationships
+- **Notes & Questions** — QA inbox: answer open questions, review resolved decisions
+- **Roadmap** — Progress bars, execution phases, attention block
+- **Timeline** — Gantt-like execution order from `task_execution_order`
+- **Sequence** — Auto-generated Mermaid sequence diagrams from contracts
+
+**Dashboard is read-only for structure.** Users can only answer questions and add annotations (as notes with `c4_element_id`). All structural changes (task status, contracts, edges) are made by the LLM.
+
+#### Architecture Skeleton
+
+The architecture is persisted in `.code-review-graph/architecture.c4` — a Mermaid C4 DSL file with two section types:
+
+- `[AUTO]` sections — auto-generated from code graph communities. Refreshed by `code-review-graph c4 --rebuild`.
+- `[FEATURE]` sections — added by LLM via `update_architecture_skeleton`. Represent designed but not-yet-implemented elements.
+
+When code is implemented and the graph is rebuilt, elements from `[FEATURE]` sections that now exist in the code graph are "graduated" into `[AUTO]` sections automatically.
+
+```
+get_architecture_skeleton(level="containers")     # LLM reads C4 skeleton
+update_architecture_skeleton(                      # LLM writes design
+    feature_tag="oauth:t1",
+    operations=[{"op": "add", "diagram": "Containers", "element": {...}}]
+)
+```
+
 ### Key Rules
 
 | Rule | Rationale |
@@ -657,6 +710,7 @@ note_update("n3", status="resolved", resolution="SSE accepted", rationale="Simpl
 | Contracts for shared structures | One source of truth for interfaces shared across subtasks |
 | `task_validate` must pass before coding | Algorithmic gate that catches gaps humans miss |
 | `task_check_rollup` after every completion | Keeps the tree status accurate without manual traversal |
+| Annotations via `c4_element_id` | Notes can be pinned to C4 diagram elements for spatial architecture review |
 
 ### Quick Reference
 
