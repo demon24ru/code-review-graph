@@ -929,6 +929,9 @@ createApp({
     function switchTab(id) {
       activeTab.value = id;
       if (id === 'dag') loadDag().then(buildCyDag);
+      if (id === 'notes') loadNotes();
+      if (id === 'contracts') loadContracts();
+      if (id === 'roadmap') loadRoadmap();
       if (id === 'timeline') loadExecOrder();
       if (id === 'sequence') loadSequence();
     }
