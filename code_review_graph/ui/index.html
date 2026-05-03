@@ -199,29 +199,21 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
 
     <!-- Architecture Tab -->
     <div v-if="activeTab === 'arch'">
-      <!-- C4 Zoom Navigator breadcrumb -->
-      <div class="breadcrumb" style="margin-bottom:8px">
-        <span v-for="(crumb, idx) in zoomBreadcrumb" :key="idx" style="display:flex;align-items:center;gap:6px">
-          <span v-if="idx < zoomBreadcrumb.length - 1" class="breadcrumb-item" @click="zoomBack(crumb)">{{ crumb.label }}</span>
-          <span v-else class="breadcrumb-current">{{ crumb.label }}</span>
-          <span v-if="idx < zoomBreadcrumb.length - 1" class="breadcrumb-sep">&rsaquo;</span>
-        </span>
+      <div class="c4-level-select" v-if="Object.keys(c4Data.levels || {}).length">
+        <select v-model="c4Level">
+          <option v-for="(_, slug) in c4Data.levels" :key="slug" :value="slug">
+            {{ c4Data.levels[slug].title || slug }}
+          </option>
+        </select>
       </div>
-      <!-- Level indicator row -->
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-        <span style="background:var(--blue);color:#fff;padding:2px 10px;border-radius:10px;font-size:0.75rem;font-weight:600">
-          {{ {'l1':'L1 System','l2':'L2 Containers','l3':'L3 Components','l4':'L4 Code'}[zoomLevel] }}
-        </span>
-        <span v-if="zoomLevel !== 'l4'" style="font-size:0.8rem;color:var(--gray)">Click a node to drill down</span>
-        <span v-else style="font-size:0.8rem;color:var(--gray)">No drill-down available</span>
-        <span style="font-size:0.72rem;background:#e9ecef;color:#6c757d;padding:2px 8px;border-radius:10px;margin-left:4px">tests excluded</span>
-      </div>
-      <!-- Loading state -->
-      <div v-if="zoomLoading" class="msg">Loading&hellip;</div>
-      <!-- Empty state for L2 -->
-      <div v-else-if="zoomLevel === 'l2' && !zoomContainers.length" class="msg">No containers found. Run <code>code-review-graph build</code> first.</div>
-      <!-- Main content -->
-      <div v-else>
+      <div v-if="c4Level">
+        <div class="breadcrumb" v-if="breadcrumb.length > 1">
+          <span v-for="(crumb, idx) in breadcrumb" :key="idx" style="display:flex;align-items:center;gap:6px">
+            <span v-if="idx < breadcrumb.length - 1" class="breadcrumb-item" @click="navigateTo(idx)">{{ crumb.label }}</span>
+            <span v-else class="breadcrumb-current">{{ crumb.label }}</span>
+            <span v-if="idx < breadcrumb.length - 1" class="breadcrumb-sep">&rsaquo;</span>
+          </span>
+        </div>
         <!-- Blast Radius overlay controls -->
         <div style="background:#f8f9fa;border:1px solid var(--border);border-radius:6px;padding:10px 14px;margin-bottom:10px">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -340,18 +332,19 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
         </div>
         <div class="legend">
           <span class="legend-item">
-            <span class="legend-swatch" style="background:#438DD5"></span>Container
+            <span class="legend-swatch" style="background:#438DD5"></span>Existing
           </span>
           <span class="legend-item">
-            <span class="legend-swatch" style="background:#1a7f6e"></span>Class
+            <span class="legend-swatch" style="background:#fff3cd;border:1px solid #ffc107"></span>Modified
           </span>
           <span class="legend-item">
-            <span class="legend-swatch" style="background:#6c757d"></span>File
-          </span>
-          <span class="legend-item">
-            <span class="legend-swatch" style="background:#5856d6"></span>Function/Method
+            <span class="legend-swatch" style="background:#d4edda;border:1px dashed #28a745"></span>New
           </span>
         </div>
+      </div>
+      <div v-else>
+        <div class="msg" v-if="c4Loading">Loading C4 architecture&hellip;</div>
+        <div class="msg" v-else>No C4 architecture data. Run code-review-graph build first.</div>
       </div>
       <div id="annotation-panel"></div>
     </div>
@@ -875,12 +868,6 @@ createApp({
     const blastDepth = ref('2');
     const blastResult = ref(null);
     const leafTasks = ref([]);
-    const zoomLevel = ref('l1');
-    const zoomBreadcrumb = ref([{ label: 'System', level: 'l1', param: null }]);
-    const zoomContainers = ref([]);
-    const zoomComponents = ref(null);
-    const zoomCodeNodes = ref(null);
-    const zoomLoading = ref(false);
 
     let cyArch = null;
     let cyDag = null;
@@ -1086,215 +1073,6 @@ createApp({
         node.style('background-color', origColor);
       });
       _blastOrigColors = {};
-    }
-
-    // ── C4 Zoom Navigator ────────────────────────────────────────────────────
-
-    async function zoomToL2() {
-      zoomLoading.value = true;
-      zoomLevel.value = 'l2';
-      zoomBreadcrumb.value = [
-        { label: 'System', level: 'l1', param: null },
-        { label: 'Containers', level: 'l2', param: null },
-      ];
-      selectedNode.value = null;
-      nodeAnnotations.value = [];
-      _blastOrigColors = {};
-      try {
-        const data = await api('/api/c4/zoom/containers');
-        zoomContainers.value = data.containers || [];
-      } catch(e) {
-        zoomContainers.value = [];
-      }
-      zoomLoading.value = false;
-      buildZoomCy();
-    }
-
-    async function zoomToL3(container) {
-      zoomLoading.value = true;
-      zoomLevel.value = 'l3';
-      zoomBreadcrumb.value = [
-        { label: 'System', level: 'l1', param: null },
-        { label: 'Containers', level: 'l2', param: null },
-        { label: container.name || ('Container ' + container.id), level: 'l3', param: container },
-      ];
-      selectedNode.value = null;
-      nodeAnnotations.value = [];
-      _blastOrigColors = {};
-      try {
-        const data = await api('/api/c4/zoom/components?container_id=' + encodeURIComponent(container.id));
-        zoomComponents.value = data;
-      } catch(e) {
-        zoomComponents.value = { container_id: container.id, components: [] };
-      }
-      zoomLoading.value = false;
-      buildZoomCy();
-    }
-
-    async function zoomToL4(component) {
-      zoomLoading.value = true;
-      zoomLevel.value = 'l4';
-      zoomBreadcrumb.value = [
-        ...zoomBreadcrumb.value.slice(0, 3),
-        { label: component.name || component.qualified_name || ('Node ' + component.id), level: 'l4', param: component },
-      ];
-      selectedNode.value = null;
-      nodeAnnotations.value = [];
-      _blastOrigColors = {};
-      try {
-        const qualName = component.qualified_name || component.file_path || String(component.id);
-        const data = await api('/api/c4/zoom/code?component=' + encodeURIComponent(qualName));
-        zoomCodeNodes.value = data;
-      } catch(e) {
-        zoomCodeNodes.value = { component: (component.qualified_name || String(component.id)), nodes: [] };
-      }
-      zoomLoading.value = false;
-      buildZoomCy();
-    }
-
-    async function zoomBack(crumb) {
-      if (crumb.level === 'l1') {
-        zoomLevel.value = 'l1';
-        zoomBreadcrumb.value = [{ label: 'System', level: 'l1', param: null }];
-        selectedNode.value = null;
-        nodeAnnotations.value = [];
-        _blastOrigColors = {};
-        buildZoomCy();
-      } else if (crumb.level === 'l2') {
-        await zoomToL2();
-      } else if (crumb.level === 'l3' && crumb.param) {
-        await zoomToL3(crumb.param);
-      }
-    }
-
-    function buildZoomCy() {
-      nextTick(() => {
-        const el = document.getElementById('cy-arch');
-        if (!el) return;
-        if (cyArch) { cyArch.destroy(); cyArch = null; }
-
-        const elements = [];
-
-        if (zoomLevel.value === 'l1') {
-          elements.push({ data: {
-            id: 'system_root',
-            label: rootTitle.value || 'System',
-            origLabel: rootTitle.value || 'System',
-            bgColor: '#438DD5', textColor: '#fff',
-            nodeShape: 'round-rectangle', nodeW: 160, nodeH: 80, fontSize: '14px',
-          }});
-        } else if (zoomLevel.value === 'l2') {
-          (zoomContainers.value || []).forEach(c => {
-            const sizeLine = (c.size || 0) + ' nodes';
-            const langLine = c.language || '';
-            elements.push({ data: {
-              id: 'c_' + c.id,
-              label: c.name + '\n' + sizeLine + (langLine ? '\n' + langLine : ''),
-              origLabel: c.name,
-              bgColor: '#438DD5', textColor: '#fff',
-              nodeShape: 'round-rectangle', nodeW: 140, nodeH: 80, fontSize: '11px',
-              containerData: JSON.stringify({ id: c.id, name: c.name, community_id: c.community_id }),
-            }});
-          });
-        } else if (zoomLevel.value === 'l3') {
-          const comps = (zoomComponents.value && zoomComponents.value.components) || [];
-          comps.forEach((c, i) => {
-            const isClass = (c.kind || '').toLowerCase() === 'class';
-            elements.push({ data: {
-              id: 'p_' + (c.node_id || c.id || i),
-              label: c.name,
-              origLabel: c.name,
-              bgColor: isClass ? '#1a7f6e' : '#6c757d',
-              textColor: '#fff',
-              nodeShape: isClass ? 'round-rectangle' : 'rectangle',
-              nodeW: 130, nodeH: 60, fontSize: '11px',
-              kind: c.kind || 'File',
-              componentData: JSON.stringify({
-                id: c.id, node_id: c.node_id, name: c.name,
-                kind: c.kind, qualified_name: c.qualified_name, file_path: c.file_path,
-              }),
-            }});
-          });
-        } else if (zoomLevel.value === 'l4') {
-          const nodes = (zoomCodeNodes.value && zoomCodeNodes.value.nodes) || [];
-          nodes.forEach((n, i) => {
-            const lbl = (n.signature || n.name || '').slice(0, 50);
-            elements.push({ data: {
-              id: 'f_' + (n.node_id || n.id || i),
-              label: lbl,
-              origLabel: n.name || lbl,
-              bgColor: '#5856d6', textColor: '#fff',
-              nodeShape: 'round-rectangle', nodeW: 150, nodeH: 50, fontSize: '10px',
-              kind: n.kind || '',
-            }});
-          });
-        }
-
-        if (!elements.length) return;
-
-        const cols = Math.min(Math.ceil(Math.sqrt(elements.length + 1)), 6);
-
-        cyArch = cytoscape({
-          container: el,
-          elements,
-          style: [
-            { selector: 'node', style: {
-              'background-color': 'data(bgColor)',
-              label: 'data(label)',
-              'text-valign': 'center', 'text-halign': 'center',
-              color: 'data(textColor)',
-              'font-size': 'data(fontSize)',
-              width: 'data(nodeW)',
-              height: 'data(nodeH)',
-              shape: 'data(nodeShape)',
-              'text-wrap': 'wrap',
-              'text-max-width': '130px',
-            }},
-            { selector: 'node:hover', style: { opacity: 0.85 } },
-            { selector: 'node:selected', style: {
-              'border-width': 2, 'border-color': '#212529', 'border-style': 'solid',
-            }},
-          ],
-          layout: { name: 'grid', padding: 30, cols },
-        });
-
-        cyArch.on('tap', 'node', evt => {
-          const d = evt.target.data();
-          if (zoomLevel.value === 'l1') {
-            zoomToL2();
-            return;
-          } else if (zoomLevel.value === 'l2') {
-            let container;
-            try { container = JSON.parse(d.containerData); }
-            catch(e) { container = { id: d.id.replace('c_', ''), name: d.origLabel || d.label }; }
-            zoomToL3(container);
-            return;
-          } else if (zoomLevel.value === 'l3') {
-            let component;
-            try { component = JSON.parse(d.componentData); }
-            catch(e) { component = { id: d.id.replace('p_', ''), name: d.origLabel || d.label, qualified_name: '' }; }
-            zoomToL4(component);
-            return;
-          }
-          // l4: show details only, no drill-down
-          selectedNode.value = {
-            id: d.id,
-            label: d.origLabel || d.label,
-            sublabel: d.kind || '',
-            status: 'existing',
-            kind: d.kind || '',
-          };
-          newAnnotation.value = '';
-          loadNodeDetails(d.id);
-        });
-
-        cyArch.on('tap', evt => {
-          if (evt.target === cyArch) {
-            selectedNode.value = null;
-            nodeAnnotations.value = [];
-          }
-        });
-      });
     }
 
     async function loadDataflow() {
@@ -1505,7 +1283,7 @@ createApp({
         body: JSON.stringify({ c4_element_id: elementId, content })
       });
       await loadAnnotations();
-      buildZoomCy();
+      buildCyArch(c4Level.value);
       closeAnnotationPanel();
     }
 
@@ -1974,7 +1752,7 @@ createApp({
     });
 
     watch(activeTab, (id) => {
-      if (id === 'arch') { zoomToL2(); loadLeafTasks(); }
+      if (id === 'arch') { loadC4().then(() => buildCyArch(c4Level.value)); loadLeafTasks(); }
       if (id === 'dataflow') loadDfSources();
     });
 
@@ -2018,8 +1796,6 @@ createApp({
       dagFilter, selectedDagTask, dagTaskLoading, newDagAnnotation, loadDagTaskDetail, submitDagAnnotation, buildCyDag,
       contractsFilter, contractComments, submitContractComment, filteredContracts,
       blastTask, blastDepth, blastResult, leafTasks, loadLeafTasks, applyBlastOverlay, clearBlastOverlay,
-      zoomLevel, zoomBreadcrumb, zoomContainers, zoomComponents, zoomCodeNodes, zoomLoading,
-      zoomToL2, zoomToL3, zoomToL4, zoomBack, buildZoomCy,
       statusIcon, getTaskTitle,
       loadSeqFlows, loadSequence,
     };
