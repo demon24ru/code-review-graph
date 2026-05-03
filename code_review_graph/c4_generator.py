@@ -51,6 +51,45 @@ def _slugify(name: str) -> str:
     return slug.strip("_") or "node"
 
 
+def _visible_targets_via_calls(
+    src: str,
+    calls_adjacency: dict[str, set[str]],
+    private_helper_qns: set[str],
+) -> set[str]:
+    """BFS from *src* through CALLS edges, collapsing private-helper hops.
+
+    Follows CALLS edges from *src*; if a reachable node is a private helper
+    (name starts with ``_`` but not ``__``), continues through *its* outgoing
+    edges rather than adding it to the result.  Returns only non-helper nodes.
+
+    Args:
+        src: Qualified name of the starting node.
+        calls_adjacency: Map of qualified_name → set of CALLS targets, scoped
+            to the current community.
+        private_helper_qns: Qualified names of private-helper nodes to skip.
+
+    Returns:
+        Set of visible (non-private-helper) qualified names reachable from
+        *src* via CALLS edges, including those reached through collapsed helpers.
+    """
+    result: set[str] = set()
+    frontier = list(calls_adjacency.get(src, set()))
+    seen: set[str] = {src}
+    while frontier:
+        cur = frontier.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        if cur in private_helper_qns:
+            # Transparent hop — follow this helper's outgoing edges
+            for nxt in calls_adjacency.get(cur, set()):
+                if nxt not in seen:
+                    frontier.append(nxt)
+        else:
+            result.add(cur)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -183,32 +222,88 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
         # Full node details for community members
         member_nodes = store.get_nodes_by_community_id(comm_id)
 
+        # Partition members: private helpers (leading _ but not __) vs visible
+        private_helper_qns: set[str] = set()
+        for node in member_nodes:
+            if node.name.startswith("_") and not node.name.startswith("__"):
+                private_helper_qns.add(node.qualified_name)
+        visible_qns: set[str] = members_set - private_helper_qns
+
+        # Count incoming CALLS per community node for hub detection (threshold 10)
+        incoming_calls_count: dict[str, int] = defaultdict(int)
+        for edge in all_graph_edges:
+            if (
+                edge.kind == "CALLS"
+                and edge.source_qualified in members_set
+                and edge.target_qualified in members_set
+            ):
+                incoming_calls_count[edge.target_qualified] += 1
+
+        # Build CALLS adjacency map for private-helper collapse BFS
+        calls_adj: dict[str, set[str]] = defaultdict(set)
+        for edge in all_graph_edges:
+            if (
+                edge.kind == "CALLS"
+                and edge.source_qualified in members_set
+                and edge.target_qualified in members_set
+            ):
+                calls_adj[edge.source_qualified].add(edge.target_qualified)
+
         component_elements: list[C4Element] = []
         qn_to_slug: dict[str, str] = {}
 
         for node in member_nodes:
+            if node.qualified_name in private_helper_qns:
+                continue  # private helpers excluded from component diagram
             # Use qualified_name for slug if reasonably short; otherwise fall
             # back to bare name to keep identifiers manageable.
             raw = node.qualified_name if len(node.qualified_name) <= 60 else node.name
             node_slug = _slugify(raw)
             qn_to_slug[node.qualified_name] = node_slug
+            is_hub = incoming_calls_count[node.qualified_name] > 10
+            description = f"{node.file_path}:{node.line_start}"
+            if is_hub:
+                description += " (hub)"
             component_elements.append(
                 C4Element(
                     kind="Component",
                     id=node_slug,
                     label=node.name,
                     technology=node.kind,
-                    description=f"{node.file_path}:{node.line_start}",
+                    description=description,
                 )
             )
 
-        # Internal edges (both endpoints are community members)
+        # Internal edges: CONTAINS filtered, private helpers collapsed in CALLS
         internal_rels: list[C4Element] = []
         seen_rels: set[tuple[str, str]] = set()
+
+        # CALLS edges: BFS collapses any private-helper intermediaries
+        for src_qn in visible_qns:
+            for tgt_qn in _visible_targets_via_calls(src_qn, calls_adj, private_helper_qns):
+                src_slug = qn_to_slug.get(src_qn)
+                tgt_slug = qn_to_slug.get(tgt_qn)
+                if src_slug and tgt_slug and src_slug != tgt_slug:
+                    rel_key = (src_slug, tgt_slug)
+                    if rel_key not in seen_rels:
+                        seen_rels.add(rel_key)
+                        internal_rels.append(
+                            C4Element(
+                                kind="Rel",
+                                id=src_slug,
+                                label="calls",
+                                technology="",
+                                target_id=tgt_slug,
+                            )
+                        )
+
+        # Non-CALLS, non-CONTAINS edges: include only if both endpoints visible
         for edge in all_graph_edges:
+            if edge.kind in ("CALLS", "CONTAINS"):
+                continue  # CALLS handled above; CONTAINS are structural noise
             if (
-                edge.source_qualified in members_set
-                and edge.target_qualified in members_set
+                edge.source_qualified in visible_qns
+                and edge.target_qualified in visible_qns
             ):
                 src_slug = qn_to_slug.get(edge.source_qualified)
                 tgt_slug = qn_to_slug.get(edge.target_qualified)
@@ -334,13 +429,17 @@ def resolve_for_render(arch: C4Architecture, diagram_title: str) -> list[dict[st
     auto_elements: dict[str, C4Element] = {}
     feature_elements: dict[str, C4Element] = {}
 
+    _NON_NODE_KINDS = frozenset({"Rel", "UpdateElementStyle", "Container_Boundary"})
+
     for section in target_diagram.sections:
         if section.marker_type == "AUTO":
             for elem in section.elements:
-                auto_elements[elem.id] = elem
+                if elem.kind not in _NON_NODE_KINDS:
+                    auto_elements[elem.id] = elem
         elif section.marker_type == "FEATURE":
             for elem in section.elements:
-                feature_elements[elem.id] = elem
+                if elem.kind not in _NON_NODE_KINDS:
+                    feature_elements[elem.id] = elem
 
     result: list[dict[str, Any]] = []
 

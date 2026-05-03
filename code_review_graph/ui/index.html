@@ -1,0 +1,2030 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code Review Graph Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root {
+  --blue: #438DD5; --green: #28a745; --yellow: #ffc107; --gray: #6c757d;
+  --red: #ef4444; --teal: #17a2b8; --bg: #f8f9fa; --border: #dee2e6;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: var(--bg); color: #212529; }
+#app { display: flex; flex-direction: column; height: 100vh; }
+header {
+  background: #1a1a2e; color: #e0e0e0; padding: 10px 20px;
+  display: flex; align-items: center; gap: 16px; flex-shrink: 0;
+}
+header h1 { font-size: 1rem; font-weight: 600; color: #7eb3e8; }
+header .subtitle { font-size: 0.8rem; color: #888; }
+.tabs { display: flex; background: #fff; border-bottom: 2px solid var(--border); flex-shrink: 0; }
+.tab-btn {
+  padding: 10px 18px; border: none; background: none; cursor: pointer;
+  font-size: 0.875rem; color: var(--gray); border-bottom: 2px solid transparent;
+  margin-bottom: -2px; font-weight: 500;
+}
+.tab-btn:hover { color: var(--blue); }
+.tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+.tab-btn.disabled { color: #ccc; cursor: not-allowed; pointer-events: none; }
+.tab-content { flex: 1; overflow: auto; padding: 16px 20px; }
+.graph-container { width: 100%; height: calc(100vh - 180px); background: #fff;
+  border: 1px solid var(--border); border-radius: 6px; }
+.card { background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  padding: 14px 16px; margin-bottom: 10px; }
+.card-title { font-weight: 600; margin-bottom: 6px; font-size: 0.95rem; }
+.badge { display: inline-block; border-radius: 20px; padding: 2px 8px;
+  font-size: 0.75rem; font-weight: 600; }
+.badge-green { background: #d4edda; color: #155724; }
+.badge-yellow { background: #fff3cd; color: #856404; }
+.badge-blue { background: #cce5ff; color: #004085; }
+.badge-gray { background: #e9ecef; color: #495057; }
+.badge-red { background: #f8d7da; color: #721c24; }
+.progress-bar { background: var(--border); border-radius: 4px; height: 8px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--green); border-radius: 4px; transition: width 0.3s; }
+.note-card { border-left: 4px solid var(--blue); }
+.note-card.answered { border-left-color: var(--green); }
+.note-card.resolved { border-left-color: var(--gray); opacity: 0.7; }
+.section-hdr { font-size: 0.8rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--gray); margin: 16px 0 8px; }
+.empty { color: var(--gray); font-size: 0.875rem; padding: 12px 0; }
+.level-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.level-task { background: #fff; border: 1px solid var(--border); border-radius: 4px;
+  padding: 6px 10px; font-size: 0.8rem; max-width: 200px; }
+.msg { color: var(--gray); padding: 40px; text-align: center; }
+.select-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 0.875rem; }
+/* Gantt Timeline */
+.gantt-wrap { max-width: 100%; overflow-x: auto; }
+.gantt-table { min-width: 100%; border-collapse: collapse; }
+.gantt-row { display: flex; align-items: center; border-bottom: 1px solid var(--border); min-height: 36px; }
+.gantt-row:hover { background: #f8f9fa; }
+.gantt-critical { background: #fffbf0 !important; border-left: 3px solid #ffc107; }
+.gantt-critical:hover { background: #fff8e1 !important; }
+.gantt-hrow { background: #f8f9fa; font-weight: 600; font-size: 0.8rem;
+  border-bottom: 2px solid var(--border); min-height: 44px; }
+.gantt-name-col { width: 200px; min-width: 200px; padding: 6px 10px; font-size: 0.82rem;
+  border-right: 1px solid var(--border); word-break: break-word; }
+.gantt-bar-cell { flex: 1; min-width: 100px; padding: 4px 8px; }
+.gantt-bar { border-radius: 4px; height: 22px; display: flex; align-items: center;
+  padding: 0 8px; font-size: 0.75rem; color: #fff; cursor: default;
+  user-select: none; transition: opacity 0.15s; white-space: nowrap; }
+.gantt-bar:hover { opacity: 0.85; }
+.gantt-bar-done { background: #28a745; }
+.gantt-bar-in_progress { background: #17a2b8; animation: gantt-pulse 1.5s ease-in-out infinite; }
+.gantt-bar-ready { background: #ffc107; color: #212529; }
+.gantt-bar-draft { background: #dee2e6; color: #495057; }
+.gantt-bar-refined { background: #dee2e6; color: #495057; }
+.gantt-bar-archived { background: #6c757d; }
+.gantt-bar-blocked { background: #dc3545; }
+.gantt-status-icon { margin-right: 4px; font-size: 0.85rem; }
+.cp-marker { color: #f59e0b; font-size: 0.85rem; margin-right: 3px; }
+.gantt-task-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; display: inline-block; vertical-align: middle; }
+.gantt-footer { margin-top: 16px; padding: 10px 4px; border-top: 2px solid var(--border); font-size: 0.82rem; }
+.gantt-parallelism { margin-bottom: 8px; color: var(--gray); display: flex; flex-wrap: wrap; gap: 4px; }
+.gantt-par-badge { background: var(--border); border-radius: 10px; padding: 2px 8px; font-size: 0.75rem; }
+.gantt-critical-path { color: #212529; line-height: 1.6; }
+.cp-label { font-weight: 700; margin-right: 4px; }
+.gantt-legend { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; font-size: 0.78rem; align-items: center; }
+.gantt-legend-item { display: flex; align-items: center; gap: 5px; }
+.gantt-bar-preview { display: inline-block; width: 24px; height: 12px; border-radius: 3px; }
+@keyframes gantt-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.65; } }
+.mermaid-wrap { background: #fff; border: 1px solid var(--border); border-radius: 6px;
+  padding: 16px; min-height: 200px; overflow: auto; }
+.contract-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.contract-type { font-size: 0.75rem; color: var(--gray); margin-bottom: 4px; }
+.contract-def { font-size: 0.8rem; font-family: monospace; background: #f8f9fa;
+  border: 1px solid var(--border); border-radius: 4px; padding: 8px; white-space: pre-wrap;
+  word-break: break-all; margin-top: 6px; }
+.c4-level-select { margin-bottom: 12px; }
+.arch-layout { display: flex; gap: 12px; }
+.arch-graph-wrap { flex: 1; min-width: 0; height: calc(100vh - 260px); }
+.detail-panel {
+  width: 300px; flex-shrink: 0; background: #fff;
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  max-height: calc(100vh - 260px); overflow-y: auto;
+}
+.breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 0.875rem;
+  margin-bottom: 8px; flex-wrap: wrap; }
+.breadcrumb-item { color: var(--blue); cursor: pointer; }
+.breadcrumb-item:hover { text-decoration: underline; }
+.breadcrumb-sep { color: var(--gray); }
+.breadcrumb-current { color: #212529; font-weight: 500; }
+.legend { display: flex; gap: 16px; font-size: 0.8rem; padding: 8px 4px;
+  flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.legend-item { display: flex; align-items: center; gap: 5px; color: #495057; }
+.legend-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 2px;
+  flex-shrink: 0; }
+#annotation-panel {
+    display: none;
+    position: absolute;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    width: 320px;
+    max-height: 400px;
+    overflow-y: auto;
+    z-index: 1000;
+    padding: 12px;
+}
+.anno-header { display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid #eee; padding-bottom: 8px; margin-bottom: 8px; }
+.anno-header button { background: none; border: none; cursor: pointer; font-size: 16px; }
+.anno-item { padding: 6px 8px; border-left: 3px solid #ddd; margin: 4px 0; font-size: 13px; }
+.anno-item.question { border-left-color: #3b82f6; }
+.anno-item.decision { border-left-color: #10b981; }
+.anno-item.risk { border-left-color: #ef4444; }
+.anno-item.constraint { border-left-color: #f59e0b; }
+.anno-resolution { color: #666; font-style: italic; margin-top: 2px; font-size: 12px; }
+.anno-new textarea { width: 100%; min-height: 60px; margin: 8px 0; border: 1px solid #ddd;
+    border-radius: 4px; padding: 8px; font-size: 13px; resize: vertical; }
+.anno-new button { padding: 6px 14px; background: var(--blue); color: #fff; border: none;
+    border-radius: 4px; cursor: pointer; font-size: 13px; }
+.anno-empty { color: var(--gray); font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div>
+      <h1>&#x1F4CA; Code Review Graph Dashboard</h1>
+      <div class="subtitle" v-if="rootTitle">{{ rootTitle }}</div>
+    </div>
+  </header>
+  <div class="tabs">
+    <button v-for="t in tabs" :key="t.id"
+      class="tab-btn" :class="{active: activeTab === t.id, disabled: !rootTask && t.id !== 'root'}"
+      :disabled="!rootTask && t.id !== 'root'"
+      @click="switchTab(t.id)">{{ t.label }}</button>
+  </div>
+  <div class="tab-content">
+    <!-- Root Task Tab -->
+    <div v-if="activeTab === 'root'">
+      <div class="card" style="max-width:600px">
+        <div class="card-title">Root Task</div>
+        <div v-if="rootTask">
+          <p style="font-size:0.85rem;color:var(--gray);margin-bottom:12px">
+            ID: {{ rootTask.id }} &bull; Status: {{ rootTask.status }}
+          </p>
+        </div>
+        <div style="margin-top:12px">
+          <label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:4px">Title</label>
+          <input v-model="rootTaskForm.title"
+            style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;font-size:0.9rem"
+            placeholder="Feature title...">
+        </div>
+        <div style="margin-top:12px">
+          <label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:4px">Description</label>
+          <textarea v-model="rootTaskForm.description" rows="6"
+            style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;font-size:0.9rem;resize:vertical"
+            placeholder="Describe the feature / objective..."></textarea>
+        </div>
+        <div style="margin-top:16px">
+          <button @click="saveRootTask" :disabled="rootTaskSaving || !rootTaskForm.title.trim()"
+            style="padding:8px 20px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.9rem">
+            {{ rootTask ? 'Update Task' : 'Create Root Task' }}
+          </button>
+          <span v-if="rootTaskSaving" style="margin-left:8px;color:var(--gray);font-size:0.85rem">Saving...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Architecture Tab -->
+    <div v-if="activeTab === 'arch'">
+      <!-- C4 Zoom Navigator breadcrumb -->
+      <div class="breadcrumb" style="margin-bottom:8px">
+        <span v-for="(crumb, idx) in zoomBreadcrumb" :key="idx" style="display:flex;align-items:center;gap:6px">
+          <span v-if="idx < zoomBreadcrumb.length - 1" class="breadcrumb-item" @click="zoomBack(crumb)">{{ crumb.label }}</span>
+          <span v-else class="breadcrumb-current">{{ crumb.label }}</span>
+          <span v-if="idx < zoomBreadcrumb.length - 1" class="breadcrumb-sep">&rsaquo;</span>
+        </span>
+      </div>
+      <!-- Level indicator row -->
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="background:var(--blue);color:#fff;padding:2px 10px;border-radius:10px;font-size:0.75rem;font-weight:600">
+          {{ {'l1':'L1 System','l2':'L2 Containers','l3':'L3 Components','l4':'L4 Code'}[zoomLevel] }}
+        </span>
+        <span v-if="zoomLevel !== 'l4'" style="font-size:0.8rem;color:var(--gray)">Click a node to drill down</span>
+        <span v-else style="font-size:0.8rem;color:var(--gray)">No drill-down available</span>
+        <span style="font-size:0.72rem;background:#e9ecef;color:#6c757d;padding:2px 8px;border-radius:10px;margin-left:4px">tests excluded</span>
+      </div>
+      <!-- Loading state -->
+      <div v-if="zoomLoading" class="msg">Loading&hellip;</div>
+      <!-- Empty state for L2 -->
+      <div v-else-if="zoomLevel === 'l2' && !zoomContainers.length" class="msg">No containers found. Run <code>code-review-graph build</code> first.</div>
+      <!-- Main content -->
+      <div v-else>
+        <!-- Blast Radius overlay controls -->
+        <div style="background:#f8f9fa;border:1px solid var(--border);border-radius:6px;padding:10px 14px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-weight:600;font-size:0.875rem">🎯 Blast Radius:</span>
+            <select v-model="blastTask" style="max-width:280px;padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem">
+              <option value="">Select task...</option>
+              <option v-for="t in leafTasks" :key="t.id" :value="t.id">{{ t.id }}: {{ t.title }}</option>
+            </select>
+            <select v-model="blastDepth" style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:0.875rem">
+              <option value="1">Depth 1</option>
+              <option value="2">Depth 2</option>
+              <option value="3">Depth 3</option>
+            </select>
+            <button @click="applyBlastOverlay" :disabled="!blastTask"
+              style="padding:6px 14px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.875rem">
+              Show overlay
+            </button>
+            <button @click="clearBlastOverlay"
+              style="padding:6px 14px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.875rem;color:var(--gray)">
+              Clear
+            </button>
+          </div>
+          <div v-if="blastResult" style="margin-top:8px;font-size:0.8rem">
+            <span>Coverage: {{ Math.round((blastResult.coverage_ratio || 0) * 100) }}%
+              ({{ blastResult.covered_count }}/{{ blastResult.total_affected }} nodes affected)</span>
+            <span v-if="blastResult.uncovered_nodes && blastResult.uncovered_nodes.length"
+              style="margin-left:12px;color:#dc3545">
+              Uncovered: {{ blastResult.uncovered_nodes.map(n => n.name).join(', ') }}
+            </span>
+          </div>
+          <div v-if="blastResult" style="margin-top:4px;font-size:0.75rem;color:#666">
+            <span style="color:#dc3545">● Direct</span>
+            <span style="color:#fd7e14;margin-left:8px">● Depth 1</span>
+            <span style="color:#ffc107;margin-left:8px">● Depth 2+</span>
+            <span style="color:#adb5bd;margin-left:8px">⚪ Outside</span>
+          </div>
+        </div>
+        <div class="arch-layout">
+          <div class="arch-graph-wrap">
+            <div id="cy-arch" @contextmenu.prevent style="width:100%;height:100%;background:#fff;border:1px solid var(--border);border-radius:6px;"></div>
+          </div>
+          <div class="detail-panel">
+            <div v-if="selectedNode">
+              <div style="margin-bottom:8px">
+                <div style="font-weight:600;font-size:0.95rem">{{ selectedNode.label }}</div>
+                <div v-if="selectedNode.sublabel" style="font-size:0.8rem;color:var(--gray);margin-top:2px">{{ selectedNode.sublabel }}</div>
+              </div>
+              <div style="font-size:0.8rem;margin-bottom:8px">
+                <span class="badge" :class="nodeBadgeClass(selectedNode.status)">{{ selectedNode.status || 'existing' }}</span>
+                <span v-if="selectedNode.kind" style="margin-left:6px;color:var(--gray)">{{ selectedNode.kind }}</span>
+              </div>
+              <div class="section-hdr" style="margin-top:0">Annotations ({{ nodeAnnotations.length }})</div>
+              <div v-if="nodeAnnotations.length" style="margin-bottom:8px">
+                <div v-for="a in nodeAnnotations" :key="a.id"
+                  style="padding:5px 0;border-bottom:1px solid var(--border);font-size:0.8rem">
+                  <div>
+                    <span style="color:var(--gray)">{{ a.note_type === 'assumption' ? '🔍' : a.note_type === 'decision' ? '📋' : '❓' }}</span>
+                    {{ a.content }}
+                  </div>
+                  <div v-if="a.status === 'answered' || a.status === 'resolved'">
+                    <div v-if="!noteEditMode[a.id]">
+                      <div v-if="a.resolution" style="font-style:italic;color:#374151;margin-top:2px">💬 {{ a.resolution }}</div>
+                      <button @click="startNoteEdit(a.id, a.resolution)"
+                        style="padding:2px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray);margin-top:2px">
+                        ✏️ Edit
+                      </button>
+                    </div>
+                    <div v-else>
+                      <textarea v-model="noteEditText[a.id]" rows="2"
+                        style="width:100%;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical;margin-top:2px"></textarea>
+                      <div style="display:flex;gap:4px;margin-top:2px">
+                        <button @click="saveNoteEdit(a.id)"
+                          style="padding:3px 8px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem">Save</button>
+                        <button @click="cancelNoteEdit(a.id)"
+                          style="padding:3px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray)">Cancel</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="empty" style="margin-bottom:8px">No annotations yet.</div>
+              <template v-if="nodeTaskRefs.tasks && nodeTaskRefs.tasks.length">
+                <div class="section-hdr" style="margin-top:4px">Tasks ({{ nodeTaskRefs.tasks.length }})</div>
+                <div style="margin-bottom:8px">
+                  <div v-for="t in nodeTaskRefs.tasks" :key="t.id"
+                       style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.8rem;border-bottom:1px solid var(--border)">
+                    <span>{{ t.title }}</span>
+                    <span class="badge" :class="statusBadgeClass(t.status)" style="margin-left:6px;flex-shrink:0">{{ t.status }}</span>
+                  </div>
+                </div>
+              </template>
+              <template v-if="nodeTaskRefs.contracts && nodeTaskRefs.contracts.length">
+                <div class="section-hdr" style="margin-top:4px">Contracts ({{ nodeTaskRefs.contracts.length }})</div>
+                <div style="margin-bottom:8px">
+                  <div v-for="c in nodeTaskRefs.contracts" :key="c.id"
+                       style="padding:4px 0;font-size:0.8rem;border-bottom:1px solid var(--border)">
+                    <span style="font-weight:600">{{ c.name }}</span>
+                    <span class="badge" :class="contractBadgeClass(c.status)" style="margin-left:6px">{{ c.status }}</span>
+                    <span style="color:var(--gray);font-size:0.75rem;margin-left:4px">{{ c.contract_type }}</span>
+                  </div>
+                </div>
+              </template>
+              <div class="section-hdr" style="margin-top:0">Add annotation</div>
+              <textarea v-model="newAnnotation" rows="3"
+                style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical"
+                placeholder="Add a note about this element..."></textarea>
+              <button @click="submitAnnotation" :disabled="!newAnnotation.trim()"
+                style="margin-top:6px;padding:6px 14px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
+                Add Note
+              </button>
+            </div>
+            <div v-else style="color:var(--gray);font-size:0.85rem;text-align:center;padding:20px 0">
+              &#x1F4CC; Click a node<br>to see details
+            </div>
+          </div>
+        </div>
+        <div class="legend">
+          <span class="legend-item">
+            <span class="legend-swatch" style="background:#438DD5"></span>Container
+          </span>
+          <span class="legend-item">
+            <span class="legend-swatch" style="background:#1a7f6e"></span>Class
+          </span>
+          <span class="legend-item">
+            <span class="legend-swatch" style="background:#6c757d"></span>File
+          </span>
+          <span class="legend-item">
+            <span class="legend-swatch" style="background:#5856d6"></span>Function/Method
+          </span>
+        </div>
+      </div>
+      <div id="annotation-panel"></div>
+    </div>
+
+    <!-- Task DAG Tab -->
+    <div v-if="activeTab === 'dag'">
+      <!-- Filter row -->
+      <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
+        <button v-for="f in [{v:'all',l:'All'},{v:'done',l:'✅ Done'},{v:'in_progress',l:'🔄 In Progress'},{v:'ready',l:'⏳ Ready'},{v:'draft',l:'📝 Draft'}]"
+          :key="f.v" @click="dagFilter = f.v; buildCyDag()"
+          :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',
+                   background: dagFilter === f.v ? 'var(--blue)' : '#fff',
+                   color: dagFilter === f.v ? '#fff' : 'inherit'}">
+          {{ f.l }}
+        </button>
+      </div>
+      <div style="display:flex;gap:12px">
+        <div style="flex:1;min-width:0;height:calc(100vh - 230px);background:#fff;border:1px solid var(--border);border-radius:6px" id="cy-dag"></div>
+        <div style="width:280px;flex-shrink:0;background:#fff;border:1px solid var(--border);border-radius:6px;padding:14px;overflow-y:auto;max-height:calc(100vh - 230px)">
+          <div v-if="dagTaskLoading" style="color:var(--gray);font-size:0.85rem">Loading...</div>
+          <div v-else-if="selectedDagTask && selectedDagTask.task">
+            <div style="font-weight:600;font-size:0.95rem;margin-bottom:4px">{{ selectedDagTask.task.title }}</div>
+            <span class="badge" :class="statusBadgeClass(selectedDagTask.task.status)">{{ selectedDagTask.task.status }}</span>
+            <div v-if="selectedDagTask.task.description" style="font-size:0.8rem;color:#374151;margin-top:8px;white-space:pre-wrap">{{ selectedDagTask.task.description }}</div>
+            <template v-if="selectedDagTask.code_refs && selectedDagTask.code_refs.length">
+              <div class="section-hdr" style="margin-top:12px">Code Refs ({{ selectedDagTask.code_refs.length }})</div>
+              <div v-for="r in selectedDagTask.code_refs" :key="r.qualified_name" style="font-size:0.8rem;padding:2px 0;border-bottom:1px solid var(--border)">
+                <span style="color:var(--gray)">{{ r.ref_type }}</span> {{ r.qualified_name ? r.qualified_name.split('::').pop() : '' }}
+              </div>
+            </template>
+            <template v-if="selectedDagTask.edges && selectedDagTask.edges.length">
+              <div class="section-hdr" style="margin-top:8px">Edges ({{ selectedDagTask.edges.length }})</div>
+              <div v-for="e in selectedDagTask.edges" :key="e.source + e.target + e.type" style="font-size:0.8rem;padding:2px 0">
+                <span v-if="e.direction === 'outgoing'">→ {{ e.type }}: {{ e.target_title }}</span>
+                <span v-else>← {{ e.type }}: {{ e.source_title }}</span>
+              </div>
+            </template>
+            <template v-if="selectedDagTask.notes && selectedDagTask.notes.length">
+              <div class="section-hdr" style="margin-top:8px">Notes ({{ selectedDagTask.notes.length }})</div>
+              <div v-for="n in selectedDagTask.notes" :key="n.id"
+                style="font-size:0.8rem;padding:5px 0;border-bottom:1px solid var(--border)">
+                <div>
+                  <span style="color:var(--gray)">{{ n.note_type === 'question' ? '❓' : n.note_type === 'assumption' ? '🔍' : '📋' }}</span>
+                  {{ n.content }}
+                </div>
+                <div v-if="n.status === 'answered' || n.status === 'resolved'">
+                  <div v-if="!noteEditMode[n.id]">
+                    <div v-if="n.resolution" style="font-style:italic;color:#374151;margin-top:2px">💬 {{ n.resolution }}</div>
+                    <button @click="startNoteEdit(n.id, n.resolution)"
+                      style="padding:2px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray);margin-top:2px">
+                      ✏️ Edit
+                    </button>
+                  </div>
+                  <div v-else>
+                    <textarea v-model="noteEditText[n.id]" rows="2"
+                      style="width:100%;padding:4px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical;margin-top:2px"></textarea>
+                    <div style="display:flex;gap:4px;margin-top:2px">
+                      <button @click="saveNoteEdit(n.id)"
+                        style="padding:3px 8px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem">Save</button>
+                      <button @click="cancelNoteEdit(n.id)"
+                        style="padding:3px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray)">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div class="section-hdr" style="margin-top:10px">Add Note</div>
+            <textarea v-model="newDagAnnotation" rows="2"
+              style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical"
+              placeholder="Leave a comment..."></textarea>
+            <button @click="submitDagAnnotation" :disabled="!newDagAnnotation.trim()"
+              style="margin-top:4px;padding:5px 12px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
+              📌 Pin to task
+            </button>
+          </div>
+          <div v-else style="color:var(--gray);font-size:0.85rem;text-align:center;padding:20px 0">
+            📌 Click a task node<br>to see details
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Contracts Tab -->
+    <div v-if="activeTab === 'contracts'">
+      <!-- Filter row -->
+      <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:0.8rem;font-weight:600;color:var(--gray)">Type:</span>
+        <button v-for="t in [{v:'all',l:'All'},{v:'schema',l:'📦 Schemas'},{v:'interface',l:'🔌 Interfaces'},{v:'api',l:'🌐 APIs'},{v:'event',l:'⚡ Events'}]"
+          :key="t.v" @click="contractsFilter.type = t.v"
+          :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',background:contractsFilter.type===t.v?'var(--blue)':'#fff',color:contractsFilter.type===t.v?'#fff':'inherit'}">
+          {{ t.l }}
+        </button>
+        <span style="font-size:0.8rem;font-weight:600;color:var(--gray);margin-left:8px">Status:</span>
+        <button v-for="s in [{v:'all',l:'All'},{v:'proposed',l:'⏳ Proposed'},{v:'agreed',l:'✅ Agreed'},{v:'implemented',l:'✔ Implemented'}]"
+          :key="s.v" @click="contractsFilter.status = s.v"
+          :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',background:contractsFilter.status===s.v?'var(--blue)':'#fff',color:contractsFilter.status===s.v?'#fff':'inherit'}">
+          {{ s.l }}
+        </button>
+      </div>
+      <div v-if="filteredContracts(contracts, contractsFilter.type, contractsFilter.status).length === 0" class="msg">No contracts match filter.</div>
+      <template v-else>
+        <!-- Dependency graph -->
+        <div id="cy-contracts" class="graph-container" style="height:250px;margin-bottom:16px"></div>
+        <!-- Contract cards -->
+        <div class="contract-grid">
+          <div class="card" v-for="c in filteredContracts(contracts, contractsFilter.type, contractsFilter.status)" :key="c.id">
+            <div class="contract-type">📦 {{ c.contract_type }}</div>
+            <div class="card-title">{{ c.name }}</div>
+            <span class="badge" :class="contractBadgeClass(c.status)">{{ c.status }}</span>
+            <div v-if="c.code_node_id" style="font-size:0.75rem;color:var(--green);margin-top:4px">🔗 Linked to code</div>
+            <div class="contract-def" v-if="c.definition">{{ c.definition }}</div>
+            <div style="margin-top:8px;font-size:0.8rem" v-if="c.providers && c.providers.length">
+              <strong>Provider:</strong>
+              <span v-for="p in c.providers" :key="p.id" class="badge" :class="statusBadgeClass(p.status)" style="margin-left:4px">{{ p.title }}</span>
+            </div>
+            <div style="margin-top:4px;font-size:0.8rem" v-if="c.consumers && c.consumers.length">
+              <strong>Consumers:</strong>
+              <span v-for="cs in c.consumers" :key="cs.id" class="badge" :class="statusBadgeClass(cs.status)" style="margin-left:4px">{{ cs.title }}</span>
+            </div>
+            <!-- Annotations linked to this contract -->
+            <template v-if="c.annotations && c.annotations.length">
+              <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+                <div style="font-size:0.75rem;font-weight:600;color:var(--gray);margin-bottom:4px">Annotations ({{ c.annotations.length }})</div>
+                <div v-for="a in c.annotations" :key="a.id"
+                  style="font-size:0.8rem;padding:4px 0;border-bottom:1px solid var(--border)">
+                  <span style="color:var(--gray)">{{ a.note_type === 'question' ? '❓' : a.note_type === 'assumption' ? '🔍' : '📋' }}</span>
+                  {{ a.content }}
+                  <div v-if="a.resolution" style="font-style:italic;color:#374151;margin-top:2px;font-size:0.75rem">💬 {{ a.resolution }}</div>
+                </div>
+              </div>
+            </template>
+            <!-- Comment box -->
+            <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
+              <textarea v-model="contractComments[c.id]" rows="2"
+                style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical"
+                placeholder="💬 Comment on contract..."></textarea>
+              <button @click="submitContractComment(c.id)" :disabled="!(contractComments[c.id] || '').trim()"
+                style="margin-top:4px;padding:5px 12px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
+                📌 Pin comment
+              </button>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Notes Tab -->
+    <div v-if="activeTab === 'notes'">
+      <!-- Filter row -->
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:0.8rem;font-weight:600;color:var(--gray)">Type:</span>
+        <button v-for="t in [{v:'all',l:'All'},{v:'question',l:'❓ Questions'},{v:'decision',l:'📋 Decisions'},{v:'constraint',l:'⚠️ Constraints'},{v:'assumption',l:'🔍 Assumptions'},{v:'risk',l:'🚨 Risks'}]"
+          :key="t.v" @click="notesFilter.type = t.v"
+          :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',background: notesFilter.type === t.v ? 'var(--blue)' : '#fff',color: notesFilter.type === t.v ? '#fff' : 'inherit'}">
+          {{ t.l }}
+        </button>
+        <span style="font-size:0.8rem;font-weight:600;color:var(--gray);margin-left:8px">Status:</span>
+        <button v-for="s in [{v:'all',l:'All'},{v:'open',l:'⭕ Open'},{v:'answered',l:'⏳ Answered'},{v:'resolved',l:'✅ Resolved'}]"
+          :key="s.v" @click="notesFilter.status = s.v"
+          :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',background: notesFilter.status === s.v ? 'var(--blue)' : '#fff',color: notesFilter.status === s.v ? '#fff' : 'inherit'}">
+          {{ s.l }}
+        </button>
+      </div>
+
+      <!-- Open notes -->
+      <template v-if="notesFilter.status === 'all' || notesFilter.status === 'open'">
+        <div class="section-hdr" v-if="filteredNotes(notes.open, notesFilter.type, 'open').length">
+          ⭕ Open ({{ filteredNotes(notes.open, notesFilter.type, 'open').length }})
+        </div>
+        <div v-for="n in filteredNotes(notes.open, notesFilter.type, 'open')" :key="n.id" class="card note-card">
+          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : '❓' }} {{ n.content }}</div>
+          <div style="font-size:0.8rem;color:var(--gray);margin-bottom:6px">
+            📋 {{ n._task_title || n.task_id }}
+            <span v-if="n._parent_title" style="opacity:0.7"> ↑ {{ n._parent_title }}</span>
+          </div>
+          <!-- Alternatives -->
+          <div v-if="n.alternatives" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+            <button v-for="alt in n.alternatives.split(',').map(s=>s.trim()).filter(Boolean)"
+              :key="alt" @click="toggleAlt(n.id, alt)"
+              :style="{padding:'3px 10px',borderRadius:'20px',border:'1px solid var(--blue)',cursor:'pointer',fontSize:'0.8rem',
+                       background: (noteAltsSelected[n.id] && noteAltsSelected[n.id].has(alt)) ? 'var(--blue)' : '#fff',
+                       color: (noteAltsSelected[n.id] && noteAltsSelected[n.id].has(alt)) ? '#fff' : 'var(--blue)'}">
+              {{ alt }}
+            </button>
+          </div>
+          <!-- Assumption: confirm/deny buttons -->
+          <template v-if="n.note_type === 'assumption'">
+            <textarea v-model="noteAnswers[n.id]" rows="1"
+              style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical;margin-bottom:8px"
+              placeholder="Optional comment..."></textarea>
+            <div style="display:flex;gap:8px">
+              <button @click="answerNote(n.id, buildResolution(n.id, 'Confirmed'))"
+                style="padding:5px 12px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
+                ✅ Confirmed
+              </button>
+              <button @click="answerNote(n.id, buildResolution(n.id, 'Not correct'))"
+                style="padding:5px 12px;background:#fff;color:var(--red);border:1px solid var(--red);border-radius:4px;cursor:pointer;font-size:0.8rem">
+                ❌ Not correct
+              </button>
+            </div>
+          </template>
+          <!-- Question: free text + submit -->
+          <template v-else>
+            <textarea v-model="noteAnswers[n.id]" rows="2"
+              style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical"
+              placeholder="Your answer..."></textarea>
+            <button @click="answerNote(n.id, buildResolution(n.id, ''))"
+              :disabled="!buildResolution(n.id, '').trim()"
+              style="margin-top:4px;padding:5px 12px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
+              💬 Submit answer →
+            </button>
+          </template>
+        </div>
+        <div v-if="!filteredNotes(notes.open, notesFilter.type, 'open').length && (notesFilter.status === 'open')" class="empty">No open notes ✔</div>
+      </template>
+
+      <!-- Answered notes -->
+      <template v-if="notesFilter.status === 'all' || notesFilter.status === 'answered'">
+        <div class="section-hdr" v-if="filteredNotes(notes.answered, notesFilter.type, 'answered').length">
+          ⏳ Answered ({{ filteredNotes(notes.answered, notesFilter.type, 'answered').length }})
+        </div>
+        <div v-for="n in filteredNotes(notes.answered, notesFilter.type, 'answered')" :key="n.id" class="card note-card answered">
+          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : '❓' }} {{ n.content }}</div>
+          <div style="font-size:0.8rem;color:var(--gray);margin-bottom:4px">📋 {{ n._task_title || n.task_id }}</div>
+          <div v-if="!noteEditMode[n.id]">
+            <div style="font-size:0.875rem;font-style:italic;color:#374151;margin-bottom:6px">💬 {{ n.resolution }}</div>
+            <button @click="startNoteEdit(n.id, n.resolution)"
+              style="padding:4px 10px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray)">
+              ✏️ Edit
+            </button>
+          </div>
+          <div v-else>
+            <textarea v-model="noteEditText[n.id]" rows="2"
+              style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical;margin-bottom:6px"></textarea>
+            <div style="display:flex;gap:6px">
+              <button @click="saveNoteEdit(n.id)"
+                style="padding:4px 10px;background:var(--blue);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
+                Save
+              </button>
+              <button @click="cancelNoteEdit(n.id)"
+                style="padding:4px 10px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem;color:var(--gray)">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Resolved notes -->
+      <template v-if="notesFilter.status === 'all' || notesFilter.status === 'resolved'">
+        <div class="section-hdr" v-if="filteredNotes(notes.resolved, notesFilter.type, 'resolved').length">
+          ✅ Resolved ({{ filteredNotes(notes.resolved, notesFilter.type, 'resolved').length }})
+        </div>
+        <div v-for="n in filteredNotes(notes.resolved, notesFilter.type, 'resolved')" :key="n.id" class="card note-card resolved">
+          <div class="card-title">{{ n.content }}</div>
+          <div v-if="n.resolution" style="font-size:0.8rem;color:var(--gray);margin-top:4px;font-style:italic">{{ n.resolution }}</div>
+        </div>
+      </template>
+
+      <div v-if="!notes.open.length && !notes.answered.length && !notes.resolved.length" class="empty">No notes yet.</div>
+    </div>
+
+    <!-- Roadmap Tab -->
+    <div v-if="activeTab === 'roadmap'">
+      <div v-if="!roadmapData" class="msg">Loading&hellip;</div>
+      <div v-else>
+        <!-- Progress -->
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-title">Progress</div>
+          <div style="margin:10px 0 4px;font-size:0.875rem">
+            {{ (roadmapData.progress || {}).done || 0 }} / {{ (roadmapData.progress || {}).total || 0 }} tasks done
+            ({{ (roadmapData.progress || {}).percent || 0 }}%)
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill" :style="{width: ((roadmapData.progress || {}).percent || 0) + '%'}"></div>
+          </div>
+          <div style="display:flex;gap:12px;margin-top:8px;font-size:0.8rem;flex-wrap:wrap">
+            <span v-if="(roadmapData.progress || {}).in_progress">🔄 {{ roadmapData.progress.in_progress }} in progress</span>
+            <span v-if="(roadmapData.progress || {}).ready">⏳ {{ roadmapData.progress.ready }} ready</span>
+            <span v-if="(roadmapData.progress || {}).blocked">🔒 {{ roadmapData.progress.blocked }} blocked</span>
+          </div>
+        </div>
+        <!-- Phases -->
+        <div v-if="roadmapData.phases && roadmapData.phases.length">
+          <div v-for="phase in roadmapData.phases" :key="phase.level" style="margin-bottom:16px">
+            <div class="section-hdr">Phase {{ phase.level }} ({{ phase.tasks.length }} tasks)</div>
+            <div class="level-row">
+              <div class="level-task card" v-for="t in phase.tasks" :key="t.id">
+                <div style="font-weight:600;font-size:0.8rem">{{ t.title }}</div>
+                <span class="badge" :class="statusBadgeClass(t.status)">{{ t.status }}</span>
+                <div v-if="t.blocked_by && t.blocked_by.length" style="font-size:0.75rem;color:var(--red);margin-top:4px">
+                  🔒 blocked by {{ t.blocked_by.length }} task(s)
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- Contracts + Notes summary -->
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px" v-if="roadmapData.contracts || roadmapData.notes_summary">
+          <div class="card" style="flex:1;min-width:200px" v-if="roadmapData.contracts">
+            <div class="card-title">Contracts</div>
+            <div style="font-size:0.875rem">
+              Total: {{ roadmapData.contracts.total || 0 }} &bull;
+              Agreed: <span style="color:var(--green)">{{ roadmapData.contracts.agreed || 0 }}</span> &bull;
+              Pending: <span style="color:var(--yellow)">{{ roadmapData.contracts.pending || 0 }}</span>
+            </div>
+          </div>
+          <div class="card" style="flex:1;min-width:200px" v-if="roadmapData.notes_summary">
+            <div class="card-title">Open Notes</div>
+            <div style="font-size:0.875rem">
+              ❓ {{ (roadmapData.notes_summary || {}).open_questions || 0 }} questions &bull;
+              🔍 {{ (roadmapData.notes_summary || {}).open_assumptions || 0 }} assumptions
+            </div>
+          </div>
+        </div>
+        <!-- Attention: Ready to Start -->
+        <div v-if="roadmapData.attention && roadmapData.attention.ready_to_start && roadmapData.attention.ready_to_start.length">
+          <div class="section-hdr">▶ Ready to Start</div>
+          <div class="card" v-for="t in roadmapData.attention.ready_to_start" :key="t.id || t.task_id">
+            <div class="card-title">{{ t.title || t.task_title }}</div>
+            <span class="badge badge-green">{{ t.status || t.task_status }}</span>
+          </div>
+        </div>
+        <!-- Attention: Unresolved Questions -->
+        <div v-if="roadmapData.attention && roadmapData.attention.unresolved_questions && roadmapData.attention.unresolved_questions.length">
+          <div class="section-hdr">❓ Open Questions</div>
+          <div class="card" v-for="n in roadmapData.attention.unresolved_questions" :key="n.id">
+            {{ n.content }}
+          </div>
+        </div>
+        <!-- Attention: Unverified Assumptions -->
+        <div v-if="roadmapData.attention && roadmapData.attention.unverified_assumptions && roadmapData.attention.unverified_assumptions.length">
+          <div class="section-hdr">🔍 Unverified Assumptions</div>
+          <div class="card" v-for="n in roadmapData.attention.unverified_assumptions" :key="n.id">
+            {{ n.content }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Timeline Tab -->
+    <div v-if="activeTab === 'timeline'">
+      <div v-if="!timelineData" class="msg">Loading&hellip;</div>
+      <div v-else class="gantt-wrap">
+        <h3 style="font-size:1rem;font-weight:700;margin-bottom:12px">Execution Timeline</h3>
+        <div v-if="timelineData.levels && timelineData.levels.length">
+          <!-- Gantt table -->
+          <div class="gantt-table">
+            <!-- Header -->
+            <div class="gantt-row gantt-hrow">
+              <div class="gantt-name-col">Task</div>
+              <div class="gantt-bar-cell" v-for="(lvl, li) in timelineData.levels" :key="li"
+                   style="text-align:center">
+                Level {{ lvl.level }}<br>
+                <span style="font-weight:400;font-size:0.7rem;color:var(--gray)">
+                  {{ lvl.tasks.length }} task{{ lvl.tasks.length===1?'':'s' }}
+                </span>
+              </div>
+            </div>
+            <!-- Task rows — one row per task -->
+            <template v-for="(lvl, li) in timelineData.levels" :key="'lvl-'+li">
+              <div class="gantt-row"
+                   v-for="t in lvl.tasks" :key="t.id"
+                   :class="{ 'gantt-critical': (timelineData.critical_path || []).includes(t.id) }">
+                <!-- Name column -->
+                <div class="gantt-name-col" :title="t.title">
+                  <span v-if="(timelineData.critical_path || []).includes(t.id)" class="cp-marker">★</span>
+                  <span class="gantt-task-title">{{ t.title }}</span>
+                </div>
+                <!-- One cell per level: bar in the task's own level, empty otherwise -->
+                <div class="gantt-bar-cell" v-for="(col, ci) in timelineData.levels" :key="ci">
+                  <div v-if="ci === t.level"
+                       class="gantt-bar"
+                       :class="'gantt-bar-' + (t.status || 'draft')"
+                       :title="t.title + ' (' + (t.status||'draft') + ')'">
+                    <span class="gantt-status-icon">{{ statusIcon(t.status) }}</span>
+                    {{ t.status || 'draft' }}
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+          <!-- Footer: parallelism + critical path + legend -->
+          <div class="gantt-footer">
+            <div class="gantt-parallelism">
+              <strong style="margin-right:6px">Parallelism:</strong>
+              <span class="gantt-par-badge" v-for="p in (timelineData.parallelism || [])" :key="p.level">
+                L{{ p.level }}: {{ p.count }} task{{ p.count===1?'':'s' }}
+              </span>
+            </div>
+            <div class="gantt-critical-path"
+                 v-if="timelineData.critical_path && timelineData.critical_path.length">
+              <span class="cp-label">⭐ Critical path:</span>
+              <template v-for="(tid, idx) in timelineData.critical_path" :key="tid">
+                <span>{{ getTaskTitle(tid) }}</span>
+                <span v-if="idx < timelineData.critical_path.length - 1" style="color:var(--gray);margin:0 4px">→</span>
+              </template>
+            </div>
+          </div>
+          <!-- Legend -->
+          <div class="gantt-legend">
+            <span class="gantt-legend-item"><span class="gantt-bar-preview gantt-bar-done"></span>done</span>
+            <span class="gantt-legend-item"><span class="gantt-bar-preview gantt-bar-in_progress"></span>in_progress</span>
+            <span class="gantt-legend-item"><span class="gantt-bar-preview gantt-bar-ready"></span>ready</span>
+            <span class="gantt-legend-item"><span class="gantt-bar-preview gantt-bar-draft"></span>draft/pending</span>
+            <span class="gantt-legend-item"><span class="gantt-bar-preview gantt-bar-archived"></span>archived</span>
+            <span class="gantt-legend-item" style="font-size:0.85rem">★ on critical path</span>
+          </div>
+        </div>
+        <div v-else class="empty">No execution levels found.</div>
+      </div>
+    </div>
+
+    <!-- Sequence Tab -->
+    <div v-if="activeTab === 'sequence'">
+      <div class="select-row">
+        <span style="font-size:0.875rem;font-weight:600">Mode:</span>
+        <select v-model="seqMode" @change="loadSequence" style="margin-left:6px">
+          <option value="task">Task Contracts</option>
+          <option value="flow">Code Flow</option>
+        </select>
+        <template v-if="seqMode === 'flow'">
+          <select v-model="seqFlowId" style="max-width:400px;margin-left:8px">
+            <option value="">Select a flow...</option>
+            <option v-for="f in seqFlows" :key="f.id" :value="f.id">
+              {{ f.name }} (depth={{ f.depth }}, {{ f.node_count }} nodes)
+            </option>
+          </select>
+          <button @click="loadSequenceFlow" style="margin-left:8px;padding:4px 10px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:#fff">Load</button>
+        </template>
+      </div>
+      <div class="mermaid-wrap" ref="mermaidDiv">
+        <div class="msg" v-if="!seqDiagram">
+          {{ seqMode === 'flow' ? 'Select a flow above to see its sequence diagram' : 'Loading sequence diagram\u2026' }}
+        </div>
+        <div v-else v-html="seqHtml"></div>
+      </div>
+    </div>
+
+    <!-- Data Flow Tab -->
+    <div v-if="activeTab === 'dataflow'">
+      <div class="select-row">
+        <span style="font-size:0.875rem">Source:</span>
+        <select v-model="dfSource" style="max-width:400px">
+          <option value="">Select a function...</option>
+          <option v-for="s in dfSources" :key="s.qualified_name" :value="s.qualified_name">
+            {{ s.name }} ({{ s.kind }} &mdash; {{ s.file }})
+          </option>
+        </select>
+        <span style="font-size:0.875rem;margin-left:8px">Depth:</span>
+        <select v-model="dfDepth">
+          <option v-for="d in [1,2,3,4,5]" :key="d" :value="d">{{ d }}</option>
+        </select>
+        <button @click="loadDataflow" style="margin-left:8px;padding:5px 12px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:#fff">Load</button>
+      </div>
+      <div id="cy-dataflow" class="graph-container"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, reactive, watch, onMounted, nextTick } = Vue;
+
+if (typeof cytoscapeDagre !== 'undefined' && typeof cytoscape !== 'undefined') {
+  cytoscape.use(cytoscapeDagre);
+}
+
+createApp({
+  setup() {
+    const tabs = [
+      { id: 'root',      label: '📋 Root Task' },
+      { id: 'arch',      label: 'Architecture' },
+      { id: 'dag',       label: 'Task DAG' },
+      { id: 'contracts', label: 'Contracts' },
+      { id: 'notes',     label: 'Notes' },
+      { id: 'roadmap',   label: 'Roadmap' },
+      { id: 'timeline',  label: 'Timeline' },
+      { id: 'sequence',  label: 'Sequence' },
+      { id: 'dataflow',  label: 'Data Flow' },
+    ];
+    const activeTab = ref('root');
+    const rootTitle = ref('');
+    const rootTask = ref(null);
+    const rootTaskForm = reactive({ title: '', description: '' });
+    const rootTaskSaving = ref(false);
+    const c4Data = reactive({ levels: {} });
+    const c4Level = ref('');
+    const c4Loading = ref(false);
+    const selectedNode = ref(null);
+    const breadcrumb = ref([]);
+    const nodeAnnotations = ref([]);
+    const newAnnotation = ref('');
+    const nodeTaskRefs = ref({ tasks: [], contracts: [] });
+    const dagData = reactive({ nodes: [], edges: [] });
+    const contracts = ref([]);
+    const notes = reactive({ open: [], answered: [], resolved: [] });
+    const roadmapData = ref(null);
+    const execOrder = ref(null);
+    const timelineData = ref(null);
+    const seqDiagram = ref('');
+    const seqHtml = ref('');
+    const seqMode = ref('task');   // 'task' | 'flow'
+    const seqFlowId = ref('');
+    const seqFlows = ref([]);
+    const annotations = reactive({});
+    const notesFilter = reactive({ type: 'all', status: 'all' });
+    const noteAnswers = reactive({});  // noteId → answer text
+    const noteAltsSelected = reactive({});   // noteId → Set of selected alt strings
+    const noteEditMode = reactive({});       // noteId → bool (edit textarea visible)
+    const noteEditText = reactive({});       // noteId → current edit text
+    const dagFilter = ref('all');  // 'all' | 'done' | 'in_progress' | 'ready' | 'draft'
+    const selectedDagTask = ref(null);  // task detail object
+    const dagTaskLoading = ref(false);
+    const newDagAnnotation = ref('');
+    const contractsFilter = reactive({ type: 'all', status: 'all' });
+    const contractComments = reactive({});  // contractId → comment text
+    const dfSources = ref([]);
+    const dfSource = ref('');
+    const dfDepth = ref(2);
+    const blastTask = ref('');
+    const blastDepth = ref('2');
+    const blastResult = ref(null);
+    const leafTasks = ref([]);
+    const zoomLevel = ref('l1');
+    const zoomBreadcrumb = ref([{ label: 'System', level: 'l1', param: null }]);
+    const zoomContainers = ref([]);
+    const zoomComponents = ref(null);
+    const zoomCodeNodes = ref(null);
+    const zoomLoading = ref(false);
+
+    let cyArch = null;
+    let cyDag = null;
+    let _skipBreadcrumb = false;
+    let cyContracts = null;
+    let cyDf = null;
+    let _blastOrigColors = {};  // nodeId -> original bgColor for restore
+
+    async function api(path) {
+      const r = await fetch(path);
+      return r.json();
+    }
+
+    async function loadRootTask() {
+      const data = await api('/api/root-task');
+      rootTask.value = data.task;
+      if (data.task) {
+        rootTaskForm.title = data.task.title || '';
+        rootTaskForm.description = data.task.description || '';
+        rootTitle.value = data.task.title || '';
+      }
+    }
+
+    async function saveRootTask() {
+      rootTaskSaving.value = true;
+      try {
+        const r = await fetch('/api/root-task', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            title: rootTaskForm.title,
+            description: rootTaskForm.description
+          })
+        });
+        const data = await r.json();
+        if (data.task) {
+          rootTask.value = data.task;
+          rootTitle.value = data.task.title;
+          // After creating, switch to roadmap tab
+          if (activeTab.value === 'root') {
+            switchTab('roadmap');
+          }
+        }
+      } finally {
+        rootTaskSaving.value = false;
+      }
+    }
+
+    async function loadRoadmap() {
+      const data = await api('/api/roadmap');
+      if (!rootTitle.value && data.root_title) rootTitle.value = data.root_title;
+      roadmapData.value = data;
+    }
+
+    async function loadNotes() {
+      const data = await api('/api/notes');
+      if (!rootTitle.value && data.task_title) rootTitle.value = data.task_title;
+      notes.open = data.open || [];
+      notes.answered = data.answered || [];
+      notes.resolved = data.resolved || [];
+    }
+
+    async function loadContracts() {
+      const data = await api('/api/contracts');
+      contracts.value = data.contracts || [];
+    }
+
+    async function loadC4() {
+      c4Loading.value = true;
+      const data = await api('/api/c4');
+      Object.assign(c4Data, data);
+      const keys = Object.keys(data.levels || {});
+      if (keys.length && !c4Level.value) {
+        c4Level.value = keys[0];
+        breadcrumb.value = [{ slug: keys[0], label: getBreadcrumbLabel(keys[0]) }];
+      }
+      c4Loading.value = false;
+    }
+
+    async function loadDag() {
+      const data = await api('/api/dag');
+      dagData.nodes = data.nodes || [];
+      dagData.edges = data.edges || [];
+    }
+
+    async function loadExecOrder() {
+      const data = await api('/api/execution-order');
+      execOrder.value = data;
+    }
+
+    async function loadTimeline() {
+      const data = await api('/api/timeline');
+      timelineData.value = data;
+    }
+
+    function statusIcon(status) {
+      const icons = { done: '✅', in_progress: '🔄', ready: '⏳', draft: '🔒',
+                      refined: '🔒', archived: '❌', blocked: '🚫' };
+      return icons[status] || '⏳';
+    }
+
+    function getTaskTitle(tid) {
+      if (!timelineData.value) return tid;
+      for (const lvl of (timelineData.value.levels || [])) {
+        for (const t of lvl.tasks) {
+          if (t.id === tid) return t.title;
+        }
+      }
+      return tid;
+    }
+
+    async function loadSequence() {
+      seqDiagram.value = '';
+      seqHtml.value = '';
+      if (seqMode.value === 'flow') {
+        await loadSeqFlows();
+        return;
+      }
+      const data = await api('/api/sequence');
+      seqDiagram.value = data.mermaid || '';
+      if (data.mermaid) {
+        try {
+          const { svg } = await mermaid.render('mermaid-seq', data.mermaid);
+          seqHtml.value = svg;
+        } catch(e) {
+          const s = String(data.mermaid || '');
+          seqHtml.value = '<pre>' + s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</pre>';
+        }
+      }
+    }
+
+    async function loadSeqFlows() {
+      const data = await api('/api/sequence-flows');
+      seqFlows.value = data.flows || [];
+    }
+
+    async function loadSequenceFlow() {
+      if (!seqFlowId.value) return;
+      seqDiagram.value = '';
+      seqHtml.value = '';
+      const data = await api('/api/sequence?flow_id=' + seqFlowId.value);
+      seqDiagram.value = data.mermaid || '';
+      if (seqDiagram.value) {
+        try {
+          const { svg } = await mermaid.render('seq-svg-' + Date.now(), seqDiagram.value);
+          seqHtml.value = svg;
+        } catch(e) {
+          const s = String(seqDiagram.value || '');
+          seqHtml.value = '<pre>' + s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</pre>';
+        }
+      }
+    }
+
+    async function loadDfSources() {
+      const data = await api('/api/dataflow/sources');
+      dfSources.value = data.sources || [];
+    }
+
+    async function loadLeafTasks() {
+      const data = await api('/api/leaf-tasks');
+      leafTasks.value = data.tasks || [];
+    }
+
+    async function applyBlastOverlay() {
+      if (!blastTask.value) return;
+      const data = await api(
+        '/api/blast-radius?task_id=' + encodeURIComponent(blastTask.value) +
+        '&depth=' + blastDepth.value
+      );
+      blastResult.value = data;
+      if (!cyArch) return;
+      const directNames = new Set((data.direct_nodes || []).map(n => n.name).filter(Boolean));
+      const directQNames = new Set((data.direct_nodes || []).map(n => n.qualified_name).filter(Boolean));
+      const affByDepth = {};
+      for (const n of (data.affected_nodes || [])) {
+        if (n.name) affByDepth[n.name] = n.bfs_depth;
+        if (n.qualified_name) affByDepth[n.qualified_name] = n.bfs_depth;
+      }
+      cyArch.nodes().forEach(node => {
+        const nid = node.data('id') || '';
+        if (nid.startsWith('_archbadge_')) return;
+        const label = node.data('origLabel') || node.data('label') || nid;
+        const origColor = node.data('bgColor') || '#438DD5';
+        if (!_blastOrigColors[nid]) _blastOrigColors[nid] = origColor;
+        if (directNames.has(label) || directQNames.has(nid) || directQNames.has(label)) {
+          node.style('background-color', '#dc3545');
+        } else if (affByDepth[label] === 1 || affByDepth[nid] === 1) {
+          node.style('background-color', '#fd7e14');
+        } else if (affByDepth[label] !== undefined || affByDepth[nid] !== undefined) {
+          node.style('background-color', '#ffc107');
+        }
+      });
+    }
+
+    function clearBlastOverlay() {
+      blastResult.value = null;
+      blastTask.value = '';
+      if (!cyArch) return;
+      cyArch.nodes().forEach(node => {
+        const nid = node.data('id') || '';
+        if (nid.startsWith('_archbadge_')) return;
+        const origColor = _blastOrigColors[nid] || node.data('bgColor') || '#438DD5';
+        node.style('background-color', origColor);
+      });
+      _blastOrigColors = {};
+    }
+
+    // ── C4 Zoom Navigator ────────────────────────────────────────────────────
+
+    async function zoomToL2() {
+      zoomLoading.value = true;
+      zoomLevel.value = 'l2';
+      zoomBreadcrumb.value = [
+        { label: 'System', level: 'l1', param: null },
+        { label: 'Containers', level: 'l2', param: null },
+      ];
+      selectedNode.value = null;
+      nodeAnnotations.value = [];
+      _blastOrigColors = {};
+      try {
+        const data = await api('/api/c4/zoom/containers');
+        zoomContainers.value = data.containers || [];
+      } catch(e) {
+        zoomContainers.value = [];
+      }
+      zoomLoading.value = false;
+      buildZoomCy();
+    }
+
+    async function zoomToL3(container) {
+      zoomLoading.value = true;
+      zoomLevel.value = 'l3';
+      zoomBreadcrumb.value = [
+        { label: 'System', level: 'l1', param: null },
+        { label: 'Containers', level: 'l2', param: null },
+        { label: container.name || ('Container ' + container.id), level: 'l3', param: container },
+      ];
+      selectedNode.value = null;
+      nodeAnnotations.value = [];
+      _blastOrigColors = {};
+      try {
+        const data = await api('/api/c4/zoom/components?container_id=' + encodeURIComponent(container.id));
+        zoomComponents.value = data;
+      } catch(e) {
+        zoomComponents.value = { container_id: container.id, components: [] };
+      }
+      zoomLoading.value = false;
+      buildZoomCy();
+    }
+
+    async function zoomToL4(component) {
+      zoomLoading.value = true;
+      zoomLevel.value = 'l4';
+      zoomBreadcrumb.value = [
+        ...zoomBreadcrumb.value.slice(0, 3),
+        { label: component.name || component.qualified_name || ('Node ' + component.id), level: 'l4', param: component },
+      ];
+      selectedNode.value = null;
+      nodeAnnotations.value = [];
+      _blastOrigColors = {};
+      try {
+        const qualName = component.qualified_name || component.file_path || String(component.id);
+        const data = await api('/api/c4/zoom/code?component=' + encodeURIComponent(qualName));
+        zoomCodeNodes.value = data;
+      } catch(e) {
+        zoomCodeNodes.value = { component: (component.qualified_name || String(component.id)), nodes: [] };
+      }
+      zoomLoading.value = false;
+      buildZoomCy();
+    }
+
+    async function zoomBack(crumb) {
+      if (crumb.level === 'l1') {
+        zoomLevel.value = 'l1';
+        zoomBreadcrumb.value = [{ label: 'System', level: 'l1', param: null }];
+        selectedNode.value = null;
+        nodeAnnotations.value = [];
+        _blastOrigColors = {};
+        buildZoomCy();
+      } else if (crumb.level === 'l2') {
+        await zoomToL2();
+      } else if (crumb.level === 'l3' && crumb.param) {
+        await zoomToL3(crumb.param);
+      }
+    }
+
+    function buildZoomCy() {
+      nextTick(() => {
+        const el = document.getElementById('cy-arch');
+        if (!el) return;
+        if (cyArch) { cyArch.destroy(); cyArch = null; }
+
+        const elements = [];
+
+        if (zoomLevel.value === 'l1') {
+          elements.push({ data: {
+            id: 'system_root',
+            label: rootTitle.value || 'System',
+            origLabel: rootTitle.value || 'System',
+            bgColor: '#438DD5', textColor: '#fff',
+            nodeShape: 'round-rectangle', nodeW: 160, nodeH: 80, fontSize: '14px',
+          }});
+        } else if (zoomLevel.value === 'l2') {
+          (zoomContainers.value || []).forEach(c => {
+            const sizeLine = (c.size || 0) + ' nodes';
+            const langLine = c.language || '';
+            elements.push({ data: {
+              id: 'c_' + c.id,
+              label: c.name + '\n' + sizeLine + (langLine ? '\n' + langLine : ''),
+              origLabel: c.name,
+              bgColor: '#438DD5', textColor: '#fff',
+              nodeShape: 'round-rectangle', nodeW: 140, nodeH: 80, fontSize: '11px',
+              containerData: JSON.stringify({ id: c.id, name: c.name, community_id: c.community_id }),
+            }});
+          });
+        } else if (zoomLevel.value === 'l3') {
+          const comps = (zoomComponents.value && zoomComponents.value.components) || [];
+          comps.forEach((c, i) => {
+            const isClass = (c.kind || '').toLowerCase() === 'class';
+            elements.push({ data: {
+              id: 'p_' + (c.node_id || c.id || i),
+              label: c.name,
+              origLabel: c.name,
+              bgColor: isClass ? '#1a7f6e' : '#6c757d',
+              textColor: '#fff',
+              nodeShape: isClass ? 'round-rectangle' : 'rectangle',
+              nodeW: 130, nodeH: 60, fontSize: '11px',
+              kind: c.kind || 'File',
+              componentData: JSON.stringify({
+                id: c.id, node_id: c.node_id, name: c.name,
+                kind: c.kind, qualified_name: c.qualified_name, file_path: c.file_path,
+              }),
+            }});
+          });
+        } else if (zoomLevel.value === 'l4') {
+          const nodes = (zoomCodeNodes.value && zoomCodeNodes.value.nodes) || [];
+          nodes.forEach((n, i) => {
+            const lbl = (n.signature || n.name || '').slice(0, 50);
+            elements.push({ data: {
+              id: 'f_' + (n.node_id || n.id || i),
+              label: lbl,
+              origLabel: n.name || lbl,
+              bgColor: '#5856d6', textColor: '#fff',
+              nodeShape: 'round-rectangle', nodeW: 150, nodeH: 50, fontSize: '10px',
+              kind: n.kind || '',
+            }});
+          });
+        }
+
+        if (!elements.length) return;
+
+        const cols = Math.min(Math.ceil(Math.sqrt(elements.length + 1)), 6);
+
+        cyArch = cytoscape({
+          container: el,
+          elements,
+          style: [
+            { selector: 'node', style: {
+              'background-color': 'data(bgColor)',
+              label: 'data(label)',
+              'text-valign': 'center', 'text-halign': 'center',
+              color: 'data(textColor)',
+              'font-size': 'data(fontSize)',
+              width: 'data(nodeW)',
+              height: 'data(nodeH)',
+              shape: 'data(nodeShape)',
+              'text-wrap': 'wrap',
+              'text-max-width': '130px',
+            }},
+            { selector: 'node:hover', style: { opacity: 0.85 } },
+            { selector: 'node:selected', style: {
+              'border-width': 2, 'border-color': '#212529', 'border-style': 'solid',
+            }},
+          ],
+          layout: { name: 'grid', padding: 30, cols },
+        });
+
+        cyArch.on('tap', 'node', evt => {
+          const d = evt.target.data();
+          if (zoomLevel.value === 'l1') {
+            zoomToL2();
+            return;
+          } else if (zoomLevel.value === 'l2') {
+            let container;
+            try { container = JSON.parse(d.containerData); }
+            catch(e) { container = { id: d.id.replace('c_', ''), name: d.origLabel || d.label }; }
+            zoomToL3(container);
+            return;
+          } else if (zoomLevel.value === 'l3') {
+            let component;
+            try { component = JSON.parse(d.componentData); }
+            catch(e) { component = { id: d.id.replace('p_', ''), name: d.origLabel || d.label, qualified_name: '' }; }
+            zoomToL4(component);
+            return;
+          }
+          // l4: show details only, no drill-down
+          selectedNode.value = {
+            id: d.id,
+            label: d.origLabel || d.label,
+            sublabel: d.kind || '',
+            status: 'existing',
+            kind: d.kind || '',
+          };
+          newAnnotation.value = '';
+          loadNodeDetails(d.id);
+        });
+
+        cyArch.on('tap', evt => {
+          if (evt.target === cyArch) {
+            selectedNode.value = null;
+            nodeAnnotations.value = [];
+          }
+        });
+      });
+    }
+
+    async function loadDataflow() {
+      if (!dfSource.value) return;
+      const data = await api('/api/dataflow?source=' + encodeURIComponent(dfSource.value) + '&depth=' + dfDepth.value);
+      buildCyDf(data.nodes || [], data.edges || []);
+    }
+
+    function buildCyDf(nodes, edges) {
+      nextTick(() => {
+        const el = document.getElementById('cy-dataflow');
+        if (!el) return;
+        if (cyDf) { cyDf.destroy(); cyDf = null; }
+        const elements = [];
+        nodes.forEach(n => {
+          const isEntry = n.depth === 0;
+          const isClass = n.kind === 'Class';
+          const color = isEntry ? '#438DD5' : isClass ? '#28a745' : '#6c757d';
+          elements.push({ data: { id: n.id, label: n.label, kind: n.kind, file: n.file || '', color } });
+        });
+        edges.forEach(e => {
+          elements.push({
+            data: {
+              id: 'e_' + e.source + '_' + e.target,
+              source: e.source, target: e.target, label: e.type
+            }
+          });
+        });
+        cyDf = cytoscape({
+          container: el, elements,
+          style: [
+            { selector: 'node', style: {
+              'background-color': 'data(color)', label: 'data(label)',
+              'text-valign': 'center', 'text-halign': 'center', color: '#fff',
+              'font-size': '10px', width: 120, height: 45, shape: 'round-rectangle',
+              'text-wrap': 'wrap', 'text-max-width': '110px'
+            }},
+            { selector: 'edge', style: {
+              width: 1.5, 'line-color': '#adb5bd', 'target-arrow-color': '#adb5bd',
+              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+              label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
+            }},
+          ],
+          layout: { name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
+                    rankDir: 'LR', padding: 30 }
+        });
+        cyDf.on('tap', 'node', function(evt) {
+          const d = evt.target.data();
+          alert(d.label + '\nKind: ' + d.kind + '\nFile: ' + d.file);
+        });
+      });
+    }
+
+    async function loadAnnotations() {
+      const data = await api('/api/annotations');
+      const ann = data.annotations || {};
+      for (const key of Object.keys(annotations)) { delete annotations[key]; }
+      Object.assign(annotations, ann);
+    }
+
+    function filteredNotes(list, typeFilter, statusFilter) {
+      return list.filter(n => {
+        if (typeFilter !== 'all' && n.note_type !== typeFilter) return false;
+        if (statusFilter !== 'all' && n.status !== statusFilter) return false;
+        return true;
+      });
+    }
+
+    async function answerNote(noteId, resolution, status) {
+      const res = resolution !== undefined ? resolution : (noteAnswers[noteId] || '');
+      if (!res.trim()) return;
+      await fetch('/api/notes/' + noteId + '/answer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ resolution: res, status: status || 'answered' })
+      });
+      delete noteAnswers[noteId];
+      delete noteAltsSelected[noteId];
+      await loadNotes();
+    }
+
+    function toggleAlt(noteId, alt) {
+      if (!noteAltsSelected[noteId]) noteAltsSelected[noteId] = new Set();
+      const s = noteAltsSelected[noteId];
+      if (s.has(alt)) s.delete(alt); else s.add(alt);
+    }
+
+    function buildResolution(noteId, prefix) {
+      const alts = noteAltsSelected[noteId] ? Array.from(noteAltsSelected[noteId]) : [];
+      const freeText = noteAnswers[noteId] || '';
+      const parts = [];
+      if (prefix) parts.push(prefix);
+      if (alts.length) parts.push(alts.join(', '));
+      if (freeText) parts.push(freeText);
+      return parts.join(' — ');
+    }
+
+    function startNoteEdit(noteId, currentResolution) {
+      noteEditText[noteId] = currentResolution || '';
+      noteEditMode[noteId] = true;
+    }
+
+    function cancelNoteEdit(noteId) {
+      noteEditMode[noteId] = false;
+    }
+
+    async function saveNoteEdit(noteId) {
+      const val = (noteEditText[noteId] || '').trim();
+      if (!val) return;
+      await fetch('/api/notes/' + noteId + '/answer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ resolution: val })
+      });
+      noteEditMode[noteId] = false;
+      await loadNotes();
+    }
+
+    async function loadDagTaskDetail(taskId) {
+      dagTaskLoading.value = true;
+      selectedDagTask.value = null;
+      try {
+        const data = await api('/api/dag/task-detail?id=' + encodeURIComponent(taskId));
+        selectedDagTask.value = data;
+      } catch(e) { /* ignore */ }
+      dagTaskLoading.value = false;
+    }
+
+    async function submitDagAnnotation() {
+      if (!selectedDagTask.value || !newDagAnnotation.value.trim()) return;
+      await fetch('/api/annotations', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          task_id: selectedDagTask.value.task.id,
+          content: selectedDagTask.value.task.title,
+          resolution: newDagAnnotation.value.trim(),
+        })
+      });
+      newDagAnnotation.value = '';
+      await loadDagTaskDetail(selectedDagTask.value.task.id);
+    }
+
+    async function submitContractComment(contractId) {
+      const content = contractComments[contractId] || '';
+      if (!content.trim()) return;
+      await fetch('/api/contracts/' + contractId + '/comment', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ content })
+      });
+      delete contractComments[contractId];
+      await loadContracts();
+    }
+
+    function filteredContracts(list, typeFilter, statusFilter) {
+      return list.filter(c => {
+        if (typeFilter !== 'all' && c.contract_type !== typeFilter) return false;
+        if (statusFilter !== 'all' && c.status !== statusFilter) return false;
+        return true;
+      });
+    }
+
+    function showAnnotationPanel(nodeData, renderedPos) {
+      const panel = document.getElementById('annotation-panel');
+      if (!panel) return;
+      const nodeId = nodeData.id;
+      const nodeAnnotations = annotations[nodeId] || [];
+      const typeClass = { question: 'question', decision: 'decision', risk: 'risk',
+                          constraint: 'constraint', assumption: 'constraint' };
+      const statusLabel = { open: ' \u25cf', answered: ' \u25d1', resolved: ' \u2713' };
+      let annoHtml = '';
+      if (nodeAnnotations.length === 0) {
+        annoHtml = '<div class="anno-empty">No annotations yet.</div>';
+      } else {
+        nodeAnnotations.forEach(function(a) {
+          const cls = typeClass[a.note_type] || '';
+          const statusTxt = statusLabel[a.status] || '';
+          const resHtml = a.resolution ? '<div class="anno-resolution">\u21b3 ' + a.resolution + '</div>' : '';
+          annoHtml += '<div class="anno-item ' + cls + '">' + a.content + statusTxt + resHtml + '</div>';
+        });
+      }
+      const displayLabel = nodeData.origLabel || nodeData.label || nodeId;
+      const safeLabel = displayLabel.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      panel.innerHTML =
+        '<div class="anno-header"><strong>&#x1F4AC; ' + safeLabel + '</strong>' +
+        '<button onclick="window._crg_closeAnnotationPanel()">&#x2715;</button></div>' +
+        annoHtml +
+        '<div class="anno-new"><textarea id="anno-textarea" placeholder="Add annotation..."></textarea>' +
+        '<button class="anno-submit-btn" data-nodeid="' + nodeId.replace(/"/g, '&quot;') + '">&#x1F4CC; Pin annotation</button></div>';
+      panel.style.display = 'block';
+      panel.style.left = (renderedPos.x + 10) + 'px';
+      panel.style.top = (renderedPos.y + 10) + 'px';
+    }
+
+    function closeAnnotationPanel() {
+      const panel = document.getElementById('annotation-panel');
+      if (panel) panel.style.display = 'none';
+    }
+
+    async function submitAnnotationPanel(elementId) {
+      const ta = document.getElementById('anno-textarea');
+      if (!ta || !ta.value.trim()) return;
+      const content = ta.value.trim();
+      await fetch('/api/annotations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ c4_element_id: elementId, content })
+      });
+      await loadAnnotations();
+      buildZoomCy();
+      closeAnnotationPanel();
+    }
+
+    window._crg_closeAnnotationPanel = closeAnnotationPanel;
+    window._crg_submitAnnotation = submitAnnotationPanel;
+
+    document.addEventListener('click', function(e) {
+      if (e.target.classList.contains('anno-submit-btn')) {
+        window._crg_submitAnnotation(e.target.dataset.nodeid);
+      }
+    });
+
+    // Close annotation panel when clicking outside it
+    document.addEventListener('click', function(e) {
+      const panel = document.getElementById('annotation-panel');
+      if (panel && panel.style.display === 'block' && !panel.contains(e.target)) {
+        panel.style.display = 'none';
+      }
+    });
+
+    // Suppress browser context-menu over ANY Cytoscape canvas.
+    // Uses e.target.closest() so the check runs at event-time (not registration-time),
+    // guarding against the case where #cy-arch doesn't exist when the listener is added.
+    // NOTE: do NOT call stopPropagation — that would kill the event before it reaches
+    // Cytoscape's canvas handlers and break the cxttap / annotation-panel flow.
+    document.addEventListener('contextmenu', function(e) {
+      if (e.target.closest('#cy-arch')) {
+        e.preventDefault();
+      }
+    }, true /* capture phase */);
+
+    function getBreadcrumbLabel(slug) {
+      const level = c4Data.levels[slug];
+      return (level && level.title) || slug.replace(/_/g, ' ');
+    }
+
+    async function loadNodeDetails(nodeId) {
+      nodeAnnotations.value = [];
+      nodeTaskRefs.value = { tasks: [], contracts: [] };
+      try {
+        const [detailData, taskRefsData] = await Promise.all([
+          api('/api/c4/node-details?id=' + encodeURIComponent(nodeId)),
+          api('/api/c4/task-refs?id=' + encodeURIComponent(nodeId)),
+        ]);
+        nodeAnnotations.value = detailData.annotations || [];
+        nodeTaskRefs.value = { tasks: taskRefsData.tasks || [], contracts: taskRefsData.contracts || [] };
+      } catch(e) { /* ignore */ }
+    }
+
+    async function submitAnnotation() {
+      if (!selectedNode.value || !newAnnotation.value.trim()) return;
+      await fetch('/api/annotations', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          c4_element_id: selectedNode.value.id,
+          content: selectedNode.value.label || selectedNode.value.id,
+          resolution: newAnnotation.value.trim(),
+        })
+      });
+      newAnnotation.value = '';
+      await loadNodeDetails(selectedNode.value.id);
+    }
+
+    function navigateTo(index) {
+      const crumb = breadcrumb.value[index];
+      if (!crumb || index >= breadcrumb.value.length - 1) return;
+      _skipBreadcrumb = true;
+      breadcrumb.value = breadcrumb.value.slice(0, index + 1);
+      selectedNode.value = null;
+      nodeAnnotations.value = [];
+      c4Level.value = crumb.slug;
+      nextTick(() => { _skipBreadcrumb = false; });
+    }
+
+    function nodeBadgeClass(status) {
+      const map = { existing: 'badge-blue', modified: 'badge-yellow', 'new': 'badge-green' };
+      return map[status] || 'badge-gray';
+    }
+
+    function buildCyArch(levelSlug) {
+      const level = c4Data.levels[levelSlug];
+      if (!level) return;
+      nextTick(() => {
+        const el = document.getElementById('cy-arch');
+        if (!el) return;
+        if (cyArch) { cyArch.destroy(); cyArch = null; }
+        const STATUS_BG = { existing: '#438DD5', modified: '#fff3cd', 'new': '#d4edda' };
+        const STATUS_TEXT = { existing: '#fff', modified: '#856404', 'new': '#155724' };
+        const STATUS_BORDER = { existing: '#438DD5', modified: '#ffc107', 'new': '#28a745' };
+        const elements = [];
+        (level.nodes || []).forEach(n => {
+          const st = n.status || 'existing';
+          const annoCount = (annotations[n.id] || []).length;
+          elements.push({
+            data: {
+              id: n.id,
+              label: n.label + (n.sublabel ? '\n' + n.sublabel : ''),
+              bgColor: STATUS_BG[st] || '#888',
+              textColor: STATUS_TEXT[st] || '#fff',
+              borderColor: STATUS_BORDER[st] || '#888',
+              borderWidth: st === 'existing' ? 0 : 2,
+              borderStyle: st === 'new' ? 'dashed' : 'solid',
+              status: st,
+              sublabel: n.sublabel || '',
+              kind: n.kind || '',
+              origLabel: n.label,
+              annoCount,
+            }
+          });
+        });
+        (level.edges || []).forEach(e => {
+          elements.push({
+            data: {
+              id: 'e_' + e.source + '_' + e.target,
+              source: e.source, target: e.target, label: e.label || ''
+            }
+          });
+        });
+        cyArch = cytoscape({
+          container: el, elements,
+          style: [
+            { selector: 'node', style: {
+              'background-color': 'data(bgColor)',
+              'border-color': 'data(borderColor)',
+              'border-width': 'data(borderWidth)',
+              'border-style': 'data(borderStyle)',
+              label: 'data(label)',
+              'text-valign': 'center', 'text-halign': 'center',
+              color: 'data(textColor)',
+              'font-size': '11px', width: 120, height: 60, shape: 'rectangle',
+              'text-wrap': 'wrap', 'text-max-width': '110px'
+            }},
+            { selector: 'node:selected', style: {
+              'border-width': 3, 'border-color': '#1a1a2e', 'border-style': 'solid'
+            }},
+            { selector: 'edge', style: {
+              width: 1.5, 'line-color': '#999', 'target-arrow-color': '#999',
+              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+              label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
+            }},
+          ],
+          layout: { name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
+                    rankDir: 'TB', padding: 30 }
+        });
+        // Suppress the native context menu directly on the Cytoscape container.
+        // Capture phase (true) fires before any canvas child handlers, so
+        // preventDefault() is reliably called regardless of Cytoscape internals.
+        // No stopPropagation — we must not block the event reaching Cytoscape's
+        // own canvas listener that fires the cxttap / annotation-panel flow.
+        cyArch.container().addEventListener('contextmenu', (e) => e.preventDefault(), true);
+        cyArch.on('tap', 'node', (evt) => {
+          const d = evt.target.data();
+          selectedNode.value = {
+            id: d.id,
+            label: d.origLabel || d.label,
+            sublabel: d.sublabel || '',
+            status: d.status || 'existing',
+            kind: d.kind || '',
+          };
+          newAnnotation.value = '';
+          loadNodeDetails(d.id);
+        });
+        cyArch.on('tap', (evt) => {
+          if (evt.target === cyArch) {
+            selectedNode.value = null;
+            nodeAnnotations.value = [];
+          }
+        });
+        cyArch.on('dbltap', 'node', () => {
+          const levelKeys = Object.keys(c4Data.levels);
+          const curIdx = levelKeys.indexOf(c4Level.value);
+          if (curIdx >= 0 && curIdx < levelKeys.length - 1) {
+            const nextSlug = levelKeys[curIdx + 1];
+            _skipBreadcrumb = true;
+            breadcrumb.value = [
+              ...breadcrumb.value,
+              { slug: nextSlug, label: getBreadcrumbLabel(nextSlug) }
+            ];
+            c4Level.value = nextSlug;
+            nextTick(() => { _skipBreadcrumb = false; });
+          }
+        });
+        cyArch.on('cxttap', 'node', (evt) => {
+          const node = evt.target;
+          if (node.data('id') && node.data('id').startsWith('_archbadge_')) return;
+          const pos = evt.renderedPosition || evt.position;
+          showAnnotationPanel(node.data(), pos);
+        });
+        // Annotation badges as ghost overlay nodes, placed after layout runs
+        cyArch.one('layoutstop', () => {
+          elements.forEach(el => {
+            if (!el.data || !el.data.annoCount) return;
+            const cnt = el.data.annoCount;
+            const nodeId = el.data.id;
+            const badgeId = '_archbadge_' + nodeId;
+            const existing = cyArch.getElementById(badgeId);
+            if (existing.length) cyArch.remove(existing);
+            const parentNode = cyArch.getElementById(nodeId);
+            if (!parentNode.length) return;
+            const pos = parentNode.position();
+            const w = parentNode.width();
+            const h = parentNode.height();
+            cyArch.add({
+              group: 'nodes',
+              data: { id: badgeId, label: '\uD83D\uDCAC ' + cnt },
+              position: { x: pos.x + w / 2 - 14, y: pos.y - h / 2 + 8 },
+              style: {
+                'background-color': '#495057',
+                'color': '#fff',
+                'font-size': '9px',
+                'width': 28,
+                'height': 16,
+                'shape': 'round-rectangle',
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'label': '\uD83D\uDCAC ' + cnt,
+                'border-width': 0,
+                'z-index': 999,
+                'events': 'no',
+              }
+            });
+          });
+        });
+      });
+    }
+
+    function buildCyDag() {
+      nextTick(() => {
+        const el = document.getElementById('cy-dag');
+        if (!el) return;
+        if (cyDag) { cyDag.destroy(); cyDag = null; }
+
+        // --- Filtering logic ---
+        // Identify compound (parent) node IDs — nodes that appear as `parent` in other nodes
+        const allNodes = dagData.nodes;
+        const allEdges = dagData.edges;
+
+        const parentIds = new Set();
+        allNodes.forEach(n => { if (n.data.parent) parentIds.add(n.data.parent); });
+
+        let visibleNodeIds;
+        if (dagFilter.value === 'all') {
+          visibleNodeIds = new Set(allNodes.map(n => n.data.id));
+        } else {
+          // Include nodes matching the filter OR nodes that are compound parents
+          visibleNodeIds = new Set();
+          allNodes.forEach(n => {
+            if (parentIds.has(n.data.id)) return; // handle compound parents below
+            if (n.data.status === dagFilter.value) visibleNodeIds.add(n.data.id);
+          });
+          // Include compound parents that contain at least one visible child
+          allNodes.forEach(n => {
+            if (parentIds.has(n.data.id)) {
+              // check if any child is visible
+              const hasVisibleChild = allNodes.some(c => c.data.parent === n.data.id && visibleNodeIds.has(c.data.id));
+              if (hasVisibleChild) visibleNodeIds.add(n.data.id);
+            }
+          });
+        }
+
+        // Only include edges where both source and target are visible
+        const filteredNodes = allNodes.filter(n => visibleNodeIds.has(n.data.id));
+        const filteredEdges = allEdges.filter(e => visibleNodeIds.has(e.data.source) && visibleNodeIds.has(e.data.target));
+
+        // Deep-clone to plain objects to avoid Vue Proxy issues with Cytoscape
+        const elements = [
+          ...filteredNodes.map(n => ({ group: 'nodes', data: { ...n.data } })),
+          ...filteredEdges.map(e => ({ group: 'edges', data: { ...e.data } })),
+        ];
+        cyDag = cytoscape({
+          container: el, elements,
+          style: [
+            { selector: 'node', style: {
+              'background-color': 'data(color)', label: 'data(label)',
+              'text-valign': 'center', 'text-halign': 'center', color: '#212529',
+              'font-size': '11px', width: 120, height: 50, shape: 'round-rectangle',
+              'text-wrap': 'wrap', 'text-max-width': '110px'
+            }},
+            { selector: ':compound', style: {
+              'background-color': '#f8f9fa',
+              'border-width': 1,
+              'border-color': '#dee2e6',
+              'padding': '15px',
+              'text-valign': 'top',
+              'text-halign': 'center',
+              'font-size': '10px',
+              'color': '#495057',
+            }},
+            { selector: 'edge', style: {
+              width: 1.5, 'line-color': '#adb5bd', 'target-arrow-color': '#adb5bd',
+              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+              label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
+            }},
+            { selector: 'edge[label="depends_on"]', style: {
+              width: 2.5, 'line-color': '#343a40', 'target-arrow-color': '#343a40',
+              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+              label: '',
+            }},
+            { selector: 'edge[label="shares_context"]', style: {
+              width: 1.5, 'line-color': '#6c757d', 'target-arrow-color': '#6c757d',
+              'target-arrow-shape': 'triangle', 'line-style': 'dashed', 'curve-style': 'bezier',
+              label: 'shares context', 'font-size': '8px',
+            }},
+            { selector: 'edge[label="conflicts_with"]', style: {
+              width: 2, 'line-color': '#dc3545', 'target-arrow-color': '#dc3545',
+              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+              label: 'conflict', 'font-size': '8px',
+            }},
+            // Badge ghost nodes styling (added dynamically after layoutstop)
+            { selector: 'node[badge = 1]', style: {
+              'background-color': '#495057',
+              'color': '#fff',
+              'font-size': '9px',
+              'width': 28,
+              'height': 16,
+              'shape': 'round-rectangle',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'border-width': 0,
+            }},
+          ],
+          layout: { name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
+                    rankDir: 'TB', padding: 30 }
+        });
+
+        // Render annotation badges as ghost overlay nodes after layout completes
+        cyDag.one('layoutstop', () => {
+          filteredNodes.forEach(n => {
+            const cnt = n.data.annotationCount;
+            if (!cnt || parentIds.has(n.data.id)) return;
+            const badgeId = '_badge_' + n.data.id;
+            const existing = cyDag.getElementById(badgeId);
+            if (existing.length) cyDag.remove(existing);
+            const parentNode = cyDag.getElementById(n.data.id);
+            if (!parentNode.length) return;
+            const pos = parentNode.position();
+            const bb = parentNode.boundingBox();
+            cyDag.add({
+              group: 'nodes',
+              data: { id: badgeId, label: '💬 ' + cnt, badge: 1 },
+              position: { x: bb.x2 - 8, y: bb.y1 + 8 },
+            });
+          });
+        });
+
+        cyDag.on('tap', 'node', (evt) => {
+          const d = evt.target.data();
+          // Don't select badge ghost nodes
+          if (d.id && d.id.startsWith('_badge_')) {
+            const realId = d.id.replace('_badge_', '');
+            loadDagTaskDetail(realId);
+            return;
+          }
+          loadDagTaskDetail(d.id);
+        });
+        cyDag.on('tap', (evt) => {
+          if (evt.target === cyDag) { selectedDagTask.value = null; }
+        });
+      });
+    }
+
+    function buildCyContracts() {
+      nextTick(() => {
+        const el = document.getElementById('cy-contracts');
+        if (!el) return;
+        if (cyContracts) { cyContracts.destroy(); cyContracts = null; }
+        if (!contracts.value.length) return;
+        const CONTRACT_COLORS = {
+          proposed: '#ffc107', agreed: '#438DD5',
+          implemented: '#28a745', verified: '#28a745', void: '#6c757d'
+        };
+        const TASK_COLORS = {
+          done: '#28a745', in_progress: '#17a2b8', ready: '#ffc107',
+          draft: '#e9ecef', blocked: '#6c757d', archived: '#6c757d'
+        };
+        const elements = [];
+        const taskNodes = new Map();
+        contracts.value.forEach(c => {
+          elements.push({
+            data: {
+              id: 'c_' + c.id, label: c.name,
+              color: CONTRACT_COLORS[c.status] || '#6c757d',
+              nodeType: 'contract'
+            }
+          });
+           (c.providers || []).forEach(p => {
+             if (!taskNodes.has(p.id)) {
+               taskNodes.set(p.id, true);
+               elements.push({ data: {
+                 id: 't_' + p.id, label: p.title,
+                 color: TASK_COLORS[p.status] || '#e9ecef',
+                 nodeType: 'task'
+               }});
+             }
+             elements.push({ data: {
+               id: 'ep_' + p.id + '_' + c.id,
+               source: 't_' + p.id, target: 'c_' + c.id, lineStyle: 'solid'
+             }});
+           });
+           (c.consumers || []).forEach(cs => {
+             if (!taskNodes.has(cs.id)) {
+               taskNodes.set(cs.id, true);
+               elements.push({ data: {
+                 id: 't_' + cs.id, label: cs.title,
+                 color: TASK_COLORS[cs.status] || '#e9ecef',
+                 nodeType: 'task'
+               }});
+             }
+             elements.push({ data: {
+               id: 'ec_' + c.id + '_' + cs.id,
+               source: 'c_' + c.id, target: 't_' + cs.id, lineStyle: 'dashed'
+             }});
+           });
+        });
+        cyContracts = cytoscape({
+          container: el, elements,
+          style: [
+            { selector: 'node[nodeType="contract"]', style: {
+              'background-color': 'data(color)', label: 'data(label)',
+              'text-valign': 'center', 'text-halign': 'center', color: '#212529',
+              'font-size': '11px', width: 130, height: 50, shape: 'rectangle',
+              'text-wrap': 'wrap', 'text-max-width': '120px',
+              'border-width': 1, 'border-color': '#aaa'
+            }},
+            { selector: 'node[nodeType="task"]', style: {
+              'background-color': 'data(color)', label: 'data(label)',
+              'text-valign': 'center', 'text-halign': 'center', color: '#212529',
+              'font-size': '10px', width: 100, height: 40, shape: 'ellipse',
+              'text-wrap': 'wrap', 'text-max-width': '90px'
+            }},
+            { selector: 'edge[lineStyle="solid"]', style: {
+              width: 1.5, 'line-color': '#438DD5', 'target-arrow-color': '#438DD5',
+              'target-arrow-shape': 'triangle', 'curve-style': 'bezier'
+            }},
+            { selector: 'edge[lineStyle="dashed"]', style: {
+              width: 1.5, 'line-color': '#28a745', 'target-arrow-color': '#28a745',
+              'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'line-style': 'dashed'
+            }},
+          ],
+          layout: { name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
+                    rankDir: 'LR', padding: 30 }
+        });
+      });
+    }
+
+    function switchTab(id) {
+      activeTab.value = id;
+      if (id === 'dag') loadDag().then(buildCyDag);
+      if (id === 'notes') loadNotes();
+      if (id === 'contracts') loadContracts().then(buildCyContracts);
+      if (id === 'roadmap') loadRoadmap();
+      if (id === 'timeline') loadTimeline();
+      if (id === 'sequence') loadSequence();
+    }
+
+    watch(c4Level, (slug) => {
+      if (slug && activeTab.value === 'arch') {
+        if (!_skipBreadcrumb) {
+          breadcrumb.value = [{ slug, label: getBreadcrumbLabel(slug) }];
+        }
+        selectedNode.value = null;
+        nodeAnnotations.value = [];
+        buildCyArch(slug);
+      }
+    });
+
+    watch(activeTab, (id) => {
+      if (id === 'arch') { zoomToL2(); loadLeafTasks(); }
+      if (id === 'dataflow') loadDfSources();
+    });
+
+    function contractBadgeClass(status) {
+      const map = { proposed: 'badge-yellow', agreed: 'badge-blue',
+        implemented: 'badge-green', verified: 'badge-green', void: 'badge-gray' };
+      return map[status] || 'badge-gray';
+    }
+
+    function statusBadgeClass(status) {
+      const map = { done: 'badge-green', in_progress: 'badge-blue', ready: 'badge-yellow',
+        draft: 'badge-gray', blocked: 'badge-gray', archived: 'badge-gray' };
+      return map[status] || 'badge-gray';
+    }
+
+    onMounted(async () => {
+      mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' });
+      await loadRootTask();
+      if (rootTask.value) {
+        // Root task exists — load data and show roadmap
+        activeTab.value = 'roadmap';
+        await Promise.all([loadRoadmap(), loadNotes(), loadContracts()]);
+      } else {
+        // No root task — show root task creation form
+        activeTab.value = 'root';
+      }
+    });
+
+    return {
+      tabs, activeTab, rootTitle, rootTask, rootTaskForm, rootTaskSaving,
+      c4Data, c4Level, c4Loading, annotations,
+      selectedNode, breadcrumb, nodeAnnotations, newAnnotation, nodeTaskRefs,
+      contracts, notes, roadmapData, execOrder, timelineData, seqDiagram, seqHtml,
+      seqMode, seqFlowId, seqFlows, loadSequenceFlow,
+      switchTab, saveRootTask, contractBadgeClass, statusBadgeClass,
+      navigateTo, submitAnnotation, nodeBadgeClass,
+      showAnnotationPanel, closeAnnotationPanel, submitAnnotationPanel,
+      dfSources, dfSource, dfDepth, loadDataflow,
+      notesFilter, noteAnswers, filteredNotes, answerNote,
+      noteAltsSelected, noteEditMode, noteEditText, toggleAlt, buildResolution, startNoteEdit, cancelNoteEdit, saveNoteEdit,
+      dagFilter, selectedDagTask, dagTaskLoading, newDagAnnotation, loadDagTaskDetail, submitDagAnnotation, buildCyDag,
+      contractsFilter, contractComments, submitContractComment, filteredContracts,
+      blastTask, blastDepth, blastResult, leafTasks, loadLeafTasks, applyBlastOverlay, clearBlastOverlay,
+      zoomLevel, zoomBreadcrumb, zoomContainers, zoomComponents, zoomCodeNodes, zoomLoading,
+      zoomToL2, zoomToL3, zoomToL4, zoomBack, buildZoomCy,
+      statusIcon, getTaskTitle,
+      loadSeqFlows, loadSequence,
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

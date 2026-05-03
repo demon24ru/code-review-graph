@@ -90,8 +90,7 @@ def _print_banner() -> None:
     {g}register{r}    Register a repository in the multi-repo registry
     {g}unregister{r}  Remove a repository from the registry
     {g}repos{r}       List registered repositories
-    {g}questions{r}   Open web UI for answering brainstorm questions
-    {g}dashboard{r}   Launch interactive dashboard
+    {g}dashboard{r}   Launch interactive dashboard (includes Q&amp;A for notes)
     {g}eval{r}        Run evaluation benchmarks
     {g}serve{r}       Start MCP server
 
@@ -377,25 +376,6 @@ def main() -> None:
     # repos
     sub.add_parser("repos", help="List registered repositories")
 
-    # questions
-    questions_cmd = sub.add_parser(
-        "questions",
-        help="Open web UI for answering brainstorm questions",
-    )
-    questions_cmd.add_argument(
-        "--task", default=None, metavar="ID",
-        help="Root task ID (auto-detected from active task if omitted)",
-    )
-    questions_cmd.add_argument(
-        "--port", type=int, default=6234,
-        help="Local port (default: 6234)",
-    )
-    questions_cmd.add_argument(
-        "--no-browser", action="store_true",
-        help="Don't open browser automatically",
-    )
-    questions_cmd.add_argument("--repo", default=None, help="Repository root (auto-detected)")
-
     # dashboard
     dashboard_cmd = sub.add_parser(
         "dashboard",
@@ -526,7 +506,7 @@ def main() -> None:
         _handle_init(args)
         return
 
-    if args.command in ("register", "unregister", "repos", "questions", "dashboard"):
+    if args.command in ("register", "unregister", "repos", "dashboard"):
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
         from .registry import Registry
 
@@ -555,24 +535,6 @@ def main() -> None:
                     alias = entry.get("alias", "")
                     alias_str = f"  ({alias})" if alias else ""
                     print(f"  {entry['path']}{alias_str}")
-        elif args.command == "questions":
-            from .incremental import find_project_root
-            from .questions_ui import serve as serve_questions
-            repo_root = Path(args.repo) if args.repo else find_project_root()
-            if not repo_root:
-                print("Error: Could not detect repository root.")
-                sys.exit(1)
-            try:
-                serve_questions(
-                    root_task_id=args.task,
-                    repo_root=repo_root,
-                    port=args.port,
-                    open_browser=not args.no_browser,
-                )
-            except ValueError as exc:
-                print(f"Error: {exc}")
-                sys.exit(1)
-            return
         elif args.command == "dashboard":
             _cmd_dashboard(args)
             return

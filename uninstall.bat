@@ -1,1 +1,1 @@
-pip uninstall code-review-graph
+pip uninstall -y code-review-graph

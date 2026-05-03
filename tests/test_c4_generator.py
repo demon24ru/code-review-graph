@@ -471,6 +471,85 @@ class TestResolveForRender:
             assert "status" in item
             assert "kind" in item
 
+    def test_rel_elements_excluded_from_auto(self):
+        """Rel elements in AUTO section must NOT appear as nodes."""
+        rel_elem = C4Element(kind="Rel", id="auth", label="calls", technology="")
+        rel_elem.target_id = "db"  # type: ignore[attr-defined]
+        auto_section = C4Section(
+            marker_type="AUTO",
+            marker_id="containers",
+            timestamp="2026-01-01",
+            elements=[
+                C4Element(kind="Container", id="auth", label="Auth", technology="Python"),
+                C4Element(kind="Container", id="db", label="DB", technology="Postgres"),
+                rel_elem,
+            ],
+        )
+        diagram = C4Diagram(
+            title="With Rels",
+            diagram_type="C4Container",
+            sections=[auto_section],
+        )
+        arch = C4Architecture(diagrams=[diagram])
+        items = resolve_for_render(arch, "With Rels")
+        kinds = {i["kind"] for i in items}
+        assert "Rel" not in kinds
+        ids = {i["id"] for i in items}
+        # auth and db should still be present
+        assert "auth" in ids
+        assert "db" in ids
+        # no Rel entry that would have id="auth" (overwriting the Component)
+        auth_items = [i for i in items if i["id"] == "auth"]
+        assert all(i["kind"] != "Rel" for i in auth_items)
+
+    def test_update_element_style_excluded(self):
+        """UpdateElementStyle must not appear as a node."""
+        style_elem = C4Element(kind="UpdateElementStyle", id="foo", label="", technology="")
+        auto_section = C4Section(
+            marker_type="AUTO",
+            marker_id="containers",
+            timestamp="2026-01-01",
+            elements=[
+                C4Element(kind="Container", id="foo", label="Foo Svc", technology="Go"),
+                style_elem,
+            ],
+        )
+        diagram = C4Diagram(
+            title="Styled",
+            diagram_type="C4Container",
+            sections=[auto_section],
+        )
+        arch = C4Architecture(diagrams=[diagram])
+        items = resolve_for_render(arch, "Styled")
+        kinds = {i["kind"] for i in items}
+        assert "UpdateElementStyle" not in kinds
+        # foo should still be a Container node
+        foo = next((i for i in items if i["id"] == "foo"), None)
+        assert foo is not None
+        assert foo["kind"] == "Container"
+
+    def test_container_boundary_excluded(self):
+        """Container_Boundary must not appear as a node."""
+        boundary = C4Element(kind="Container_Boundary", id="boundary1", label="Boundary", technology="")
+        auto_section = C4Section(
+            marker_type="AUTO",
+            marker_id="containers",
+            timestamp="2026-01-01",
+            elements=[
+                C4Element(kind="Container", id="svc", label="Service", technology="Python"),
+                boundary,
+            ],
+        )
+        diagram = C4Diagram(
+            title="Boundary Test",
+            diagram_type="C4Container",
+            sections=[auto_section],
+        )
+        arch = C4Architecture(diagrams=[diagram])
+        items = resolve_for_render(arch, "Boundary Test")
+        kinds = {i["kind"] for i in items}
+        assert "Container_Boundary" not in kinds
+
 
 # ---------------------------------------------------------------------------
 # Test get_c4_path
@@ -493,3 +572,257 @@ class TestGetC4Path:
     def test_parent_dir(self):
         result = get_c4_path("/any/path")
         assert result.parent.name == ".code-review-graph"
+
+
+# ---------------------------------------------------------------------------
+# Test Component diagram noise filtering — new behaviours
+# ---------------------------------------------------------------------------
+
+
+class TestComponentDiagramFiltersContainsEdges:
+    """CONTAINS edges must never appear as Rel elements in C4Component diagrams."""
+
+    def setup_method(self):
+        self.store = make_store()
+        # Two functions in auth_module.py — one CALLS edge + one CONTAINS edge
+        self.store.upsert_node(
+            NodeInfo(kind="File", name="auth_module.py", file_path="auth_module.py",
+                     line_start=1, line_end=100, language="python"),
+            file_hash="c1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="handler", file_path="auth_module.py",
+                     line_start=5, line_end=20, language="python"),
+            file_hash="c1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="helper_fn", file_path="auth_module.py",
+                     line_start=25, line_end=40, language="python"),
+            file_hash="c1",
+        )
+        # CALLS edge (should produce a Rel)
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="auth_module.py::handler",
+            target="auth_module.py::helper_fn", file_path="auth_module.py", line=10,
+        ))
+        # CONTAINS edge (must be filtered out)
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="auth_module.py",
+            target="auth_module.py::handler", file_path="auth_module.py", line=5,
+        ))
+        self.store.commit()
+        communities = detect_communities(self.store, min_size=2)
+        store_communities(self.store, communities)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.store.db_path).unlink(missing_ok=True)
+
+    def test_component_diagram_filters_contains_edges(self):
+        output = build_c4(self.store)
+        arch = parse_c4_file(output)
+        component_diagrams = [d for d in arch.diagrams if d.diagram_type == "C4Component"]
+        assert len(component_diagrams) > 0, "Expected at least one C4Component diagram"
+        for diag in component_diagrams:
+            for section in diag.sections:
+                for elem in section.elements:
+                    if elem.kind == "Rel":
+                        assert elem.label.lower() != "contains", (
+                            f"CONTAINS edge must be filtered; found Rel with label='{elem.label}'"
+                        )
+
+
+class TestComponentDiagramDetectsHubNodes:
+    """Nodes with >10 incoming CALLS within their community get '(hub)' in description."""
+
+    def setup_method(self):
+        self.store = make_store()
+        # 11 callers + hub_func + File node — all in hub_utils.py
+        self.store.upsert_node(
+            NodeInfo(kind="File", name="hub_utils.py", file_path="hub_utils.py",
+                     line_start=1, line_end=200, language="python"),
+            file_hash="h2",
+        )
+        for i in range(11):
+            self.store.upsert_node(
+                NodeInfo(kind="Function", name=f"caller_{i:02d}", file_path="hub_utils.py",
+                         line_start=5 + i * 10, line_end=9 + i * 10, language="python"),
+                file_hash="h2",
+            )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="hub_func", file_path="hub_utils.py",
+                     line_start=115, line_end=130, language="python"),
+            file_hash="h2",
+        )
+        # Each caller calls hub_func → 11 incoming CALLS on hub_func
+        for i in range(11):
+            self.store.upsert_edge(EdgeInfo(
+                kind="CALLS", source=f"hub_utils.py::caller_{i:02d}",
+                target="hub_utils.py::hub_func", file_path="hub_utils.py", line=7 + i * 10,
+            ))
+        self.store.commit()
+        communities = detect_communities(self.store, min_size=2)
+        store_communities(self.store, communities)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.store.db_path).unlink(missing_ok=True)
+
+    def test_component_diagram_detects_hub_nodes(self):
+        output = build_c4(self.store)
+        arch = parse_c4_file(output)
+        component_diagrams = [d for d in arch.diagrams if d.diagram_type == "C4Component"]
+        assert len(component_diagrams) > 0
+
+        hub_found = False
+        for diag in component_diagrams:
+            for section in diag.sections:
+                for elem in section.elements:
+                    if elem.kind == "Component" and elem.label == "hub_func":
+                        assert "(hub)" in elem.description, (
+                            f"hub_func (11 callers) should have '(hub)' in description, "
+                            f"got: '{elem.description}'"
+                        )
+                        hub_found = True
+        assert hub_found, "hub_func element not found in any C4Component diagram"
+
+    def test_non_hub_nodes_have_no_hub_marker(self):
+        """Callers with only 1 outgoing call should not be marked as hubs."""
+        output = build_c4(self.store)
+        arch = parse_c4_file(output)
+        for diag in arch.diagrams:
+            if diag.diagram_type != "C4Component":
+                continue
+            for section in diag.sections:
+                for elem in section.elements:
+                    if elem.kind == "Component" and elem.label.startswith("caller_"):
+                        assert "(hub)" not in elem.description, (
+                            f"Caller '{elem.label}' should NOT be a hub"
+                        )
+
+
+class TestComponentDiagramCollapsesPrivateHelpers:
+    """Private helpers (name starts with _ but not __) are excluded from Component
+    diagrams; their CALLS edges are collapsed so A→_helper→B becomes A→B."""
+
+    def setup_method(self):
+        self.store = make_store()
+        # workflow.py: start → _process → finish
+        self.store.upsert_node(
+            NodeInfo(kind="File", name="workflow.py", file_path="workflow.py",
+                     line_start=1, line_end=100, language="python"),
+            file_hash="p1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="start", file_path="workflow.py",
+                     line_start=5, line_end=20, language="python"),
+            file_hash="p1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="_process", file_path="workflow.py",
+                     line_start=25, line_end=40, language="python"),
+            file_hash="p1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="finish", file_path="workflow.py",
+                     line_start=45, line_end=60, language="python"),
+            file_hash="p1",
+        )
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="workflow.py::start",
+            target="workflow.py::_process", file_path="workflow.py", line=10,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="workflow.py::_process",
+            target="workflow.py::finish", file_path="workflow.py", line=30,
+        ))
+        self.store.commit()
+        communities = detect_communities(self.store, min_size=2)
+        store_communities(self.store, communities)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.store.db_path).unlink(missing_ok=True)
+
+    def test_private_helper_excluded_from_component_elements(self):
+        output = build_c4(self.store)
+        arch = parse_c4_file(output)
+        for diag in arch.diagrams:
+            if diag.diagram_type != "C4Component":
+                continue
+            for section in diag.sections:
+                for elem in section.elements:
+                    assert not (elem.kind == "Component" and elem.label == "_process"), (
+                        "Private helper '_process' must be excluded from Component elements"
+                    )
+
+    def test_collapsed_rel_start_to_finish(self):
+        """A→_helper→B must produce a direct A→B Rel."""
+        output = build_c4(self.store)
+        arch = parse_c4_file(output)
+
+        start_slug = _slugify("workflow.py::start")    # "workflow_py_start"
+        finish_slug = _slugify("workflow.py::finish")  # "workflow_py_finish"
+
+        for diag in arch.diagrams:
+            if diag.diagram_type != "C4Component":
+                continue
+            rels = [
+                (e.id, e.target_id)
+                for s in diag.sections
+                for e in s.elements
+                if e.kind == "Rel"
+            ]
+            if (start_slug, finish_slug) in rels:
+                return  # collapsed rel found ✓
+
+        pytest.fail(
+            f"Expected collapsed Rel ({start_slug!r} → {finish_slug!r}) "
+            "through '_process' helper, but none found"
+        )
+
+    def test_dunder_init_not_treated_as_private_helper(self):
+        """__init__ must NOT be excluded (dunders are not private helpers)."""
+        # Add __init__ to the same community (must be same file for file-based grouping)
+        # We assert it appears in whatever communities were built in setup_method
+        # by examining the output of a fresh store that includes __init__
+        store2 = make_store()
+        store2.upsert_node(
+            NodeInfo(kind="File", name="workflow.py", file_path="workflow.py",
+                     line_start=1, line_end=100, language="python"),
+            file_hash="p2",
+        )
+        store2.upsert_node(
+            NodeInfo(kind="Function", name="__init__", file_path="workflow.py",
+                     line_start=1, line_end=4, language="python"),
+            file_hash="p2",
+        )
+        store2.upsert_node(
+            NodeInfo(kind="Function", name="start", file_path="workflow.py",
+                     line_start=5, line_end=20, language="python"),
+            file_hash="p2",
+        )
+        store2.upsert_node(
+            NodeInfo(kind="Function", name="_process", file_path="workflow.py",
+                     line_start=25, line_end=40, language="python"),
+            file_hash="p2",
+        )
+        store2.commit()
+        communities = detect_communities(store2, min_size=2)
+        store_communities(store2, communities)
+
+        try:
+            output = build_c4(store2)
+            arch = parse_c4_file(output)
+            found = False
+            for diag in arch.diagrams:
+                if diag.diagram_type != "C4Component":
+                    continue
+                for section in diag.sections:
+                    for elem in section.elements:
+                        if elem.kind == "Component" and elem.label == "__init__":
+                            found = True
+            assert found, "__init__ (dunder) should appear as a Component element, not be filtered"
+        finally:
+            store2.close()
+            Path(store2.db_path).unlink(missing_ok=True)
