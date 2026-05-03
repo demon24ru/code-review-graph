@@ -719,7 +719,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _serve_notes(self) -> None:
         if self.root_task_id is None:
-            self._json_response({"open": [], "answered": [], "resolved": [], "task_title": ""})
+            self._json_response({"open": [], "answered": [], "deferred": [], "resolved": [], "task_title": ""})
             return
         conn = self._get_conn()
         try:
@@ -735,6 +735,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 status="answered",
                 include_children=True,
             )
+            deferred = list_notes(
+                conn,
+                task_id=self.root_task_id,
+                status="deferred",
+                include_children=True,
+            )
             resolved = list_notes(
                 conn,
                 task_id=self.root_task_id,
@@ -742,7 +748,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 include_children=True,
             )
             # Enrich notes with task context (title, parent title)
-            all_notes = list(open_notes) + list(answered) + list(resolved)
+            all_notes = list(open_notes) + list(answered) + list(deferred) + list(resolved)
             task_ids = list({n["task_id"] for n in all_notes if n.get("task_id")})
             tasks_map: dict[str, Any] = {}
             if task_ids:
@@ -772,6 +778,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response({
             "open": [dict(n) for n in open_notes],
             "answered": [dict(n) for n in answered],
+            "deferred": [dict(n) for n in deferred],
             "resolved": [dict(n) for n in resolved],
             "task_title": self.root_title,
         })
@@ -1191,9 +1198,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_answer(self, note_id: str) -> None:
         body = self._read_body()
         resolution = body.get("resolution", "")
+        status = body.get("status")
         conn = self._get_conn()
         try:
-            update_note(conn, note_id=note_id, status="answered", resolution=resolution)
+            update_note(conn, note_id=note_id, status="answered" if status is None else status, resolution=resolution)
             conn.commit()
         finally:
             conn.close()

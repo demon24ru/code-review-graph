@@ -49,6 +49,7 @@ header .subtitle { font-size: 0.8rem; color: #888; }
 .progress-fill { height: 100%; background: var(--green); border-radius: 4px; transition: width 0.3s; }
 .note-card { border-left: 4px solid var(--blue); }
 .note-card.answered { border-left-color: var(--green); }
+.note-card.deferred { border-left-color: var(--yellow); opacity: 0.8; }
 .note-card.resolved { border-left-color: var(--gray); opacity: 0.7; }
 .section-hdr { font-size: 0.8rem; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.05em; color: var(--gray); margin: 16px 0 8px; }
@@ -387,7 +388,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
               <div v-for="n in selectedDagTask.notes" :key="n.id"
                 style="font-size:0.8rem;padding:5px 0;border-bottom:1px solid var(--border)">
                 <div>
-                  <span style="color:var(--gray)">{{ n.note_type === 'question' ? '❓' : n.note_type === 'assumption' ? '🔍' : '📋' }}</span>
+                  <span style="color:var(--gray)">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : n.note_type === 'decision' ? '📋' : n.note_type === 'constraint' ? '⚠' : '❓' }}</span>
                   {{ n.content }}
                 </div>
                 <div v-if="n.status === 'answered' || n.status === 'resolved'">
@@ -502,7 +503,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
           {{ t.l }}
         </button>
         <span style="font-size:0.8rem;font-weight:600;color:var(--gray);margin-left:8px">Status:</span>
-        <button v-for="s in [{v:'all',l:'All'},{v:'open',l:'⭕ Open'},{v:'answered',l:'⏳ Answered'},{v:'resolved',l:'✅ Resolved'}]"
+        <button v-for="s in [{v:'all',l:'All'},{v:'open',l:'⭕ Open'},{v:'answered',l:'⏳ Answered'},{v:'deferred',l:'⏸️ Deferred'},{v:'resolved',l:'✅ Resolved'}]"
           :key="s.v" @click="notesFilter.status = s.v"
           :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',background: notesFilter.status === s.v ? 'var(--blue)' : '#fff',color: notesFilter.status === s.v ? '#fff' : 'inherit'}">
           {{ s.l }}
@@ -515,14 +516,14 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
           ⭕ Open ({{ filteredNotes(notes.open, notesFilter.type, 'open').length }})
         </div>
         <div v-for="n in filteredNotes(notes.open, notesFilter.type, 'open')" :key="n.id" class="card note-card">
-          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : '❓' }} {{ n.content }}</div>
+          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : '❓' }} {{ n.content }}</div>
           <div style="font-size:0.8rem;color:var(--gray);margin-bottom:6px">
             📋 {{ n._task_title || n.task_id }}
             <span v-if="n._parent_title" style="opacity:0.7"> ↑ {{ n._parent_title }}</span>
           </div>
           <!-- Alternatives -->
           <div v-if="n.alternatives" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-            <button v-for="alt in n.alternatives.split(',').map(s=>s.trim()).filter(Boolean)"
+            <button v-for="alt in n.alternatives.split(/[,|]/).map(s=>s.trim()).filter(Boolean)"
               :key="alt" @click="toggleAlt(n.id, alt)"
               :style="{padding:'3px 10px',borderRadius:'20px',border:'1px solid var(--blue)',cursor:'pointer',fontSize:'0.8rem',
                        background: (noteAltsSelected[n.id] && noteAltsSelected[n.id].has(alt)) ? 'var(--blue)' : '#fff',
@@ -535,7 +536,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
             <textarea v-model="noteAnswers[n.id]" rows="1"
               style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical;margin-bottom:8px"
               placeholder="Optional comment..."></textarea>
-            <div style="display:flex;gap:8px">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
               <button @click="answerNote(n.id, buildResolution(n.id, 'Confirmed'))"
                 style="padding:5px 12px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
                 ✅ Confirmed
@@ -544,6 +545,10 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
                 style="padding:5px 12px;background:#fff;color:var(--red);border:1px solid var(--red);border-radius:4px;cursor:pointer;font-size:0.8rem">
                 ❌ Not correct
               </button>
+              <button @click="deferNote(n.id)"
+                style="padding:5px 12px;background:#fff;color:var(--gray);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem">
+                ⏸️ Defer
+              </button>
             </div>
           </template>
           <!-- Question: free text + submit -->
@@ -551,11 +556,17 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
             <textarea v-model="noteAnswers[n.id]" rows="2"
               style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px;font-size:0.8rem;resize:vertical"
               placeholder="Your answer..."></textarea>
-            <button @click="answerNote(n.id, buildResolution(n.id, ''))"
-              :disabled="!buildResolution(n.id, '').trim()"
-              style="margin-top:4px;padding:5px 12px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
-              💬 Submit answer →
-            </button>
+            <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
+              <button @click="answerNote(n.id, buildResolution(n.id, ''))"
+                :disabled="!buildResolution(n.id, '').trim()"
+                style="padding:5px 12px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem">
+                💬 Submit answer →
+              </button>
+              <button @click="deferNote(n.id)"
+                style="padding:5px 12px;background:#fff;color:var(--gray);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.8rem">
+                ⏸️ Defer
+              </button>
+            </div>
           </template>
         </div>
         <div v-if="!filteredNotes(notes.open, notesFilter.type, 'open').length && (notesFilter.status === 'open')" class="empty">No open notes ✔</div>
@@ -567,14 +578,20 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
           ⏳ Answered ({{ filteredNotes(notes.answered, notesFilter.type, 'answered').length }})
         </div>
         <div v-for="n in filteredNotes(notes.answered, notesFilter.type, 'answered')" :key="n.id" class="card note-card answered">
-          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : '❓' }} {{ n.content }}</div>
+          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : '❓'}} {{ n.content }}</div>
           <div style="font-size:0.8rem;color:var(--gray);margin-bottom:4px">📋 {{ n._task_title || n.task_id }}</div>
           <div v-if="!noteEditMode[n.id]">
             <div style="font-size:0.875rem;font-style:italic;color:#374151;margin-bottom:6px">💬 {{ n.resolution }}</div>
-            <button @click="startNoteEdit(n.id, n.resolution)"
-              style="padding:4px 10px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray)">
-              ✏️ Edit
-            </button>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button @click="startNoteEdit(n.id, n.resolution)"
+                style="padding:4px 10px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray)">
+                ✏️ Edit
+              </button>
+              <button @click="deferNote(n.id)"
+                style="padding:4px 10px;background:#fff;color:var(--gray);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem">
+                ⏸️ Defer
+              </button>
+            </div>
           </div>
           <div v-else>
             <textarea v-model="noteEditText[n.id]" rows="2"
@@ -593,18 +610,35 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
         </div>
       </template>
 
+      <!-- Deferred notes -->
+      <template v-if="notesFilter.status === 'all' || notesFilter.status === 'deferred'">
+        <div class="section-hdr" v-if="filteredNotes(notes.deferred, notesFilter.type, 'deferred').length">
+          ⏸️ Deferred ({{ filteredNotes(notes.deferred, notesFilter.type, 'deferred').length }})
+        </div>
+        <div v-for="n in filteredNotes(notes.deferred, notesFilter.type, 'deferred')" :key="n.id" class="card note-card deferred">
+          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : '❓' }} {{ n.content }}</div>
+          <div style="font-size:0.8rem;color:var(--gray);margin-bottom:4px">📋 {{ n._task_title || n.task_id }}</div>
+          <div v-if="n.resolution" style="font-size:0.8rem;font-style:italic;color:#374151;margin-bottom:6px">💬 {{ n.resolution }}</div>
+          <button @click="reopenNote(n.id)"
+            style="padding:4px 10px;background:#fff;color:var(--blue);border:1px solid var(--blue);border-radius:4px;cursor:pointer;font-size:0.75rem">
+            ↩️ Reopen
+          </button>
+        </div>
+        <div v-if="!filteredNotes(notes.deferred, notesFilter.type, 'deferred').length && notesFilter.status === 'deferred'" class="empty">No deferred notes.</div>
+      </template>
+
       <!-- Resolved notes -->
       <template v-if="notesFilter.status === 'all' || notesFilter.status === 'resolved'">
         <div class="section-hdr" v-if="filteredNotes(notes.resolved, notesFilter.type, 'resolved').length">
           ✅ Resolved ({{ filteredNotes(notes.resolved, notesFilter.type, 'resolved').length }})
         </div>
         <div v-for="n in filteredNotes(notes.resolved, notesFilter.type, 'resolved')" :key="n.id" class="card note-card resolved">
-          <div class="card-title">{{ n.content }}</div>
+          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : n.note_type === 'decision' ? '📋' : n.note_type === 'constraint' ? '⚠' : '❓'}} {{ n.content }}</div>
           <div v-if="n.resolution" style="font-size:0.8rem;color:var(--gray);margin-top:4px;font-style:italic">{{ n.resolution }}</div>
         </div>
       </template>
 
-      <div v-if="!notes.open.length && !notes.answered.length && !notes.resolved.length" class="empty">No notes yet.</div>
+      <div v-if="!notes.open.length && !notes.answered.length && !notes.deferred.length && !notes.resolved.length" class="empty">No notes yet.</div>
     </div>
 
     <!-- Roadmap Tab -->
@@ -840,7 +874,7 @@ createApp({
     const nodeTaskRefs = ref({ tasks: [], contracts: [] });
     const dagData = reactive({ nodes: [], edges: [] });
     const contracts = ref([]);
-    const notes = reactive({ open: [], answered: [], resolved: [] });
+    const notes = reactive({ open: [], answered: [], deferred: [], resolved: [] });
     const roadmapData = ref(null);
     const execOrder = ref(null);
     const timelineData = ref(null);
@@ -927,6 +961,7 @@ createApp({
       if (!rootTitle.value && data.task_title) rootTitle.value = data.task_title;
       notes.open = data.open || [];
       notes.answered = data.answered || [];
+      notes.deferred = data.deferred || [];
       notes.resolved = data.resolved || [];
     }
 
@@ -1188,6 +1223,24 @@ createApp({
         body: JSON.stringify({ resolution: val })
       });
       noteEditMode[noteId] = false;
+      await loadNotes();
+    }
+
+    async function deferNote(noteId) {
+      await fetch('/api/notes/' + noteId + '/answer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ resolution: '', status: 'deferred' })
+      });
+      await loadNotes();
+    }
+
+    async function reopenNote(noteId) {
+      await fetch('/api/notes/' + noteId + '/answer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ resolution: '', status: 'open' })
+      });
       await loadNotes();
     }
 
@@ -1792,7 +1845,7 @@ createApp({
       showAnnotationPanel, closeAnnotationPanel, submitAnnotationPanel,
       dfSources, dfSource, dfDepth, loadDataflow,
       notesFilter, noteAnswers, filteredNotes, answerNote,
-      noteAltsSelected, noteEditMode, noteEditText, toggleAlt, buildResolution, startNoteEdit, cancelNoteEdit, saveNoteEdit,
+      noteAltsSelected, noteEditMode, noteEditText, toggleAlt, buildResolution, startNoteEdit, cancelNoteEdit, saveNoteEdit, deferNote, reopenNote,
       dagFilter, selectedDagTask, dagTaskLoading, newDagAnnotation, loadDagTaskDetail, submitDagAnnotation, buildCyDag,
       contractsFilter, contractComments, submitContractComment, filteredContracts,
       blastTask, blastDepth, blastResult, leafTasks, loadLeafTasks, applyBlastOverlay, clearBlastOverlay,
