@@ -276,7 +276,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
                   <div v-if="a.status === 'answered' || a.status === 'resolved'">
                     <div v-if="!noteEditMode[a.id]">
                       <div v-if="a.resolution" style="font-style:italic;color:#374151;margin-top:2px">💬 {{ a.resolution }}</div>
-                      <button @click="startNoteEdit(a.id, a.resolution)"
+                      <button v-if="a.status === 'answered'" @click="startNoteEdit(a.id, a.resolution)"
                         style="padding:2px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray);margin-top:2px">
                         ✏️ Edit
                       </button>
@@ -393,7 +393,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
                 <div v-if="n.status === 'answered' || n.status === 'resolved'">
                   <div v-if="!noteEditMode[n.id]">
                     <div v-if="n.resolution" style="font-style:italic;color:#374151;margin-top:2px">💬 {{ n.resolution }}</div>
-                    <button @click="startNoteEdit(n.id, n.resolution)"
+                    <button v-if="n.status === 'answered'" @click="startNoteEdit(n.id, n.resolution)"
                       style="padding:2px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray);margin-top:2px">
                       ✏️ Edit
                     </button>
