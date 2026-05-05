@@ -128,9 +128,9 @@ note_add(task_id=task_id, notes=[
 - Search all notes in a subtree: `note_list(task_id, include_children=True)`
 - Resolve open questions before handing off to coder
 
-## Async Q&A with the Questions UI
+## Async Q&A
 
-When you have open questions or unverified assumptions that require human input, use the Questions UI instead of waiting in the chat session. This decouples LLM work from human response time.
+When you have open questions or unverified assumptions that require human input, do not of waiting in the chat session. This decouples LLM work from human response time.
 
 **Note lifecycle:**
 ```
@@ -143,23 +143,6 @@ open  →  answered  →  resolved / rejected / deferred
 - `resolved` — LLM validated and accepted; DAG may have been updated
 - `rejected` — LLM or user determined the note was invalid/incorrect
 - `deferred` — postponed, not blocking current work
-
-### Starting the Questions UI
-
-```bash
-# Auto-detect active root task
-code-review-graph questions
-
-# Specify task and port
-code-review-graph questions --task t1 --port 6234 --no-browser
-```
-
-The server opens `http://localhost:6234` with three sections:
-- **Awaiting LLM Validation** — notes the user has answered but LLM hasn't processed yet
-- **Open Questions** — questions/assumptions waiting for user response
-- **Resolved/Rejected** (collapsed) — history
-
-Answers are persisted to SQLite instantly. The session can close — answers survive.
 
 ### LLM workflow when resuming a session
 
@@ -686,7 +669,6 @@ task_execution_order(root_task_id)   # returns parallel levels
 - `task_get_dag(root_task_id)` returns the full tree with all edges; use `compact=True` for `{id, title, status, depth, parent_id}` nodes (faster for large trees)
 - `task_delete(task_id)` response includes `deleted_tasks: [{id, title}]` — confirm what was deleted
 - Pipeline error on `task_create` includes `blocking_task_id` for direct navigation to the blocking root
-- **Questions UI**: use `code-review-graph questions` to let users answer open questions asynchronously — survives session restarts; answers stored in SQLite
 - **`answered` notes**: after user answers via UI, `task_roadmap()` shows them in `attention.answered_notes`; process each with note_update before `task_validate` passes cleanly
 - Contract `status` auto-upgrades when provider task status changes (draft→proposed→acknowledged→implemented)
 - **Rule of 3 Ps**: after decomposition, verify P1 (task_validate + blast_radius), P2 (uncovered_nodes), P3 (task_find_conflicts depth=1 + task_contradiction_report)

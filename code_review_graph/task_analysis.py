@@ -893,7 +893,7 @@ def validate_dag(
         subtree_ids,
     ).fetchone()[0]
     if open_questions > 0:
-        warnings.append(f"{open_questions} unresolved question(s) remain — resolve before handing off")
+        errors.append(f"{open_questions} unresolved question(s) remain — resolve before handing off")
     else:
         ok.append("No open questions")
 
@@ -903,7 +903,7 @@ def validate_dag(
         subtree_ids,
     ).fetchone()[0]
     if answered_notes_count > 0:
-        warnings.append(
+        errors.append(
             f"{answered_notes_count} note(s) answered by user but not yet validated by LLM — "
             "call note_list(status='answered') to review and update to resolved/rejected"
         )
@@ -916,7 +916,7 @@ def validate_dag(
         subtree_ids,
     ).fetchone()[0]
     if open_assumptions > 0:
-        warnings.append(f"{open_assumptions} unverified assumption(s) — verify before coding")
+        errors.append(f"{open_assumptions} unverified assumption(s) — verify before coding")
     else:
         ok.append("No unverified assumptions")
 
@@ -926,9 +926,19 @@ def validate_dag(
         subtree_ids,
     ).fetchone()[0]
     if open_constraints > 0:
-        warnings.append(f"{open_constraints} unresolved constraint(s) — resolve before coding")
+        errors.append(f"{open_constraints} unresolved constraint(s) — resolve before coding")
     else:
         ok.append("No unresolved constraints")
+
+    # --- Check 5c: Unresolved risks ---
+    open_risks = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'risk' AND status = 'open'",
+        subtree_ids,
+    ).fetchone()[0]
+    if open_risks > 0:
+        errors.append(f"{open_risks} unresolved risk(s) — verify before coding")
+    else:
+        ok.append("No unresolved risk")
 
     # --- Check 6: Contracts in 'proposed' status where active tasks are participants ---
     proposed_contract_ids = set(
@@ -1310,6 +1320,9 @@ def export_task(
     unverified_assumptions = sum(
         1 for n in all_notes if n.get("note_type") == "assumption" and n.get("status") == "open"
     )
+    unverified_risk = sum(
+        1 for n in all_notes if n.get("note_type") == "risk" and n.get("status") == "open"
+    )
     pending_contracts = sum(1 for c in contracts_raw if c.get("status") == "proposed")
 
     # Mermaid DAG diagram — always generated for the full subtree
@@ -1353,6 +1366,7 @@ def export_task(
             "unresolved_questions": open_questions,
             "unresolved_constraints": unresolved_constraints,
             "unverified_assumptions": unverified_assumptions,
+            "unverified_risk": unverified_risk,
             "pending_contracts": pending_contracts,
         },
         "subtask_code_refs_summary": subtask_code_refs_summary,
@@ -1551,6 +1565,11 @@ def roadmap(
         subtree_ids,
     ).fetchone()[0]
 
+    open_risk_count = conn.execute(  # noqa: S608
+        f"SELECT count(*) FROM notes WHERE task_id IN ({ph}) AND note_type = 'risk' AND status = 'open'",
+        subtree_ids,
+    ).fetchone()[0]
+
     # Attention block
     ready_to_start = [
         t["id"]
@@ -1565,6 +1584,16 @@ def roadmap(
 
     unresolved_a = conn.execute(  # noqa: S608
         f"SELECT * FROM notes WHERE task_id IN ({ph}) AND note_type = 'assumption' AND status = 'open'",
+        subtree_ids,
+    ).fetchall()
+
+    unresolved_c = conn.execute(  # noqa: S608
+        f"SELECT * FROM notes WHERE task_id IN ({ph}) AND note_type = 'constraint' AND status = 'open'",
+        subtree_ids,
+    ).fetchall()
+
+    unresolved_r = conn.execute(  # noqa: S608
+        f"SELECT * FROM notes WHERE task_id IN ({ph}) AND note_type = 'risk' AND status = 'open'",
         subtree_ids,
     ).fetchall()
 
@@ -1626,12 +1655,15 @@ def roadmap(
             "open_questions": open_questions_count,
             "open_assumptions": open_assumptions_count,
             "open_constraints": open_constraints_count,
+            "open_risk": open_risk_count,
         },
         "attention": {
             "ready_to_start": ready_to_start,
             "answered_notes": [_row_to_dict(r) for r in answered_notes_rows],
             "unresolved_questions": [_row_to_dict(r) for r in unresolved_q],
             "unverified_assumptions": [_row_to_dict(r) for r in unresolved_a],
+            "unverified_constraints": [_row_to_dict(r) for r in unresolved_c],
+            "unverified_risk": [_row_to_dict(r) for r in unresolved_r],
             "low_isolation": low_isolation,
             "pending_contracts": pending_contracts,
         },
