@@ -1234,7 +1234,7 @@ createApp({
       cyArch.nodes().forEach(node => {
         const nid = node.data('id') || '';
         if (nid.startsWith('_archbadge_')) return;
-        const label = node.data('origLabel') || node.data('label') || nid;
+        const label = node.data('label') || nid;
         const origColor = node.data('bgColor') || '#438DD5';
         if (!_blastOrigColors[nid]) _blastOrigColors[nid] = origColor;
         if (directNames.has(label) || directQNames.has(nid) || directQNames.has(label)) {
@@ -1443,7 +1443,14 @@ createApp({
       const panel = document.getElementById('annotation-panel');
       if (!panel) return;
       const nodeId = nodeData.id;
-      const nodeAnnotations = annotations[nodeId] || [];
+      selectedNode.value = {
+        id: nodeId,
+        label: nodeData.label,
+        sublabel: nodeData.sublabel || '',
+        status: nodeData.status || 'existing',
+        kind: nodeData.kind || ''
+      };
+      const nodeAnnotations = annotations[get_c4_element_id(nodeId)] || [];
       const typeClass = { question: 'question', decision: 'decision', risk: 'risk',
                           constraint: 'constraint', assumption: 'constraint' };
       const statusLabel = { open: ' \u25cf', answered: ' \u25d1', resolved: ' \u2713' };
@@ -1458,14 +1465,14 @@ createApp({
           annoHtml += '<div class="anno-item ' + cls + '">' + a.content + statusTxt + resHtml + '</div>';
         });
       }
-      const displayLabel = nodeData.origLabel || nodeData.label || nodeId;
+      const displayLabel = nodeData.label || nodeId;
       const safeLabel = displayLabel.replace(/</g, '&lt;').replace(/>/g, '&gt;');
       panel.innerHTML =
         '<div class="anno-header"><strong>&#x1F4AC; ' + safeLabel + '</strong>' +
         '<button onclick="window._crg_closeAnnotationPanel()">&#x2715;</button></div>' +
         annoHtml +
         '<div class="anno-new"><textarea id="anno-textarea" placeholder="Add annotation..."></textarea>' +
-        '<button class="anno-submit-btn" data-nodeid="' + nodeId.replace(/"/g, '&quot;') + '">&#x1F4CC; Pin annotation</button></div>';
+        '<button onclick="window._crg_submitAnnotation()" class="anno-submit-btn">&#x1F4CC; Pin annotation</button></div>';
       panel.style.display = 'block';
       panel.style.left = (renderedPos.x + 10) + 'px';
       panel.style.top = (renderedPos.y + 10) + 'px';
@@ -1481,15 +1488,15 @@ createApp({
       return `${prefix}:${id}`;
     }
 
-    async function submitAnnotationPanel(elementId) {
+    async function submitAnnotationPanel() {
       const ta = document.getElementById('anno-textarea');
       if (!ta || !selectedNode.value || !ta.value.trim()) return;
       await fetch('/api/annotations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          c4_element_id: get_c4_element_id(elementId),
-          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.label}`,
+          c4_element_id: get_c4_element_id(selectedNode.value.id),
+          content: `${selectedNode.value.kind} ${selectedNode.value.label}`,
           resolution: ta.value.trim()
         })
       });
@@ -1500,12 +1507,6 @@ createApp({
 
     window._crg_closeAnnotationPanel = closeAnnotationPanel;
     window._crg_submitAnnotation = submitAnnotationPanel;
-
-    document.addEventListener('click', function(e) {
-      if (e.target.classList.contains('anno-submit-btn')) {
-        window._crg_submitAnnotation(e.target.dataset.nodeid);
-      }
-    });
 
     // Close annotation panel when clicking outside it
     document.addEventListener('click', function(e) {
@@ -1534,6 +1535,14 @@ createApp({
           api('/api/c4/node-details?id=' + encodeURIComponent(get_c4_element_id(nodeId))),
           api('/api/c4/task-refs?id=' + encodeURIComponent(get_c4_element_id(nodeId))),
         ]);
+        const d = detailData.node || {}
+        selectedNode.value = {
+          id: nodeId,
+          label: d.label || '',
+          sublabel: d.sublabel || '',
+          status: d.status || 'existing',
+          kind: d.kind || ''
+        };
         nodeAnnotations.value = detailData.annotations || [];
         nodeTaskRefs.value = { tasks: taskRefsData.tasks || [], contracts: taskRefsData.contracts || [] };
       } catch(e) { /* ignore */ }
@@ -1546,7 +1555,7 @@ createApp({
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           c4_element_id: get_c4_element_id(selectedNode.value.id),
-          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.label}`,
+          content: `${selectedNode.value.kind} ${selectedNode.value.label}`,
           resolution: newAnnotation.value.trim(),
         })
       });
@@ -1607,7 +1616,7 @@ createApp({
           const elem = {
             data: {
               id: n.id,
-              label: n.label + (n.sublabel ? '\n' + n.sublabel : ''),
+              label: n.label,
               bgColor: STATUS_BG[st] || '#888',
               textColor: STATUS_TEXT[st] || '#fff',
               borderColor: STATUS_BORDER[st] || '#888',
@@ -1616,7 +1625,7 @@ createApp({
               status: st,
               sublabel: n.sublabel || '',
               kind: n.kind || '',
-              origLabel: n.label,
+              labelSublabel: n.label + (n.sublabel ? `\n${n.sublabel}` : ''),
               annoCount,
             }
           };
@@ -1637,7 +1646,7 @@ createApp({
                 selector: 'node', style: {
                   'background-color': 'data(bgColor)', 'border-color': 'data(borderColor)',
                   'border-width': 'data(borderWidth)', 'border-style': 'data(borderStyle)',
-                  label: 'data(label)', 'text-valign': 'center', 'text-halign': 'center',
+                  label: 'data(labelSublabel)', 'text-valign': 'center', 'text-halign': 'center',
                   color: 'data(textColor)', 'font-size': '11px', width: 120, height: 60,
                   shape: 'rectangle', 'text-wrap': 'wrap', 'text-max-width': '110px'
                 }
@@ -1661,19 +1670,29 @@ createApp({
                   label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
                 }
               },
+              // Badge ghost nodes styling (added dynamically after layoutstop)
+              { selector: 'node[badge = 1]', style: {
+                  'background-color': '#495057',
+                  'color': '#fff',
+                  'font-size': '9px',
+                  'width': 28,
+                  'height': 16,
+                  'shape': 'round-rectangle',
+                  'text-valign': 'center',
+                  'text-halign': 'center',
+                  'border-width': 0,
+                }},
             ],
           });
           cyArch.container().addEventListener('contextmenu', (e) => e.preventDefault(), true);
           cyArch.on('tap', 'node', (evt) => {
             const d = evt.target.data();
-            selectedNode.value = {
-              id: d.id,
-              label: d.label,
-              sublabel: d.sublabel || '',
-              status: d.status || 'existing',
-              kind: d.kind || ''
-            };
+            selectedNode.value = null;
             newAnnotation.value = '';
+            if (d.id && d.id.startsWith('_archbadge_')) {
+              loadNodeDetails(d.parentRef);
+              return;
+            }
             loadNodeDetails(d.id);
           });
           cyArch.on('tap', (evt) => {
@@ -1684,7 +1703,7 @@ createApp({
           });
           cyArch.on('dbltap', 'node', (evt) => {
             const d = evt.target.data();
-            if (d.kind === 'Container_Boundary' && c4Data.components) {
+            if ((d.kind === 'Container_Boundary' || d.kind === 'Container') && c4Data.components) {
               c4ComponentSlug.value = d.id;
               setArchLevel('component');
             }
@@ -1706,6 +1725,7 @@ createApp({
             if (node.data('id') && node.data('id').startsWith('_archbadge_')) return;
             const pos = evt.renderedPosition || evt.position;
             showAnnotationPanel(node.data(), pos);
+            loadNodeDetails(node.data('id'));
           });
           cyArch.one('layoutstop', () => {
             elements.forEach(el => {
@@ -1713,21 +1733,26 @@ createApp({
               const cnt = el.data.annoCount;
               const nodeId = el.data.id;
               const badgeId = '_archbadge_' + nodeId;
+              const parentNode = cyArch.getElementById(nodeId);
+              const getBadgePos = (p) => {
+                const pos = p.position();
+                const offset = el.data.kind.endsWith('Boundary') ? 15 : 0
+                return {x: pos.x + p.width() / 2 + offset, y: pos.y - p.height() / 2 - offset};
+              };
+              cyArch.remove(`#${badgeId}`);
               const existing = cyArch.getElementById(badgeId);
               if (existing.length) cyArch.remove(existing);
-              const parentNode = cyArch.getElementById(nodeId);
+
               if (!parentNode.length) return;
-              const pos = parentNode.position();
-              cyArch.add({
+              const badge = cyArch.add({
                 group: 'nodes',
-                data: {id: badgeId, label: '💬 ' + cnt},
-                position: {x: pos.x + parentNode.width() / 2 - 14, y: pos.y - parentNode.height() / 2 + 8},
-                style: {
-                  'background-color': '#495057', 'color': '#fff', 'font-size': '9px',
-                  'width': 28, 'height': 16, 'shape': 'round-rectangle',
-                  'text-valign': 'center', 'text-halign': 'center',
-                  'label': '💬 ' + cnt, 'border-width': 0, 'z-index': 999, 'events': 'no',
-                }
+                data: {id: badgeId, labelSublabel: '💬 ' + cnt, badge: 1, parentRef: nodeId},
+                position: getBadgePos(parentNode),
+                grabbable: false
+              });
+
+              parentNode.on('position bounds', () => {
+                badge.position(getBadgePos(parentNode));
               });
             });
           });

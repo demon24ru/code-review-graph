@@ -229,13 +229,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     containers = level_data
                 elif diagram.diagram_type == "C4Component":
                     # community slug matches the Container_Boundary id in Containers diagram
-                    comm_name = (
-                        diagram.title[: -len(" Components")]
-                        if diagram.title.endswith(" Components")
-                        else diagram.title
-                    )
-                    comm_slug = re.sub(r"[^a-z0-9]+", "_", comm_name.lower()).strip("_") or "node"
-                    components[comm_slug] = level_data
+                    components[diagram.title] = level_data
             self._json_response({"containers": containers, "components": components})
         except Exception as exc:
             self._json_response({"containers": {}, "components": {}, "error": str(exc)})

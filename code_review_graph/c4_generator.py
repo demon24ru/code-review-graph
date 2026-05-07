@@ -477,7 +477,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
             member_nodes = store.get_nodes_by_community_id(comm_id, exclude_tests=True)
             if member_nodes:
                 component_diagrams.append(_build_component_diagram(
-                    title=f"{comm['name']} Components",
+                    title=_slugify(comm["name"]),
                     marker_id=_slugify(comm["name"]),
                     member_nodes=member_nodes,
                 ))
@@ -488,7 +488,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
             file_nodes = [n for n in all_nodes_for_file if n.file_path == fp]
             if file_nodes:
                 component_diagrams.append(_build_component_diagram(
-                    title=f"{Path(fp).stem} Components",
+                    title=_slugify(fp),
                     marker_id=_slugify(fp),
                     member_nodes=file_nodes,
                 ))
@@ -497,7 +497,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
             member_nodes = store.get_nodes_by_community_id(comm_id, exclude_tests=True)
             if member_nodes:
                 component_diagrams.append(_build_component_diagram(
-                    title=f"{comm['name']} Components",
+                    title=_slugify(comm["name"]),
                     marker_id=_slugify(comm["name"]),
                     member_nodes=member_nodes,
                 ))

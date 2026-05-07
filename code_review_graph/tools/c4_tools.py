@@ -124,9 +124,7 @@ def get_architecture_skeleton_func(
     Args:
         level: Optional filter:
             - None → full file content
-            - "context" → C4Context diagram only
             - "containers" → C4Container diagram only
-            - "components" → all C4Component diagrams
             - "components:MODULE_SLUG" → specific module's components (case-insensitive)
         repo_root: Repository root path. Auto-detected if omitted.
 
@@ -167,14 +165,10 @@ def get_architecture_skeleton_func(
     # Apply level filter
     if level is not None:
         level_lower = level.lower()
-        if level_lower == "context":
-            filtered = [d for d in arch.diagrams if d.diagram_type == "C4Context"]
-        elif level_lower == "containers":
+        if level_lower == "container":
             filtered = [d for d in arch.diagrams if d.diagram_type == "C4Container"]
-        elif level_lower == "components":
-            filtered = [d for d in arch.diagrams if d.diagram_type == "C4Component"]
-        elif level_lower.startswith("components:"):
-            slug = level[len("components:"):].lower()
+        elif level_lower.startswith("component:"):
+            slug = level[len("component:"):].lower()
             filtered = [
                 d
                 for d in arch.diagrams
@@ -267,10 +261,16 @@ def update_architecture_skeleton_func(
 
         # Find target diagram by partial case-insensitive match
         target_diagram: C4Diagram | None = None
+        level_lower = diagram_name.lower()
         for d in arch.diagrams:
-            if diagram_name.lower() in d.title.lower():
+            if level_lower == "container" and d.diagram_type == "C4Container":
                 target_diagram = d
                 break
+            elif level_lower.startswith("component:") and d.diagram_type == "C4Component":
+                slug = level_lower[len("component:"):].lower()
+                if slug in d.title.lower():
+                    target_diagram = d
+                    break
 
         if target_diagram is None:
             errors.append(f"Diagram '{diagram_name}' not found")
