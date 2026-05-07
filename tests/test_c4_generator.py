@@ -1028,6 +1028,33 @@ class TestContainerBoundaryGeneration:
                             "Rels must be at section level"
                         )
 
+    def test_rel_ids_match_known_container_ids(self):
+        """Regression: Rel src/target ids must reference ids that exist as Container
+        or Container_Boundary elements.  Previously single-file communities used
+        _slugify(file_path) for their Container id but _slugify(comm_name) for Rels,
+        producing dangling references."""
+        output = build_c4(self.store, repo_name="TestRepo")
+        arch = parse_c4_file(output)
+        container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
+
+        # Collect ids of all top-level Container/Container_Boundary elements
+        known_ids: set[str] = set()
+        for section in container_diagram.sections:
+            for elem in section.elements:
+                if elem.kind in ("Container", "Container_Boundary"):
+                    known_ids.add(elem.id)
+
+        # Every Rel src (id) and target (target_id) must be in known_ids
+        for section in container_diagram.sections:
+            for elem in section.elements:
+                if elem.kind == "Rel":
+                    assert elem.id in known_ids, (
+                        f"Rel source id '{elem.id}' not found among known Container ids: {known_ids}"
+                    )
+                    assert elem.target_id in known_ids, (
+                        f"Rel target_id '{elem.target_id}' not found among known Container ids: {known_ids}"
+                    )
+
     def test_build_c4_round_trips_boundary_structure(self):
         """build_c4 output → write → parse preserves Container_Boundary with children."""
         output = build_c4(self.store, repo_name="TestRepo")
@@ -1291,6 +1318,171 @@ class TestBuildC4ExcludesTestNodes:
             assert test_slug not in output, (
                 f"Rel from test node (slug '{test_slug}') must not appear in C4 output"
             )
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Test Component diagram Rel integrity — no phantom src/target ids
+# ---------------------------------------------------------------------------
+
+
+class TestComponentDiagramRelIntegrity:
+    """All Rel elements in C4Component diagrams must reference ids that exist
+    as Component or Component_Boundary elements within the same diagram."""
+
+    def _collect_known_ids(self, elements: list) -> set[str]:
+        """Recursively collect ids of Component and Component_Boundary elements."""
+        known: set[str] = set()
+        for elem in elements:
+            if elem.kind in ("Component", "Component_Boundary"):
+                known.add(elem.id)
+            known |= self._collect_known_ids(elem.children)
+        return known
+
+    def _collect_rels(self, elements: list) -> list:
+        """Collect all Rel elements (only at section level — not nested)."""
+        return [e for e in elements if e.kind == "Rel"]
+
+    def test_rel_ids_known_in_simple_community(self):
+        """Single-file community: all Rel src/target ids must exist as Component ids."""
+        store = make_store()
+        try:
+            store.upsert_node(
+                NodeInfo(kind="File", name="svc.py", file_path="svc.py",
+                         line_start=1, line_end=60, language="python"), file_hash="s1",
+            )
+            store.upsert_node(
+                NodeInfo(kind="Function", name="start", file_path="svc.py",
+                         line_start=5, line_end=20, language="python"), file_hash="s1",
+            )
+            store.upsert_node(
+                NodeInfo(kind="Function", name="stop", file_path="svc.py",
+                         line_start=25, line_end=40, language="python"), file_hash="s1",
+            )
+            store.upsert_edge(EdgeInfo(
+                kind="CALLS", source="svc.py::start", target="svc.py::stop",
+                file_path="svc.py", line=10,
+            ))
+            store.commit()
+            communities = detect_communities(store, min_size=1)
+            store_communities(store, communities)
+
+            arch = parse_c4_file(build_c4(store))
+            for diag in arch.diagrams:
+                if diag.diagram_type != "C4Component":
+                    continue
+                for section in diag.sections:
+                    known_ids = self._collect_known_ids(section.elements)
+                    for rel in self._collect_rels(section.elements):
+                        assert rel.id in known_ids, (
+                            f"[{diag.title}] Rel source id '{rel.id}' not in known ids: {known_ids}"
+                        )
+                        assert rel.target_id in known_ids, (
+                            f"[{diag.title}] Rel target_id '{rel.target_id}' not in known ids: {known_ids}"
+                        )
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)
+
+    def test_rel_ids_known_with_class_hierarchy(self):
+        """File → Class → Method hierarchy: Rel ids must reference existing Component ids."""
+        store = make_store()
+        try:
+            store.upsert_node(
+                NodeInfo(kind="File", name="models.py", file_path="models.py",
+                         line_start=1, line_end=100, language="python"), file_hash="m1",
+            )
+            store.upsert_node(
+                NodeInfo(kind="Class", name="User", file_path="models.py",
+                         line_start=5, line_end=50, language="python"), file_hash="m1",
+            )
+            store.upsert_node(
+                NodeInfo(kind="Function", name="save", file_path="models.py",
+                         line_start=10, line_end=20, language="python"), file_hash="m1",
+            )
+            store.upsert_node(
+                NodeInfo(kind="Function", name="delete", file_path="models.py",
+                         line_start=25, line_end=35, language="python"), file_hash="m1",
+            )
+            store.upsert_edge(EdgeInfo(
+                kind="CONTAINS", source="models.py", target="models.py::User",
+                file_path="models.py", line=5,
+            ))
+            store.upsert_edge(EdgeInfo(
+                kind="CONTAINS", source="models.py::User", target="models.py::User.save",
+                file_path="models.py", line=10,
+            ))
+            store.upsert_edge(EdgeInfo(
+                kind="CONTAINS", source="models.py::User", target="models.py::User.delete",
+                file_path="models.py", line=25,
+            ))
+            store.upsert_edge(EdgeInfo(
+                kind="CALLS", source="models.py::User.save", target="models.py::User.delete",
+                file_path="models.py", line=15,
+            ))
+            store.commit()
+            communities = detect_communities(store, min_size=1)
+            store_communities(store, communities)
+
+            arch = parse_c4_file(build_c4(store))
+            for diag in arch.diagrams:
+                if diag.diagram_type != "C4Component":
+                    continue
+                for section in diag.sections:
+                    known_ids = self._collect_known_ids(section.elements)
+                    for rel in self._collect_rels(section.elements):
+                        assert rel.id in known_ids, (
+                            f"[{diag.title}] Rel source id '{rel.id}' not in known ids: {known_ids}"
+                        )
+                        assert rel.target_id in known_ids, (
+                            f"[{diag.title}] Rel target_id '{rel.target_id}' not in known ids: {known_ids}"
+                        )
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)
+
+    def test_rel_ids_known_with_multi_file_community(self):
+        """Multi-file community with cross-file CALLS: Rel ids must exist in Component diagram."""
+        store = make_store()
+        try:
+            for fname, fhash, funcs in [
+                ("alpha.py", "a1", [("do_alpha", 5, 20)]),
+                ("beta.py",  "b1", [("do_beta", 5, 20)]),
+            ]:
+                store.upsert_node(
+                    NodeInfo(kind="File", name=fname, file_path=fname,
+                             line_start=1, line_end=30, language="python"),
+                    file_hash=fhash,
+                )
+                for fn, ls, le in funcs:
+                    store.upsert_node(
+                        NodeInfo(kind="Function", name=fn, file_path=fname,
+                                 line_start=ls, line_end=le, language="python"),
+                        file_hash=fhash,
+                    )
+            store.upsert_edge(EdgeInfo(
+                kind="CALLS", source="alpha.py::do_alpha", target="beta.py::do_beta",
+                file_path="alpha.py", line=10,
+            ))
+            store.commit()
+            communities = detect_communities(store, min_size=1)
+            store_communities(store, communities)
+
+            arch = parse_c4_file(build_c4(store))
+            for diag in arch.diagrams:
+                if diag.diagram_type != "C4Component":
+                    continue
+                for section in diag.sections:
+                    known_ids = self._collect_known_ids(section.elements)
+                    for rel in self._collect_rels(section.elements):
+                        assert rel.id in known_ids, (
+                            f"[{diag.title}] Rel source id '{rel.id}' not in known ids: {known_ids}"
+                        )
+                        assert rel.target_id in known_ids, (
+                            f"[{diag.title}] Rel target_id '{rel.target_id}' not in known ids: {known_ids}"
+                        )
         finally:
             store.close()
             Path(store.db_path).unlink(missing_ok=True)

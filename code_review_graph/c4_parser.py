@@ -265,7 +265,7 @@ def _parse_diagram(title: str, body: str) -> C4Diagram:
     Returns:
         Populated C4Diagram instance.
     """
-    diagram_type = "C4Context"
+    diagram_type = "C4Container"
     sections: list[C4Section] = []
     loose_elements: list[C4Element] = []
 
@@ -280,7 +280,7 @@ def _parse_diagram(title: str, body: str) -> C4Diagram:
             continue
 
         # Detect diagram type declaration
-        if stripped in ("C4Context", "C4Container", "C4Component"):
+        if stripped in ("C4Container", "C4Component"):
             diagram_type = stripped
             continue
 

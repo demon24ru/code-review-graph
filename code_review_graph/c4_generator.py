@@ -130,34 +130,6 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
     overview = get_architecture_overview(store, exclude_tests=True)
     cross_edges = overview.get("cross_community_edges", [])
 
-    # community_id -> community dict for quick lookups
-    comm_by_id: dict[int, dict[str, Any]] = {c["id"]: c for c in communities}
-
-    # -------------------------------------------------------------------
-    # C4Context diagram — with System element representing the repository
-    # -------------------------------------------------------------------
-    system_id = _slugify(display_name) + "_system"
-    context_diagram = C4Diagram(
-        title=f"{display_name} Context",
-        diagram_type="C4Context",
-        sections=[
-            C4Section(
-                marker_type="AUTO",
-                marker_id="context",
-                timestamp=today,
-                elements=[
-                    C4Element(
-                        kind="System",
-                        id=system_id,
-                        label=display_name,
-                        description="Code repository",
-                    )
-                ],
-            )
-        ],
-        loose_elements=[],
-    )
-
     # -------------------------------------------------------------------
     # C4Container diagram
     #
@@ -222,6 +194,11 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
 
     container_elements: list[C4Element] = []
     processed_comm_ids: set[int] = set()
+    # Maps community_id → the actual id used for its top-level Container/Boundary
+    # element.  Single-file communities use _slugify(file_path) while multi-file
+    # and no-file communities use _slugify(comm_name).  Rel elements must use
+    # the same id so they reference known elements.
+    comm_id_to_container_slug: dict[int, str] = {}
 
     for comm in communities:
         comm_id = comm["id"]
@@ -229,10 +206,12 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
 
         if not files:
             # No file data — emit a flat Container for the community itself
+            slug = _slugify(comm["name"])
+            comm_id_to_container_slug[comm_id] = slug
             container_elements.append(
                 C4Element(
                     kind="Container",
-                    id=_slugify(comm["name"]),
+                    id=slug,
                     label=comm["name"],
                     technology=comm.get("dominant_language", ""),
                     description=f"{comm['size']} nodes",
@@ -241,13 +220,18 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
             processed_comm_ids.add(comm_id)
         elif len(files) == 1:
             # Single file → flat Container, no boundary wrapper
-            container_elements.append(_make_file_container(files[0]))
+            fp = files[0]
+            slug = _slugify(fp)
+            comm_id_to_container_slug[comm_id] = slug
+            container_elements.append(_make_file_container(fp))
             processed_comm_ids.add(comm_id)
         else:
             # Multiple files → Container_Boundary wrapping file Containers
+            slug = _slugify(comm["name"])
+            comm_id_to_container_slug[comm_id] = slug
             boundary = C4Element(
                 kind="Container_Boundary",
-                id=_slugify(comm["name"]),
+                id=slug,
                 label=comm["name"],
                 children=[_make_file_container(fp) for fp in files],
             )
@@ -265,12 +249,11 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
     rel_elements: list[C4Element] = []
     seen_pairs: set[tuple[str, str]] = set()
     for (src_id, tgt_id), count in rel_counts.items():
-        src_comm = comm_by_id.get(src_id)
-        tgt_comm = comm_by_id.get(tgt_id)
-        if src_comm is None or tgt_comm is None:
+        src_slug = comm_id_to_container_slug.get(src_id)
+        tgt_slug = comm_id_to_container_slug.get(tgt_id)
+        # Skip if either community has no container element (e.g. filtered out)
+        if src_slug is None or tgt_slug is None:
             continue
-        src_slug = _slugify(src_comm["name"])
-        tgt_slug = _slugify(tgt_comm["name"])
         pair = (src_slug, tgt_slug)
         if pair in seen_pairs:
             continue
@@ -520,7 +503,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
                 ))
 
     arch = C4Architecture(
-        diagrams=[context_diagram, container_diagram] + component_diagrams
+        diagrams=[container_diagram, ] + component_diagrams
     )
     return write_c4_file(arch)
 
