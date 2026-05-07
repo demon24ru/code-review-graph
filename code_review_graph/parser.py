@@ -238,7 +238,10 @@ _TEST_FILE_PATTERNS = [
     re.compile(r".*\.test\.[jt]sx?$"),
     re.compile(r".*\.spec\.[jt]sx?$"),
     re.compile(r".*_test\.go$"),
-    re.compile(r"tests?/"),
+    re.compile(r"(^|/)tests?/"),
+    re.compile(r"(^|/)__tests__/"),
+    re.compile(r"(^|/)spec/"),
+    re.compile(r"(^|/)testing/"),
     re.compile(r".*_test\.dart$"),
     re.compile(r"test[_-].*\.[rR]$"),
     re.compile(r"tests/testthat/"),
@@ -251,7 +254,7 @@ _TEST_RUNNER_NAMES = frozenset({
 
 
 def _is_test_file(path: str) -> bool:
-    return any(p.search(path) for p in _TEST_FILE_PATTERNS)
+    return any(p.search(path.replace("\\", "/")) for p in _TEST_FILE_PATTERNS)
 
 
 def _is_test_function(name: str, file_path: str) -> bool:

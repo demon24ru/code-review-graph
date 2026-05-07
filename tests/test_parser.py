@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from code_review_graph.parser import CodeParser
+from code_review_graph.parser import CodeParser, _is_test_file
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -34,8 +34,8 @@ class TestCodeParser:
         assert "BaseService" in class_names
         assert "AuthService" in class_names
 
-        # Should find functions
-        funcs = [n for n in nodes if n.kind == "Function"]
+        # Should find functions (fixture is in tests/ dir → kind may be Test)
+        funcs = [n for n in nodes if n.kind in ("Function", "Test")]
         func_names = {f.name for f in funcs}
         assert "__init__" in func_names
         assert "authenticate" in func_names
@@ -78,7 +78,7 @@ class TestCodeParser:
         assert "UserRepository" in class_names
         assert "UserService" in class_names
 
-        funcs = [n for n in nodes if n.kind == "Function"]
+        funcs = [n for n in nodes if n.kind in ("Function", "Test")]
         func_names = {f.name for f in funcs}
         assert "findById" in func_names or "handleGetUser" in func_names
 
@@ -209,8 +209,8 @@ class TestCodeParser:
         assert len(file_nodes) == 1
         assert file_nodes[0].language == "vue"
 
-        # Should find functions from <script setup>
-        funcs = [n for n in nodes if n.kind == "Function"]
+        # Should find functions from <script setup> (fixture is in tests/ → kind may be Test)
+        funcs = [n for n in nodes if n.kind in ("Function", "Test")]
         func_names = {f.name for f in funcs}
         assert "increment" in func_names
         assert "onSelectUser" in func_names
@@ -239,7 +239,7 @@ class TestCodeParser:
     def test_parse_vue_line_numbers_offset(self):
         """Line numbers should be offset to reflect position in the .vue file."""
         nodes, edges = self.parser.parse_file(FIXTURES / "sample_vue.vue")
-        funcs = [n for n in nodes if n.kind == "Function" and n.name == "increment"]
+        funcs = [n for n in nodes if n.kind in ("Function", "Test") and n.name == "increment"]
         assert len(funcs) == 1
         # increment() is on line 22 of the .vue file (inside <script setup> starting at line 9)
         assert funcs[0].line_start > 9
@@ -294,7 +294,7 @@ class TestCodeParser:
         assert "SwimmingMixin" in class_names
         assert "PetType" in class_names
 
-        funcs = [n for n in nodes if n.kind == "Function"]
+        funcs = [n for n in nodes if n.kind in ("Function", "Test")]
         func_names = {f.name for f in funcs}
         assert "speak" in func_names
         assert "fetch" in func_names
@@ -331,7 +331,7 @@ class TestCodeParser:
 
     def test_parse_dart_method_parent(self):
         nodes, edges = self.parser.parse_file(FIXTURES / "sample.dart")
-        funcs = [n for n in nodes if n.kind == "Function"]
+        funcs = [n for n in nodes if n.kind in ("Function", "Test")]
         # Both Animal and Dog define speak(); check Dog's specifically
         dog_speak = next(
             (f for f in funcs if f.name == "speak" and f.parent_name == "Dog"), None,
@@ -340,7 +340,7 @@ class TestCodeParser:
 
     def test_parse_dart_top_level_function_no_parent(self):
         nodes, edges = self.parser.parse_file(FIXTURES / "sample.dart")
-        funcs = [n for n in nodes if n.kind == "Function"]
+        funcs = [n for n in nodes if n.kind in ("Function", "Test")]
         create_dog = next((f for f in funcs if f.name == "createDog"), None)
         assert create_dog is not None
         assert create_dog.parent_name is None
@@ -520,3 +520,63 @@ class TestCodeParser:
             assert not helper.is_test, (
                 f"Node 'create_task' in non-test file should have is_test=False"
             )
+
+
+class TestIsTestFilePatterns:
+    """Unit tests for _is_test_file directory-hierarchy detection."""
+
+    # ---- paths that must match ----
+    def test_tests_dir(self):
+        assert _is_test_file("tests/test_parser.py")
+
+    def test_test_dir(self):
+        assert _is_test_file("test/unit/auth.py")
+
+    def test_nested_tests_dir(self):
+        assert _is_test_file("src/tests/utils.py")
+
+    def test_jest_tests_dir(self):
+        assert _is_test_file("src/__tests__/auth.py")
+
+    def test_jest_tests_dir_root(self):
+        assert _is_test_file("__tests__/auth.js")
+
+    def test_spec_dir(self):
+        assert _is_test_file("spec/auth_spec.rb")
+
+    def test_nested_spec_dir(self):
+        assert _is_test_file("src/spec/helpers.rb")
+
+    def test_testing_dir(self):
+        assert _is_test_file("testing/helpers.py")
+
+    def test_nested_testing_dir(self):
+        assert _is_test_file("src/testing/mock.py")
+
+    def test_test_prefix_filename(self):
+        assert _is_test_file("test_helpers.py")
+
+    def test_test_suffix_filename(self):
+        assert _is_test_file("auth_test.py")
+
+    # ---- paths that must NOT match ----
+    def test_plain_source_file(self):
+        assert not _is_test_file("auth.py")
+
+    def test_nontests_dir_not_matched(self):
+        assert not _is_test_file("nontests/utils.py")
+
+    def test_contesting_dir_not_matched(self):
+        assert not _is_test_file("contesting/utils.py")
+
+    def test_protest_dir_not_matched(self):
+        assert not _is_test_file("protest/utils.py")
+
+    def test_windows_backslash_tests_dir(self):
+        assert _is_test_file("tests\\fixtures\\sample.py")
+
+    def test_windows_backslash_jest_dir(self):
+        assert _is_test_file("src\\__tests__\\auth.py")
+
+    def test_windows_backslash_non_test(self):
+        assert not _is_test_file("src\\auth.py")
