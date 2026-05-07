@@ -264,6 +264,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Try to look up node metadata from C4 architecture file
         node_data: dict[str, Any] = {"id": node_id}
+        node_id_element = node_id.split(':')[-1]
         if _C4_AVAILABLE:
             c4_path = get_c4_path(str(self.repo_root))
             if c4_path.exists():
@@ -273,7 +274,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     for diagram in arch.diagrams:
                         nodes = resolve_for_render(arch, diagram.title)
                         for n in nodes:
-                            if n.get("id") == node_id:
+                            if n.get("id") == node_id_element:
                                 node_data = n
                                 found = True
                                 break

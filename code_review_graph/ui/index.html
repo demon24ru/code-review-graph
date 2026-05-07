@@ -1489,7 +1489,7 @@ createApp({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           c4_element_id: get_c4_element_id(elementId),
-          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.id} ${selectedNode.value.label}`,
+          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.label}`,
           resolution: ta.value.trim()
         })
       });
@@ -1531,8 +1531,8 @@ createApp({
       nodeTaskRefs.value = { tasks: [], contracts: [] };
       try {
         const [detailData, taskRefsData] = await Promise.all([
-          api('/api/c4/node-details?id=' + encodeURIComponent(nodeId)),
-          api('/api/c4/task-refs?id=' + encodeURIComponent(nodeId)),
+          api('/api/c4/node-details?id=' + encodeURIComponent(get_c4_element_id(nodeId))),
+          api('/api/c4/task-refs?id=' + encodeURIComponent(get_c4_element_id(nodeId))),
         ]);
         nodeAnnotations.value = detailData.annotations || [];
         nodeTaskRefs.value = { tasks: taskRefsData.tasks || [], contracts: taskRefsData.contracts || [] };
@@ -1546,7 +1546,7 @@ createApp({
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
           c4_element_id: get_c4_element_id(selectedNode.value.id),
-          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.id} ${selectedNode.value.label}`,
+          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.label}`,
           resolution: newAnnotation.value.trim(),
         })
       });
