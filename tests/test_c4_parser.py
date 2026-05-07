@@ -581,3 +581,100 @@ class TestEdgeCases:
         sec = arch.diagrams[0].sections[0]
         assert sec.elements[0].id == "api"
         assert sec.elements[0].technology == "Python"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nested boundary tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestNestedBoundaries:
+    def test_parse_container_boundary_with_children(self):
+        content = (
+            "---\ntitle: T\n---\nC4Container\n"
+            'Container_Boundary(sys, "System") {\n'
+            '    Container(api, "API", "Python", "REST")\n'
+            '    ContainerDb(db, "DB", "SQLite", "stores")\n'
+            "}\n"
+        )
+        arch = parse_c4_file(content)
+        loose = arch.diagrams[0].loose_elements
+        assert len(loose) == 1
+        assert loose[0].kind == "Container_Boundary"
+        assert loose[0].id == "sys"
+        assert len(loose[0].children) == 2
+        assert loose[0].children[0].kind == "Container"
+        assert loose[0].children[0].id == "api"
+        assert loose[0].children[1].kind == "ContainerDb"
+
+    def test_parse_component_boundary_with_children(self):
+        content = (
+            "---\ntitle: T\n---\nC4Component\n"
+            'Component_Boundary(mod, "Module") {\n'
+            '    Component(svc, "Service", "Python", "handles logic")\n'
+            "}\n"
+        )
+        arch = parse_c4_file(content)
+        loose = arch.diagrams[0].loose_elements
+        assert len(loose) == 1
+        assert loose[0].kind == "Component_Boundary"
+        assert loose[0].id == "mod"
+        assert len(loose[0].children) == 1
+        assert loose[0].children[0].kind == "Component"
+        assert loose[0].children[0].id == "svc"
+
+    def test_roundtrip_container_boundary_with_children(self):
+        content = (
+            "---\ntitle: T\n---\nC4Container\n"
+            'Container_Boundary(sys, "System") {\n'
+            '  Container(api, "API", "Python", "REST")\n'
+            "}\n"
+        )
+        arch1 = parse_c4_file(content)
+        arch2 = parse_c4_file(write_c4_file(arch1))
+        loose1 = arch1.diagrams[0].loose_elements
+        loose2 = arch2.diagrams[0].loose_elements
+        assert len(loose1) == len(loose2) == 1
+        assert loose1[0].kind == loose2[0].kind == "Container_Boundary"
+        assert len(loose1[0].children) == len(loose2[0].children) == 1
+        assert loose1[0].children[0].id == loose2[0].children[0].id
+
+    def test_write_empty_boundary_round_trips(self):
+        content = (
+            "---\ntitle: T\n---\nC4Container\n"
+            'Container_Boundary(b, "Boundary") {\n'
+            "}\n"
+        )
+        arch = parse_c4_file(content)
+        loose = arch.diagrams[0].loose_elements
+        assert len(loose) == 1
+        assert loose[0].kind == "Container_Boundary"
+        assert loose[0].children == []
+        out = write_c4_file(arch)
+        assert "Container_Boundary" in out
+        assert "{" in out
+        arch2 = parse_c4_file(out)
+        assert len(arch2.diagrams[0].loose_elements) == 1
+        assert arch2.diagrams[0].loose_elements[0].kind == "Container_Boundary"
+        assert arch2.diagrams[0].loose_elements[0].children == []
+
+    def test_deeply_nested_boundaries(self):
+        content = (
+            "---\ntitle: T\n---\nC4Container\n"
+            'Container_Boundary(outer, "Outer") {\n'
+            '  Component_Boundary(inner, "Inner") {\n'
+            '    Component(c, "C", "Python", "desc")\n'
+            "  }\n"
+            "}\n"
+        )
+        arch = parse_c4_file(content)
+        loose = arch.diagrams[0].loose_elements
+        assert len(loose) == 1
+        outer = loose[0]
+        assert outer.kind == "Container_Boundary"
+        assert len(outer.children) == 1
+        inner = outer.children[0]
+        assert inner.kind == "Component_Boundary"
+        assert len(inner.children) == 1
+        assert inner.children[0].kind == "Component"
+        assert inner.children[0].id == "c"

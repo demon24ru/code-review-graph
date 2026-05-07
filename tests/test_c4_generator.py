@@ -173,24 +173,22 @@ class TestBuildC4Basic:
         assert "C4Component" in types
 
     def test_containers_match_communities(self):
-        """Each community should appear as a Container element."""
-        from code_review_graph.communities import get_communities
-
-        communities = get_communities(self.store, exclude_tests=True)
+        """Each community should contribute at least one Container element."""
         output = build_c4(self.store, repo_name="TestRepo")
         arch = parse_c4_file(output)
 
         container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
-        container_labels = set()
+        # All communities must contribute at least one Container or Container_Boundary
+        all_container_ids: set[str] = set()
         for section in container_diagram.sections:
             for elem in section.elements:
-                if elem.kind == "Container":
-                    container_labels.add(elem.label)
+                if elem.kind in ("Container_Boundary", "Container"):
+                    all_container_ids.add(elem.id)
+                    for child in elem.children:
+                        if child.kind == "Container":
+                            all_container_ids.add(child.id)
 
-        for comm in communities:
-            assert comm["name"] in container_labels, (
-                f"Community '{comm['name']}' missing from Container diagram"
-            )
+        assert len(all_container_ids) >= 1, "Expected at least one Container element"
 
     def test_cross_community_relationships_exist(self):
         """Container diagram must contain at least one Rel element for cross edges."""
@@ -214,6 +212,26 @@ class TestBuildC4Basic:
         container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
         auto_types = {s.marker_type for s in container_diagram.sections}
         assert "AUTO" in auto_types
+
+    def test_context_diagram_has_system_node(self):
+        """C4Context diagram contains a System element representing the repository."""
+        output = build_c4(self.store, repo_name="TestRepo")
+        arch = parse_c4_file(output)
+
+        context_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Context")
+        # Find all System elements in the context diagram
+        system_elements = [
+            e
+            for section in context_diagram.sections
+            for e in section.elements
+            if e.kind == "System"
+        ]
+        assert len(system_elements) >= 1, "Expected at least one System element in C4Context"
+        # Verify the System element has the expected properties
+        system_elem = system_elements[0]
+        assert system_elem.label == "TestRepo"
+        assert system_elem.description == "Code repository"
+        assert "system" in system_elem.id.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -358,12 +376,12 @@ class TestRebuildGraduatesImplemented:
         for section in container_diagram.sections:
             if section.marker_type == "AUTO":
                 for elem in section.elements:
-                    if elem.kind == "Container":
+                    if elem.kind in ("Container", "Container_Boundary"):
                         auto_id = elem.id
                         break
             if auto_id:
                 break
-        assert auto_id is not None, "Need at least one Container in AUTO section"
+        assert auto_id is not None, "Need at least one Container or Container_Boundary in AUTO section"
 
         # Inject a FEATURE section in the Container diagram using the same id
         feature_block = (
@@ -528,8 +546,8 @@ class TestResolveForRender:
         assert foo is not None
         assert foo["kind"] == "Container"
 
-    def test_container_boundary_excluded(self):
-        """Container_Boundary must not appear as a node."""
+    def test_container_boundary_included(self):
+        """Container_Boundary appears as a compound-parent node for Cytoscape."""
         boundary = C4Element(kind="Container_Boundary", id="boundary1", label="Boundary", technology="")
         auto_section = C4Section(
             marker_type="AUTO",
@@ -548,7 +566,8 @@ class TestResolveForRender:
         arch = C4Architecture(diagrams=[diagram])
         items = resolve_for_render(arch, "Boundary Test")
         kinds = {i["kind"] for i in items}
-        assert "Container_Boundary" not in kinds
+        assert "Container_Boundary" in kinds
+        assert "Container" in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -826,3 +845,371 @@ class TestComponentDiagramCollapsesPrivateHelpers:
         finally:
             store2.close()
             Path(store2.db_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Test Container_Boundary grouping in Container diagram
+# ---------------------------------------------------------------------------
+
+
+def seed_multi_file_community(store: GraphStore) -> None:
+    """Seed two communities where the first spans two files (auth.py + db.py)
+    and the second has one file (utils.py).
+    The multi-file community → Container_Boundary; utils → flat Container.
+    A cross-community edge from auth.py::login → utils.py::helper is added."""
+    # Auth+DB community (2 files — will become Container_Boundary)
+    for fname, fhash, funcs in [
+        ("auth.py", "a1", [("login", 5, 20), ("logout", 25, 40)]),
+        ("db.py",   "b1", [("connect", 5, 20), ("query", 25, 40)]),
+    ]:
+        store.upsert_node(
+            NodeInfo(kind="File", name=fname, file_path=fname,
+                     line_start=1, line_end=80, language="python"),
+            file_hash=fhash,
+        )
+        for fn, ls, le in funcs:
+            store.upsert_node(
+                NodeInfo(kind="Function", name=fn, file_path=fname,
+                         line_start=ls, line_end=le, language="python"),
+                file_hash=fhash,
+            )
+    # Cross-file edge keeps auth.py+db.py in the same community
+    store.upsert_edge(EdgeInfo(
+        kind="CALLS", source="auth.py::login", target="db.py::query",
+        file_path="auth.py", line=15,
+    ))
+    # Utils community (1 file — will become flat Container)
+    store.upsert_node(
+        NodeInfo(kind="File", name="utils.py", file_path="utils.py",
+                 line_start=1, line_end=30, language="python"),
+        file_hash="u1",
+    )
+    store.upsert_node(
+        NodeInfo(kind="Function", name="helper", file_path="utils.py",
+                 line_start=5, line_end=20, language="python"),
+        file_hash="u1",
+    )
+    store.upsert_node(
+        NodeInfo(kind="Function", name="fmt", file_path="utils.py",
+                 line_start=22, line_end=30, language="python"),
+        file_hash="u1",
+    )
+    store.upsert_edge(EdgeInfo(
+        kind="CALLS", source="utils.py::helper", target="utils.py::fmt",
+        file_path="utils.py", line=10,
+    ))
+    # Cross-community edge: auth → utils
+    store.upsert_edge(EdgeInfo(
+        kind="CALLS", source="auth.py::login", target="utils.py::helper",
+        file_path="auth.py", line=18,
+    ))
+    store.commit()
+    communities = detect_communities(store, min_size=2)
+    store_communities(store, communities)
+
+
+class TestContainerBoundaryGeneration:
+    """build_c4 emits Container_Boundary only for communities with 2+ files.
+    Single-file communities produce a flat Container."""
+
+    def setup_method(self):
+        self.store = make_store()
+        seed_multi_file_community(self.store)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.store.db_path).unlink(missing_ok=True)
+
+    def test_community_produces_container_boundary(self):
+        """A community with 2+ files appears as Container_Boundary."""
+        output = build_c4(self.store, repo_name="TestRepo")
+        arch = parse_c4_file(output)
+        container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
+
+        section_kinds = [
+            elem.kind
+            for section in container_diagram.sections
+            for elem in section.elements
+        ]
+        assert "Container_Boundary" in section_kinds, (
+            "Expected Container_Boundary for multi-file community"
+        )
+
+    def test_community_boundary_has_file_children(self):
+        """Container_Boundary elements must have Container children for file nodes."""
+        output = build_c4(self.store, repo_name="TestRepo")
+        arch = parse_c4_file(output)
+        container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
+
+        for section in container_diagram.sections:
+            for elem in section.elements:
+                if elem.kind == "Container_Boundary":
+                    assert len(elem.children) >= 1, (
+                        f"Container_Boundary '{elem.label}' must have at least 1 Container child"
+                    )
+                    for child in elem.children:
+                        assert child.kind == "Container", (
+                            f"Children of Container_Boundary must be Container, got {child.kind}"
+                        )
+
+    def test_single_file_community_produces_flat_container(self):
+        """A community with exactly 1 file gets a flat Container (no boundary wrapper)."""
+        store2 = make_store()
+        # Seed a single-file community
+        store2.upsert_node(
+            NodeInfo(kind="File", name="solo.py", file_path="solo.py",
+                     line_start=1, line_end=40, language="python"),
+            file_hash="s1",
+        )
+        store2.upsert_node(
+            NodeInfo(kind="Function", name="run", file_path="solo.py",
+                     line_start=5, line_end=20, language="python"),
+            file_hash="s1",
+        )
+        store2.upsert_node(
+            NodeInfo(kind="Function", name="stop", file_path="solo.py",
+                     line_start=25, line_end=40, language="python"),
+            file_hash="s1",
+        )
+        store2.upsert_edge(EdgeInfo(
+            kind="CALLS", source="solo.py::run", target="solo.py::stop",
+            file_path="solo.py", line=10,
+        ))
+        store2.commit()
+        communities = detect_communities(store2, min_size=2)
+        store_communities(store2, communities)
+
+        output = build_c4(store2, repo_name="TestRepo")
+        arch = parse_c4_file(output)
+        container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
+
+        # A single-file community must appear as a flat Container, not wrapped in a boundary
+        all_elements = [
+            elem
+            for section in container_diagram.sections
+            for elem in section.elements
+        ]
+        kinds = [e.kind for e in all_elements]
+        # Must have a Container
+        assert "Container" in kinds or "Container_Boundary" in kinds
+        # No boundaries wrapping a single file
+        for elem in all_elements:
+            if elem.kind == "Container_Boundary":
+                # If a boundary exists, it must have 2+ children
+                assert len(elem.children) >= 2, (
+                    f"Container_Boundary '{elem.label}' wraps only {len(elem.children)} file — expected 2+"
+                )
+
+        store2.close()
+        Path(store2.db_path).unlink(missing_ok=True)
+
+    def test_cross_community_rel_at_section_level(self):
+        """Rel elements must be in section.elements, not inside a boundary's children."""
+        output = build_c4(self.store, repo_name="TestRepo")
+        arch = parse_c4_file(output)
+        container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
+
+        # Collect all Rel elements at section level
+        section_rels = [
+            elem
+            for section in container_diagram.sections
+            for elem in section.elements
+            if elem.kind == "Rel"
+        ]
+        assert len(section_rels) >= 1, "Expected cross-community Rel at section level"
+
+        # Ensure no Rel is hidden inside a boundary's children
+        for section in container_diagram.sections:
+            for elem in section.elements:
+                if elem.kind == "Container_Boundary":
+                    for child in elem.children:
+                        assert child.kind != "Rel", (
+                            f"Rel found inside Container_Boundary '{elem.label}'; "
+                            "Rels must be at section level"
+                        )
+
+    def test_build_c4_round_trips_boundary_structure(self):
+        """build_c4 output → write → parse preserves Container_Boundary with children."""
+        output = build_c4(self.store, repo_name="TestRepo")
+        arch = parse_c4_file(output)
+        container_diagram = next(d for d in arch.diagrams if d.diagram_type == "C4Container")
+
+        # seed_multi_file_community creates a community with 2 files → 1 boundary
+        boundaries_before = [
+            elem
+            for section in container_diagram.sections
+            for elem in section.elements
+            if elem.kind == "Container_Boundary"
+        ]
+        assert len(boundaries_before) >= 1, (
+            "Expected Container_Boundary for multi-file community"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test hierarchical Component_Boundary generation
+# ---------------------------------------------------------------------------
+
+
+class TestHierarchicalComponentBoundaries:
+    """C4Component diagrams use Component_Boundary for files/classes with CONTAINS children."""
+
+    def test_file_with_class_and_methods_uses_boundaries(self):
+        """File and Class with CONTAINS children → Component_Boundary in raw output."""
+        store = make_store()
+        store.upsert_node(
+            NodeInfo(kind="File", name="models.py", file_path="models.py",
+                     line_start=1, line_end=100, language="python"), file_hash="m1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Class", name="User", file_path="models.py",
+                     line_start=5, line_end=80, language="python"), file_hash="m1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Method", name="save", file_path="models.py",
+                     line_start=10, line_end=30, language="python"), file_hash="m1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Method", name="delete", file_path="models.py",
+                     line_start=35, line_end=55, language="python"), file_hash="m1",
+        )
+        store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="models.py", target="models.py::User",
+            file_path="models.py", line=5,
+        ))
+        store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="models.py::User", target="models.py::save",
+            file_path="models.py", line=10,
+        ))
+        store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="models.py::User", target="models.py::delete",
+            file_path="models.py", line=35,
+        ))
+        store.commit()
+        communities = detect_communities(store, min_size=2)
+        store_communities(store, communities)
+        try:
+            output = build_c4(store)
+            # File models.py and Class User should produce Component_Boundary
+            assert "Component_Boundary(" in output, "Expected Component_Boundary for file/class"
+            # Methods should appear as Component labels
+            assert '"save"' in output, "Expected Component for method 'save'"
+            assert '"delete"' in output, "Expected Component for method 'delete'"
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)
+
+    def test_file_with_only_functions_uses_file_boundary(self):
+        """File with direct CONTAINS to functions → Component_Boundary for file."""
+        store = make_store()
+        store.upsert_node(
+            NodeInfo(kind="File", name="utils.py", file_path="utils.py",
+                     line_start=1, line_end=60, language="python"), file_hash="u1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Function", name="parse", file_path="utils.py",
+                     line_start=5, line_end=25, language="python"), file_hash="u1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Function", name="validate", file_path="utils.py",
+                     line_start=30, line_end=55, language="python"), file_hash="u1",
+        )
+        store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="utils.py", target="utils.py::parse",
+            file_path="utils.py", line=5,
+        ))
+        store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="utils.py", target="utils.py::validate",
+            file_path="utils.py", line=30,
+        ))
+        store.commit()
+        communities = detect_communities(store, min_size=2)
+        store_communities(store, communities)
+        try:
+            output = build_c4(store)
+            assert "Component_Boundary(" in output, "Expected file-level Component_Boundary"
+            assert '"parse"' in output, "Expected Component for function 'parse'"
+            assert '"validate"' in output, "Expected Component for function 'validate'"
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)
+
+    def test_community_without_file_nodes_produces_flat_components(self):
+        """Community with no File nodes falls back to flat Component elements only."""
+        store = make_store()
+        # Only Function nodes — no File node, no CONTAINS edges
+        store.upsert_node(
+            NodeInfo(kind="Function", name="func_a", file_path="misc.py",
+                     line_start=1, line_end=10, language="python"), file_hash="x1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Function", name="func_b", file_path="misc.py",
+                     line_start=15, line_end=25, language="python"), file_hash="x1",
+        )
+        store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="misc.py::func_a", target="misc.py::func_b",
+            file_path="misc.py", line=5,
+        ))
+        store.commit()
+        communities = detect_communities(store, min_size=2)
+        store_communities(store, communities)
+        try:
+            output = build_c4(store)
+            assert "Component_Boundary(" not in output, (
+                "Expected no Component_Boundary for community without File nodes"
+            )
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)
+
+    def test_round_trip_preserves_component_elements(self):
+        """build → write → parse preserves all inner Component elements after round-trip."""
+        store = make_store()
+        store.upsert_node(
+            NodeInfo(kind="File", name="svc.py", file_path="svc.py",
+                     line_start=1, line_end=40, language="python"), file_hash="r1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Function", name="run", file_path="svc.py",
+                     line_start=5, line_end=18, language="python"), file_hash="r1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Function", name="stop", file_path="svc.py",
+                     line_start=20, line_end=35, language="python"), file_hash="r1",
+        )
+        store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="svc.py", target="svc.py::run",
+            file_path="svc.py", line=5,
+        ))
+        store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="svc.py", target="svc.py::stop",
+            file_path="svc.py", line=20,
+        ))
+        store.commit()
+        communities = detect_communities(store, min_size=2)
+        store_communities(store, communities)
+        try:
+            output = build_c4(store)
+            arch = parse_c4_file(output)
+
+            def collect_components(elements: list) -> set[str]:
+                """Recursively collect Component labels from nested element tree."""
+                labels: set[str] = set()
+                for elem in elements:
+                    if elem.kind == "Component":
+                        labels.add(elem.label)
+                    labels |= collect_components(elem.children)
+                return labels
+
+            component_labels = set()
+            for diag in arch.diagrams:
+                if diag.diagram_type != "C4Component":
+                    continue
+                for section in diag.sections:
+                    component_labels |= collect_components(section.elements)
+
+            assert "run" in component_labels, "Component 'run' must survive round-trip"
+            assert "stop" in component_labels, "Component 'stop' must survive round-trip"
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)

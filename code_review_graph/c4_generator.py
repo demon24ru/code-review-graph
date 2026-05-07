@@ -112,7 +112,8 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
 
     Produces three diagram types:
     - C4Context stub (empty, for LLM/human population)
-    - C4Container (one Container per community with cross-community Rels)
+    - C4Container (one Container_Boundary per community with file Container children;
+      cross-community Rels at the top level)
     - C4Component (one diagram per community with member Components)
 
     Args:
@@ -133,30 +134,125 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
     comm_by_id: dict[int, dict[str, Any]] = {c["id"]: c for c in communities}
 
     # -------------------------------------------------------------------
-    # C4Context diagram — empty stub for designers
+    # C4Context diagram — with System element representing the repository
     # -------------------------------------------------------------------
+    system_id = _slugify(display_name) + "_system"
     context_diagram = C4Diagram(
         title=f"{display_name} Context",
         diagram_type="C4Context",
-        sections=[],
+        sections=[
+            C4Section(
+                marker_type="AUTO",
+                marker_id="context",
+                timestamp=today,
+                elements=[
+                    C4Element(
+                        kind="System",
+                        id=system_id,
+                        label=display_name,
+                        description="Code repository",
+                    )
+                ],
+            )
+        ],
         loose_elements=[],
     )
 
     # -------------------------------------------------------------------
-    # C4Container diagram — one Container element per community
+    # C4Container diagram
+    #
+    # Grouping strategy:
+    #   - A file may appear in many small communities (Leiden artefact).
+    #     We assign each file to its *dominant* community — the one that
+    #     contributes the most nodes to that file.
+    #   - Communities that end up with 2+ distinct files are rendered as
+    #     Container_Boundary(community) { Container(file) … }
+    #   - Communities that end up with exactly 1 file are collapsed: the
+    #     file is emitted as a flat Container (no wrapping boundary).
+    #   - Communities with no file data fall back to a flat Container node.
     # -------------------------------------------------------------------
-    container_elements: list[C4Element] = []
+
+    # Step 1: collect every (file_path, comm_id) → node count
+    file_comm_count: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    comm_info: dict[int, Any] = {c["id"]: c for c in communities}
+
     for comm in communities:
-        elem_id = _slugify(comm["name"])
-        container_elements.append(
-            C4Element(
-                kind="Container",
-                id=elem_id,
-                label=comm["name"],
-                technology=comm.get("dominant_language", ""),
-                description=f"{comm['size']} nodes, cohesion {comm['cohesion']:.2f}",
-            )
+        for n in store.get_nodes_by_community_id(comm["id"]):
+            if n.file_path:
+                file_comm_count[n.file_path][comm["id"]] += 1
+
+    # Step 2: assign each file to its dominant community
+    file_dominant_comm: dict[str, int] = {}
+    for file_path, comm_counts in file_comm_count.items():
+        file_dominant_comm[file_path] = max(comm_counts, key=lambda k: comm_counts[k])
+
+    # Step 3: group files by dominant community
+    comm_files: dict[int, list[str]] = defaultdict(list)
+    for file_path, comm_id in file_dominant_comm.items():
+        comm_files[comm_id].append(file_path)
+
+    # Step 4: collect per-file metadata (prefer File-kind node)
+    file_meta: dict[str, dict[str, Any]] = {}
+    for comm in communities:
+        for n in store.get_nodes_by_community_id(comm["id"]):
+            fp = n.file_path
+            if not fp:
+                continue
+            if fp not in file_meta:
+                file_meta[fp] = {"label": Path(fp).name, "tech": n.language or "", "desc": ""}
+            if n.kind == "File":
+                n_lines = (n.line_end or 1) - (n.line_start or 1) + 1
+                file_meta[fp] = {
+                    "label": n.name,
+                    "tech": n.language or "",
+                    "desc": f"{n_lines} lines",
+                }
+
+    def _make_file_container(fp: str) -> C4Element:
+        meta = file_meta.get(fp, {"label": Path(fp).name, "tech": "", "desc": ""})
+        if not meta["desc"]:
+            meta["desc"] = f"{len(file_comm_count[fp])} communities"
+        return C4Element(
+            kind="Container",
+            id=_slugify(fp),
+            label=meta["label"],
+            technology=meta["tech"],
+            description=meta["desc"],
         )
+
+    container_elements: list[C4Element] = []
+    processed_comm_ids: set[int] = set()
+
+    for comm in communities:
+        comm_id = comm["id"]
+        files = sorted(comm_files.get(comm_id, []))
+
+        if not files:
+            # No file data — emit a flat Container for the community itself
+            container_elements.append(
+                C4Element(
+                    kind="Container",
+                    id=_slugify(comm["name"]),
+                    label=comm["name"],
+                    technology=comm.get("dominant_language", ""),
+                    description=f"{comm['size']} nodes",
+                )
+            )
+            processed_comm_ids.add(comm_id)
+        elif len(files) == 1:
+            # Single file → flat Container, no boundary wrapper
+            container_elements.append(_make_file_container(files[0]))
+            processed_comm_ids.add(comm_id)
+        else:
+            # Multiple files → Container_Boundary wrapping file Containers
+            boundary = C4Element(
+                kind="Container_Boundary",
+                id=_slugify(comm["name"]),
+                label=comm["name"],
+                children=[_make_file_container(fp) for fp in files],
+            )
+            container_elements.append(boundary)
+            processed_comm_ids.add(comm_id)
 
     # Aggregate cross-community edges by (src_community_id, tgt_community_id)
     # to avoid duplicate Rel lines for the same pair.
@@ -209,76 +305,147 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
     )
 
     # -------------------------------------------------------------------
-    # C4Component diagrams — one per community
+    # C4Component diagrams — one per Container group
+    #
+    # Each group corresponds to one top-level element in Container diagram:
+    #   - multi-file community → one Component diagram for the whole community
+    #   - single-file community → one Component diagram for that file only
     # -------------------------------------------------------------------
     component_diagrams: list[C4Diagram] = []
     all_graph_edges = store.get_all_edges()
 
-    for comm in communities:
-        comm_slug = _slugify(comm["name"])
-        comm_id = comm["id"]
-        members_set: set[str] = set(comm.get("members", []))
+    # Build a helper that generates a Component diagram for a given set of nodes
+    def _build_component_diagram(
+        title: str,
+        marker_id: str,
+        member_nodes: list[Any],
+    ) -> C4Diagram:
+        members_set: set[str] = {n.qualified_name for n in member_nodes}
 
-        # Full node details for community members
-        member_nodes = store.get_nodes_by_community_id(comm_id)
-
-        # Partition members: private helpers (leading _ but not __) vs visible
-        private_helper_qns: set[str] = set()
-        for node in member_nodes:
-            if node.name.startswith("_") and not node.name.startswith("__"):
-                private_helper_qns.add(node.qualified_name)
+        private_helper_qns: set[str] = {
+            n.qualified_name
+            for n in member_nodes
+            if n.name.startswith("_") and not n.name.startswith("__")
+        }
         visible_qns: set[str] = members_set - private_helper_qns
 
-        # Count incoming CALLS per community node for hub detection (threshold 10)
         incoming_calls_count: dict[str, int] = defaultdict(int)
-        for edge in all_graph_edges:
-            if (
-                edge.kind == "CALLS"
-                and edge.source_qualified in members_set
-                and edge.target_qualified in members_set
-            ):
-                incoming_calls_count[edge.target_qualified] += 1
-
-        # Build CALLS adjacency map for private-helper collapse BFS
         calls_adj: dict[str, set[str]] = defaultdict(set)
+        contains_map: dict[str, list[str]] = defaultdict(list)
+
         for edge in all_graph_edges:
-            if (
-                edge.kind == "CALLS"
-                and edge.source_qualified in members_set
-                and edge.target_qualified in members_set
-            ):
-                calls_adj[edge.source_qualified].add(edge.target_qualified)
+            src, tgt = edge.source_qualified, edge.target_qualified
+            if edge.kind == "CALLS" and src in members_set and tgt in members_set:
+                incoming_calls_count[tgt] += 1
+                calls_adj[src].add(tgt)
+            elif edge.kind == "CONTAINS" and src in members_set and tgt in members_set:
+                contains_map[src].append(tgt)
 
-        component_elements: list[C4Element] = []
         qn_to_slug: dict[str, str] = {}
-
         for node in member_nodes:
             if node.qualified_name in private_helper_qns:
-                continue  # private helpers excluded from component diagram
-            # Use qualified_name for slug if reasonably short; otherwise fall
-            # back to bare name to keep identifiers manageable.
+                continue
             raw = node.qualified_name if len(node.qualified_name) <= 60 else node.name
-            node_slug = _slugify(raw)
-            qn_to_slug[node.qualified_name] = node_slug
-            is_hub = incoming_calls_count[node.qualified_name] > 10
-            description = f"{node.file_path}:{node.line_start}"
-            if is_hub:
-                description += " (hub)"
-            component_elements.append(
-                C4Element(
-                    kind="Component",
-                    id=node_slug,
-                    label=node.name,
-                    technology=node.kind,
-                    description=description,
-                )
-            )
+            qn_to_slug[node.qualified_name] = _slugify(raw)
 
-        # Internal edges: CONTAINS filtered, private helpers collapsed in CALLS
+        qn_to_node = {n.qualified_name: n for n in member_nodes}
+        placed_qns: set[str] = set()
+        component_elements: list[C4Element] = []
+
+        for file_node in member_nodes:
+            if file_node.kind != "File" or file_node.qualified_name in private_helper_qns:
+                continue
+            fqn = file_node.qualified_name
+            placed_qns.add(fqn)
+            file_children = [
+                c for c in contains_map.get(fqn, []) if c not in private_helper_qns
+            ]
+            if not file_children:
+                is_hub = incoming_calls_count[fqn] > 10
+                desc = f"{file_node.file_path}:{file_node.line_start}"
+                if is_hub:
+                    desc += " (hub)"
+                component_elements.append(C4Element(
+                    kind="Component",
+                    id=qn_to_slug.get(fqn, _slugify(file_node.name)),
+                    label=file_node.name,
+                    technology=file_node.kind,
+                    description=desc,
+                ))
+                continue
+            file_boundary_children: list[C4Element] = []
+            for child_qn in file_children:
+                placed_qns.add(child_qn)
+                child_node = qn_to_node.get(child_qn)
+                if child_node is None:
+                    continue
+                class_children = [
+                    c for c in contains_map.get(child_qn, []) if c not in private_helper_qns
+                ]
+                if child_node.kind == "Class" and class_children:
+                    method_elems: list[C4Element] = []
+                    for method_qn in class_children:
+                        placed_qns.add(method_qn)
+                        method_node = qn_to_node.get(method_qn)
+                        if method_node is None:
+                            continue
+                        is_hub = incoming_calls_count[method_qn] > 10
+                        desc = f"{method_node.file_path}:{method_node.line_start}"
+                        if is_hub:
+                            desc += " (hub)"
+                        method_elems.append(C4Element(
+                            kind="Component",
+                            id=qn_to_slug.get(method_qn, _slugify(method_node.name)),
+                            label=method_node.name,
+                            technology=method_node.kind,
+                            description=desc,
+                        ))
+                    file_boundary_children.append(C4Element(
+                        kind="Component_Boundary",
+                        id=qn_to_slug.get(child_qn, _slugify(child_node.name)),
+                        label=child_node.name,
+                        children=method_elems,
+                    ))
+                else:
+                    is_hub = incoming_calls_count[child_qn] > 10
+                    desc = f"{child_node.file_path}:{child_node.line_start}"
+                    if is_hub:
+                        desc += " (hub)"
+                    file_boundary_children.append(C4Element(
+                        kind="Component",
+                        id=qn_to_slug.get(child_qn, _slugify(child_node.name)),
+                        label=child_node.name,
+                        technology=child_node.kind,
+                        description=desc,
+                    ))
+            component_elements.append(C4Element(
+                kind="Component_Boundary",
+                id=qn_to_slug.get(fqn, _slugify(file_node.name)),
+                label=file_node.name,
+                children=file_boundary_children,
+            ))
+
+        # Orphan nodes not reachable as children of any File
+        for node in member_nodes:
+            if node.qualified_name in private_helper_qns or node.qualified_name in placed_qns:
+                continue
+            if node.qualified_name not in qn_to_slug:
+                continue
+            is_hub = incoming_calls_count[node.qualified_name] > 10
+            desc = f"{node.file_path}:{node.line_start}"
+            if is_hub:
+                desc += " (hub)"
+            component_elements.append(C4Element(
+                kind="Component",
+                id=qn_to_slug[node.qualified_name],
+                label=node.name,
+                technology=node.kind,
+                description=desc,
+            ))
+
+        # Internal CALLS edges
         internal_rels: list[C4Element] = []
         seen_rels: set[tuple[str, str]] = set()
-
-        # CALLS edges: BFS collapses any private-helper intermediaries
         for src_qn in visible_qns:
             for tgt_qn in _visible_targets_via_calls(src_qn, calls_adj, private_helper_qns):
                 src_slug = qn_to_slug.get(src_qn)
@@ -287,55 +454,70 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
                     rel_key = (src_slug, tgt_slug)
                     if rel_key not in seen_rels:
                         seen_rels.add(rel_key)
-                        internal_rels.append(
-                            C4Element(
-                                kind="Rel",
-                                id=src_slug,
-                                label="calls",
-                                technology="",
-                                target_id=tgt_slug,
-                            )
-                        )
+                        internal_rels.append(C4Element(
+                            kind="Rel", id=src_slug, label="calls",
+                            technology="", target_id=tgt_slug,
+                        ))
 
-        # Non-CALLS, non-CONTAINS edges: include only if both endpoints visible
         for edge in all_graph_edges:
             if edge.kind in ("CALLS", "CONTAINS"):
-                continue  # CALLS handled above; CONTAINS are structural noise
-            if (
-                edge.source_qualified in visible_qns
-                and edge.target_qualified in visible_qns
-            ):
+                continue
+            if edge.source_qualified in visible_qns and edge.target_qualified in visible_qns:
                 src_slug = qn_to_slug.get(edge.source_qualified)
                 tgt_slug = qn_to_slug.get(edge.target_qualified)
                 if src_slug and tgt_slug and src_slug != tgt_slug:
                     rel_key = (src_slug, tgt_slug)
                     if rel_key not in seen_rels:
                         seen_rels.add(rel_key)
-                        internal_rels.append(
-                            C4Element(
-                                kind="Rel",
-                                id=src_slug,
-                                label=edge.kind.lower(),
-                                technology="",
-                                target_id=tgt_slug,
-                            )
-                        )
+                        internal_rels.append(C4Element(
+                            kind="Rel", id=src_slug, label=edge.kind.lower(),
+                            technology="", target_id=tgt_slug,
+                        ))
 
-        section_elements = component_elements + internal_rels
-        component_diagrams.append(
-            C4Diagram(
-                title=f"{comm['name']} Components",
-                diagram_type="C4Component",
-                sections=[
-                    C4Section(
-                        marker_type="AUTO",
-                        marker_id=f"components:{comm_slug}",
-                        timestamp=today,
-                        elements=section_elements,
-                    )
-                ],
-            )
+        return C4Diagram(
+            title=title,
+            diagram_type="C4Component",
+            sections=[C4Section(
+                marker_type="AUTO",
+                marker_id=f"components:{marker_id}",
+                timestamp=today,
+                elements=component_elements + internal_rels,
+            )],
         )
+
+    # Generate one Component diagram per Container group
+    for comm in communities:
+        comm_id = comm["id"]
+        files = sorted(comm_files.get(comm_id, []))
+        if not files:
+            # No-file community: pass all community member nodes
+            member_nodes = store.get_nodes_by_community_id(comm_id)
+            if member_nodes:
+                component_diagrams.append(_build_component_diagram(
+                    title=f"{comm['name']} Components",
+                    marker_id=_slugify(comm["name"]),
+                    member_nodes=member_nodes,
+                ))
+        elif len(files) == 1:
+            # Single-file: diagram keyed by file name
+            fp = files[0]
+            all_nodes_for_file = store.get_nodes_by_community_id(comm_id)
+            file_nodes = [n for n in all_nodes_for_file if n.file_path == fp]
+            if file_nodes:
+                component_diagrams.append(_build_component_diagram(
+                    title=f"{Path(fp).stem} Components",
+                    marker_id=_slugify(fp),
+                    member_nodes=file_nodes,
+                ))
+        else:
+            # Multi-file community: all nodes together
+            member_nodes = store.get_nodes_by_community_id(comm_id)
+            if member_nodes:
+                component_diagrams.append(_build_component_diagram(
+                    title=f"{comm['name']} Components",
+                    marker_id=_slugify(comm["name"]),
+                    member_nodes=member_nodes,
+                ))
 
     arch = C4Architecture(
         diagrams=[context_diagram, container_diagram] + component_diagrams
@@ -429,17 +611,24 @@ def resolve_for_render(arch: C4Architecture, diagram_title: str) -> list[dict[st
     auto_elements: dict[str, C4Element] = {}
     feature_elements: dict[str, C4Element] = {}
 
-    _NON_NODE_KINDS = frozenset({"Rel", "UpdateElementStyle", "Container_Boundary"})
+    # Rel and UpdateElementStyle are not renderable graph nodes.
+    # Boundary kinds (Container_Boundary, Component_Boundary) ARE nodes —
+    # they act as compound parents in Cytoscape and must be included.
+    _NON_NODE_KINDS = frozenset({"Rel", "UpdateElementStyle"})
+
+    def _collect(elem: C4Element, target: dict[str, C4Element]) -> None:
+        if elem.kind not in _NON_NODE_KINDS:
+            target[elem.id] = elem
+        for child in elem.children:
+            _collect(child, target)
 
     for section in target_diagram.sections:
         if section.marker_type == "AUTO":
             for elem in section.elements:
-                if elem.kind not in _NON_NODE_KINDS:
-                    auto_elements[elem.id] = elem
+                _collect(elem, auto_elements)
         elif section.marker_type == "FEATURE":
             for elem in section.elements:
-                if elem.kind not in _NON_NODE_KINDS:
-                    feature_elements[elem.id] = elem
+                _collect(elem, feature_elements)
 
     result: list[dict[str, Any]] = []
 

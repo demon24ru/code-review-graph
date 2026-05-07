@@ -38,6 +38,8 @@ class C4Element:
     """For UpdateElementStyle: dollar-prefixed key→value pairs."""
     raw_line: str = ""
     """Original source line for exact round-trip."""
+    children: list[C4Element] = field(default_factory=list)
+    """Nested elements inside Container_Boundary / Component_Boundary blocks."""
 
 
 @dataclass
@@ -147,6 +149,10 @@ def _parse_element(stripped: str, raw_line: str) -> Optional[C4Element]:
     Returns:
         C4Element if the line is recognized, None otherwise.
     """
+    # Container_Boundary uses block syntax: "Container_Boundary(...) {" — strip the trailing {
+    if stripped.endswith("{"):
+        stripped = stripped[:-1].rstrip()
+
     # Match KEYWORD(args)
     m = re.match(r"^(\w+)\((.+)\)\s*$", stripped, re.DOTALL)
     if not m:
@@ -219,7 +225,7 @@ def _parse_element(stripped: str, raw_line: str) -> Optional[C4Element]:
             raw_line=raw_line,
         )
 
-    if kind == "Container_Boundary":
+    if kind in ("Container_Boundary", "Component_Boundary"):
         # Container_Boundary(id, "label")
         elem_id = args[0] if len(args) > 0 else ""
         label = args[1] if len(args) > 1 else ""
@@ -264,6 +270,7 @@ def _parse_diagram(title: str, body: str) -> C4Diagram:
     loose_elements: list[C4Element] = []
 
     current_section: Optional[C4Section] = None
+    boundary_stack: list[C4Element] = []  # stack for nested block boundaries
 
     lines = body.splitlines()
     for raw_line in lines:
@@ -288,6 +295,7 @@ def _parse_diagram(title: str, body: str) -> C4Diagram:
                 marker_id=marker_id,
                 timestamp=timestamp,
             )
+            boundary_stack.clear()
             continue
 
         # Closing section marker
@@ -296,14 +304,17 @@ def _parse_diagram(title: str, body: str) -> C4Diagram:
             if current_section is not None:
                 sections.append(current_section)
                 current_section = None
+                boundary_stack.clear()
             continue
 
         # Skip bare comment lines (not markers)
         if stripped.startswith("%%"):
             continue
 
-        # Skip closing braces from Container_Boundary
+        # Closing brace — pops one level from the boundary stack
         if stripped == "}":
+            if boundary_stack:
+                boundary_stack.pop()
             continue
 
         # Skip title lines inside body (already captured)
@@ -313,7 +324,23 @@ def _parse_diagram(title: str, body: str) -> C4Diagram:
         # Try parsing as an element
         elem = _parse_element(stripped, raw_line)
         if elem is not None:
-            if current_section is not None:
+            # Detect block-boundary: element has raw_line ending with { (block syntax)
+            is_block_boundary = (
+                elem.kind in _BOUNDARY_KINDS and elem.raw_line.strip().endswith("{")
+            )
+            if is_block_boundary:
+                # Add to current scope (parent boundary, section, or loose)
+                if boundary_stack:
+                    boundary_stack[-1].children.append(elem)
+                elif current_section is not None:
+                    current_section.elements.append(elem)
+                else:
+                    loose_elements.append(elem)
+                boundary_stack.append(elem)
+            elif boundary_stack:
+                # Inside a block boundary — child of the deepest open boundary
+                boundary_stack[-1].children.append(elem)
+            elif current_section is not None:
                 current_section.elements.append(elem)
             else:
                 loose_elements.append(elem)
@@ -423,8 +450,8 @@ def _write_element(elem: C4Element) -> str:
             parts.append(_quote(elem.description))
         return f"{k}({', '.join(parts)})"
 
-    if k == "Container_Boundary":
-        return f"Container_Boundary({elem.id}, {_quote(elem.label)}) {{"
+    if k in ("Container_Boundary", "Component_Boundary"):
+        return f"{k}({elem.id}, {_quote(elem.label)}) {{"
 
     if k == "Rel":
         parts = [elem.id, elem.target_id, _quote(elem.label)]
@@ -434,6 +461,25 @@ def _write_element(elem: C4Element) -> str:
 
     # Fallback: best-effort
     return f"{k}({elem.id}, {_quote(elem.label)})"
+
+
+_BOUNDARY_KINDS = ("Container_Boundary", "Component_Boundary")
+
+
+def _write_element_block(elem: C4Element, indent: str = "") -> list[str]:
+    """Serialize one element to a list of indented lines, recursing into children.
+
+    For boundary elements that have (or may have) a ``children`` list this
+    produces the full ``KIND(...) { ... }`` block.  All other elements produce
+    a single-item list.
+    """
+    if elem.kind in _BOUNDARY_KINDS:
+        lines: list[str] = [f"{indent}{_write_element(elem)}"]
+        for child in elem.children:
+            lines.extend(_write_element_block(child, indent + "  "))
+        lines.append(f"{indent}}}")
+        return lines
+    return [f"{indent}{_write_element(elem)}"]
 
 
 def write_c4_file(arch: C4Architecture) -> str:
@@ -459,7 +505,7 @@ def write_c4_file(arch: C4Architecture) -> str:
 
         # Loose elements (before any section)
         for elem in diagram.loose_elements:
-            parts.append(_write_element(elem))
+            parts.extend(_write_element_block(elem))
 
         if diagram.loose_elements and diagram.sections:
             parts.append("")
@@ -469,7 +515,7 @@ def write_c4_file(arch: C4Architecture) -> str:
             ts = f" {section.timestamp}" if section.timestamp else ""
             parts.append(f"%% [{section.marker_type}:{section.marker_id}{ts}]")
             for elem in section.elements:
-                parts.append(f"  {_write_element(elem)}")
+                parts.extend(_write_element_block(elem, "  "))
             parts.append(f"%% [/{section.marker_type}:{section.marker_id}]")
             parts.append("")
 

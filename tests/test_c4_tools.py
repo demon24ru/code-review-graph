@@ -297,3 +297,140 @@ def test_update_skeleton_no_file(tmp_path):
 
     assert result.get("status") == "error" or "error" in str(result).lower()
     assert "architecture.c4" in str(result).lower() or "not found" in str(result).lower()
+
+
+# ---------------------------------------------------------------------------
+# Nested element (children) tests
+# ---------------------------------------------------------------------------
+
+SAMPLE_C4_NESTED = """\
+---
+title: Auth Components
+---
+C4Component
+
+%% [AUTO:components:auth 2026-05-01]
+  Container_Boundary(auth_boundary, "Auth Boundary") {
+    Component(nested_auto, "Nested Auto", "Function", "auth.py:10")
+  }
+%% [/AUTO:components:auth]
+
+%% [FEATURE:test:t1 2026-05-01]
+  Container_Boundary(feature_boundary, "Feature Boundary") {
+    Component(nested_feature, "Nested Feature", "Function", "feature.py:1")
+  }
+%% [/FEATURE:test:t1]
+
+"""
+
+
+def test_modify_finds_nested_element(tmp_path):
+    """modify should find elements nested inside Container_Boundary children."""
+    repo = _make_repo(tmp_path)
+    _write_c4(repo, SAMPLE_C4_NESTED)
+
+    result = update_architecture_skeleton_func(
+        feature_tag="update:nested",
+        operations=[
+            {
+                "op": "modify",
+                "diagram": "Auth Components",
+                "element_id": "nested_auto",
+                "changes": {"description": "modified desc"},
+            }
+        ],
+        repo_root=str(repo),
+    )
+
+    assert result["status"] == "ok"
+    assert result["applied"] == 1
+    assert result["skipped"] == 0
+
+    written = (repo / ".code-review-graph" / "architecture.c4").read_text(encoding="utf-8")
+    assert "modified desc" in written
+
+
+def test_remove_nested_element_from_feature(tmp_path):
+    """remove should delete elements that live inside Container_Boundary children."""
+    repo = _make_repo(tmp_path)
+    _write_c4(repo, SAMPLE_C4_NESTED)
+
+    result = update_architecture_skeleton_func(
+        feature_tag="anything",
+        operations=[
+            {
+                "op": "remove",
+                "diagram": "Auth Components",
+                "element_id": "nested_feature",
+            }
+        ],
+        repo_root=str(repo),
+    )
+
+    assert result["status"] == "ok"
+    assert result["applied"] == 1
+    assert result["skipped"] == 0
+
+    written = (repo / ".code-review-graph" / "architecture.c4").read_text(encoding="utf-8")
+    assert "nested_feature" not in written
+
+
+def test_add_child_to_feature_boundary(tmp_path):
+    """add_child should append a new element to the parent's children list."""
+    repo = _make_repo(tmp_path)
+    _write_c4(repo, SAMPLE_C4_NESTED)
+
+    result = update_architecture_skeleton_func(
+        feature_tag="test:t1",
+        operations=[
+            {
+                "op": "add_child",
+                "diagram": "Auth Components",
+                "parent_id": "feature_boundary",
+                "element": {
+                    "kind": "Component",
+                    "id": "new_child",
+                    "label": "New Child",
+                    "technology": "Python",
+                    "description": "added child",
+                },
+            }
+        ],
+        repo_root=str(repo),
+    )
+
+    assert result["status"] == "ok"
+    assert result["applied"] == 1
+    assert result["skipped"] == 0
+
+    written = (repo / ".code-review-graph" / "architecture.c4").read_text(encoding="utf-8")
+    assert "new_child" in written
+    assert "New Child" in written
+
+
+def test_add_child_to_auto_section_returns_error(tmp_path):
+    """add_child to an AUTO-section element must be rejected."""
+    repo = _make_repo(tmp_path)
+    _write_c4(repo, SAMPLE_C4_NESTED)
+
+    result = update_architecture_skeleton_func(
+        feature_tag="test:t1",
+        operations=[
+            {
+                "op": "add_child",
+                "diagram": "Auth Components",
+                "parent_id": "auth_boundary",  # lives in AUTO section
+                "element": {
+                    "kind": "Component",
+                    "id": "bad_child",
+                    "label": "Bad Child",
+                },
+            }
+        ],
+        repo_root=str(repo),
+    )
+
+    assert result["status"] == "ok"
+    assert result["applied"] == 0
+    assert result["skipped"] == 1
+    assert any("AUTO" in e for e in result["errors"])

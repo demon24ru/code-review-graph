@@ -12,6 +12,7 @@ Lifecycle: start_dashboard() blocks until Ctrl+C.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import webbrowser
@@ -93,8 +94,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_sequence(task_id=task_id, flow_name=flow_name, flow_id=flow_id)
         elif path == "/api/sequence-flows":
             self._serve_sequence_flows()
-        elif path == "/api/execution-order":
-            self._serve_execution_order()
         elif path == "/api/timeline":
             self._serve_timeline()
         elif path == "/api/c4/node-details":
@@ -169,7 +168,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_page(self) -> None:
-        body = _PAGE_HTML.read_bytes()
+        # body = _PAGE_HTML.read_bytes()
+        body = (Path(__file__).resolve().parent / "ui" / "index.html").read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -182,15 +182,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _serve_c4(self) -> None:
         if not _C4_AVAILABLE:
-            self._json_response({"levels": {}, "error": "c4 modules not available"})
+            self._json_response({"containers": {}, "components": {}, "error": "c4 modules not available"})
             return
         c4_path = get_c4_path(str(self.repo_root))
         if not c4_path.exists():
-            self._json_response({"levels": {}})
+            self._json_response({"containers": {}, "components": {}})
             return
         try:
             arch = parse_c4_file(c4_path.read_text(encoding="utf-8"))
-            levels: dict[str, Any] = {}
+            containers: dict[str, Any] = {}
+            components: dict[str, Any] = {}
             for diagram in arch.diagrams:
                 nodes = resolve_for_render(arch, diagram.title)
                 edges: list[dict[str, Any]] = []
@@ -209,11 +210,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             "target": elem.target_id,
                             "label": elem.label,
                         })
-                slug = diagram.title.replace(" ", "_")
-                levels[slug] = {"title": diagram.title, "nodes": nodes, "edges": edges}
-            self._json_response({"levels": levels})
+                # Build parent_child_map from boundary/compound elements
+                parent_child_map: dict[str, list[str]] = {}
+                for section in diagram.sections:
+                    for elem in section.elements:
+                        if elem.children:
+                            parent_child_map[elem.id] = [c.id for c in elem.children]
+                            for child in elem.children:
+                                if child.children:
+                                    parent_child_map[child.id] = [gc.id for gc in child.children]
+                level_data: dict[str, Any] = {
+                    "title": diagram.title,
+                    "nodes": nodes,
+                    "edges": edges,
+                    "parent_child_map": parent_child_map,
+                }
+                if diagram.diagram_type == "C4Container":
+                    containers = level_data
+                elif diagram.diagram_type == "C4Component":
+                    # community slug matches the Container_Boundary id in Containers diagram
+                    comm_name = (
+                        diagram.title[: -len(" Components")]
+                        if diagram.title.endswith(" Components")
+                        else diagram.title
+                    )
+                    comm_slug = re.sub(r"[^a-z0-9]+", "_", comm_name.lower()).strip("_") or "node"
+                    components[comm_slug] = level_data
+            self._json_response({"containers": containers, "components": components})
         except Exception as exc:
-            self._json_response({"levels": {}, "error": str(exc)})
+            self._json_response({"containers": {}, "components": {}, "error": str(exc)})
 
     # ------------------------------------------------------------------
     # GET /api/c4/node-details
@@ -339,7 +364,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Code refs for this task (JOIN with nodes to get qualified_name)
             code_ref_rows = conn.execute(
                 "SELECT tcr.ref_type, COALESCE(n.qualified_name, tcr.code_node_id) as qualified_name, "
-                "tcr.description, n.name "
+                "tcr.description, n.name, n.kind, n.line_start, n.line_end "
                 "FROM task_code_refs tcr "
                 "LEFT JOIN nodes n ON n.id = tcr.code_node_id "
                 "WHERE tcr.task_id = ?",
@@ -349,6 +374,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {
                     "ref_type": r["ref_type"],
                     "qualified_name": str(r["qualified_name"]) if r["qualified_name"] else "",
+                    "name": str(r["name"]) if r["name"] else "",
+                    "kind": str(r["kind"]) if r["kind"] else "",
+                    "line": f'{r["line_start"]}-{r["line_end"]}' if r["line_start"] and r["line_end"] else "",
                     "description": r["description"],
                 }
                 for r in code_ref_rows
@@ -396,7 +424,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "content": contract_name,       # source title
                     "status": "answered",
                     "resolution": user_text,        # user's comment text
-                    "c4_element_id": f"contract_{contract_id}",
+                    "c4_element_id": f"contract:{contract_id}",
                 }],
             )
             conn.commit()
@@ -685,9 +713,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 cd["consumers"] = consumers
                 # Fetch annotations linked to this contract via c4_element_id
                 anno_rows = conn.execute(
-                    "SELECT id, note_type, content, status, resolution FROM notes "
+                    "SELECT id, note_type, content, status, resolution, rationale FROM notes "
                     "WHERE c4_element_id = ?",
-                    (f"contract_{cd['id']}",),
+                    (f"contract:{cd['id']}",),
                 ).fetchall()
                 cd["annotations"] = [dict(r) for r in anno_rows]
                 enriched.append(cd)
@@ -706,6 +734,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         conn = self._get_conn()
         try:
             data = roadmap(conn, self.root_task_id)
+            if data.get("attention") and data["attention"].get("ready_to_start"):
+                ph = ",".join("?" * len(data["attention"]["ready_to_start"]))
+                task_rows = conn.execute(
+                    f"SELECT id, title, description, status FROM tasks WHERE id IN ({ph})",  # noqa: S608
+                    data["attention"]["ready_to_start"],
+                ).fetchall()
+                data["attention"]["ready_to_start"] = [dict(r) for r in task_rows]
         except Exception as exc:
             self._json_response({"error": str(exc)})
             return
@@ -747,8 +782,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 status="resolved",
                 include_children=True,
             )
+            rejected = list_notes(
+                conn,
+                task_id=self.root_task_id,
+                status="rejected",
+                include_children=True
+            )
             # Enrich notes with task context (title, parent title)
-            all_notes = list(open_notes) + list(answered) + list(deferred) + list(resolved)
+            all_notes = list(open_notes) + list(answered) + list(deferred) + list(resolved) + list(rejected)
             task_ids = list({n["task_id"] for n in all_notes if n.get("task_id")})
             tasks_map: dict[str, Any] = {}
             if task_ids:
@@ -780,6 +821,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "answered": [dict(n) for n in answered],
             "deferred": [dict(n) for n in deferred],
             "resolved": [dict(n) for n in resolved],
+            "rejected": [dict(n) for n in rejected],
             "task_title": self.root_title,
         })
 
@@ -848,24 +890,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"flows": []})
         finally:
             conn.close()
-
-    # ------------------------------------------------------------------
-    # GET /api/execution-order
-    # ------------------------------------------------------------------
-
-    def _serve_execution_order(self) -> None:
-        if self.root_task_id is None:
-            self._json_response({"levels": []})
-            return
-        conn = self._get_conn()
-        try:
-            data = execution_order(conn, self.root_task_id)
-        except Exception as exc:
-            self._json_response({"error": str(exc)})
-            return
-        finally:
-            conn.close()
-        self._json_response(data)
 
     # ------------------------------------------------------------------
     # GET /api/timeline

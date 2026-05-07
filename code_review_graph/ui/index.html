@@ -9,7 +9,10 @@
 <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-<style>
+<link rel="stylesheet" href="https://unpkg.com/easymde/dist/easymde.min.css">
+<script src="https://unpkg.com/easymde/dist/easymde.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/lib/marked.umd.js"></script>
+  <style>
 :root {
   --blue: #438DD5; --green: #28a745; --yellow: #ffc107; --gray: #6c757d;
   --red: #ef4444; --teal: #17a2b8; --bg: #f8f9fa; --border: #dee2e6;
@@ -58,6 +61,7 @@ header .subtitle { font-size: 0.8rem; color: #888; }
 .level-task { background: #fff; border: 1px solid var(--border); border-radius: 4px;
   padding: 6px 10px; font-size: 0.8rem; max-width: 200px; }
 .msg { color: var(--gray); padding: 40px; text-align: center; }
+.msg-error { color: var(--red); padding: 40px; text-align: center; }
 .select-row { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
 select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
   font-size: 0.875rem; }
@@ -104,6 +108,11 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
   border: 1px solid var(--border); border-radius: 4px; padding: 8px; white-space: pre-wrap;
   word-break: break-all; margin-top: 6px; }
 .c4-level-select { margin-bottom: 12px; }
+.c4-level-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+.c4-level-btn { padding: 5px 14px; border: 1px solid var(--border); border-radius: 4px;
+  background: #fff; cursor: pointer; font-size: 0.875rem; color: #495057; }
+.c4-level-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.c4-level-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .arch-layout { display: flex; gap: 12px; }
 .arch-graph-wrap { flex: 1; min-width: 0; height: calc(100vh - 260px); }
 .detail-panel {
@@ -150,6 +159,65 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
 .anno-new button { padding: 6px 14px; background: var(--blue); color: #fff; border: none;
     border-radius: 4px; cursor: pointer; font-size: 13px; }
 .anno-empty { color: var(--gray); font-size: 13px; padding: 8px 0; }
+.markdown-body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  word-wrap: break-word;
+  color: #24292e;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  margin-top: 24px;
+  margin-bottom: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+  border-bottom: 1px solid #eaecef;
+  padding-bottom: 0.3em;
+}
+.markdown-body ul, .markdown-body ol {
+  padding-left: 2em;
+  margin-bottom: 16px;
+}
+.markdown-body li {
+  margin-top: 0.25em;
+}
+.markdown-body strong {
+  font-weight: 600;
+}
+.markdown-body code {
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 85%;
+  background-color: rgba(27,31,35,0.05);
+  border-radius: 3px;
+  font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+.markdown-body pre {
+  padding: 16px;
+  overflow: auto;
+  font-size: 85%;
+  line-height: 1.45;
+  background-color: #f6f8fa;
+  border-radius: 3px;
+  margin-bottom: 16px;
+}
+.markdown-body blockquote {
+  padding: 0 1em;
+  color: #6a737d;
+  border-left: 0.25em solid #dfe2e1;
+  margin: 0 0 16px 0;
+}
+.markdown-body a {
+  color: #0366d6;
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+.markdown-body img {
+  max-width: 100%;
+  box-sizing: content-box;
+}
 </style>
 </head>
 <body>
@@ -169,7 +237,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
   <div class="tab-content">
     <!-- Root Task Tab -->
     <div v-if="activeTab === 'root'">
-      <div class="card" style="max-width:600px">
+      <div class="card" style="max-width:95%">
         <div class="card-title">Root Task</div>
         <div v-if="rootTask">
           <p style="font-size:0.85rem;color:var(--gray);margin-bottom:12px">
@@ -184,7 +252,13 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
         </div>
         <div style="margin-top:12px">
           <label style="display:block;font-size:0.85rem;font-weight:600;margin-bottom:4px">Description</label>
-          <textarea v-model="rootTaskForm.description" rows="6"
+          <div v-if="!isRootTaskEditing"
+               @click="initRootTaskEditor"
+               class="markdown-body"
+               style="width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:4px; min-height: 120px; cursor: pointer; font-size: 0.9rem;"
+               v-html="renderRootTaskMarkdown(rootTaskForm.description)">
+          </div>
+          <textarea v-show="isRootTaskEditing" id="root_task_editor" v-model="rootTaskForm.description" rows="6"
             style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:4px;font-size:0.9rem;resize:vertical"
             placeholder="Describe the feature / objective..."></textarea>
         </div>
@@ -200,15 +274,18 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
 
     <!-- Architecture Tab -->
     <div v-if="activeTab === 'arch'">
-      <div class="c4-level-select" v-if="Object.keys(c4Data.levels || {}).length">
-        <select v-model="c4Level">
-          <option v-for="(_, slug) in c4Data.levels" :key="slug" :value="slug">
-            {{ c4Data.levels[slug].title || slug }}
-          </option>
-        </select>
-      </div>
-      <div v-if="c4Level">
-        <div class="breadcrumb" v-if="breadcrumb.length > 1">
+<!--      <div class="c4-level-bar" v-if="c4Data.context || Object.keys(c4Data.levels || {}).length">-->
+<!--        <button :class="['c4-level-btn', zoomLevel === 'context' ? 'active' : '']"-->
+<!--                @click="setArchLevel('context')">Context</button>-->
+<!--        <button :class="['c4-level-btn', zoomLevel === 'containers' ? 'active' : '']"-->
+<!--                @click="setArchLevel('containers')">Containers</button>-->
+<!--        <button :class="['c4-level-btn', zoomLevel === 'components' ? 'active' : '']"-->
+<!--                @click="setArchLevel('components')" :disabled="!c4ComponentSlug">-->
+<!--          Components{{ c4ComponentSlug ? ': ' + c4ComponentSlug : '' }}-->
+<!--        </button>-->
+<!--      </div>-->
+      <div v-if="c4Data.containers">
+        <div class="breadcrumb" v-if="breadcrumb.length > 0">
           <span v-for="(crumb, idx) in breadcrumb" :key="idx" style="display:flex;align-items:center;gap:6px">
             <span v-if="idx < breadcrumb.length - 1" class="breadcrumb-item" @click="navigateTo(idx)">{{ crumb.label }}</span>
             <span v-else class="breadcrumb-current">{{ crumb.label }}</span>
@@ -252,7 +329,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
             <span style="color:#adb5bd;margin-left:8px">⚪ Outside</span>
           </div>
         </div>
-        <div class="arch-layout">
+        <div v-if="!c4ArchError" class="arch-layout">
           <div class="arch-graph-wrap">
             <div id="cy-arch" @contextmenu.prevent style="width:100%;height:100%;background:#fff;border:1px solid var(--border);border-radius:6px;"></div>
           </div>
@@ -331,7 +408,10 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
             </div>
           </div>
         </div>
-        <div class="legend">
+        <div v-else>
+          <div class="msg-error">Error C4 architecture:</br>{{c4ArchError}}</div>
+        </div>
+        <div class="legend" v-if="!c4ArchError">
           <span class="legend-item">
             <span class="legend-swatch" style="background:#438DD5"></span>Existing
           </span>
@@ -373,7 +453,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
             <template v-if="selectedDagTask.code_refs && selectedDagTask.code_refs.length">
               <div class="section-hdr" style="margin-top:12px">Code Refs ({{ selectedDagTask.code_refs.length }})</div>
               <div v-for="r in selectedDagTask.code_refs" :key="r.qualified_name" style="font-size:0.8rem;padding:2px 0;border-bottom:1px solid var(--border)">
-                <span style="color:var(--gray)">{{ r.ref_type }}</span> {{ r.qualified_name ? r.qualified_name.split('::').pop() : '' }}
+                <span style="color:var(--gray)">{{ r.ref_type }}</span> {{ r.qualified_name ? r.qualified_name : '' }} line({{r.line}}) {{r.kind}}
               </div>
             </template>
             <template v-if="selectedDagTask.edges && selectedDagTask.edges.length">
@@ -391,9 +471,10 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
                   <span style="color:var(--gray)">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : n.note_type === 'decision' ? '📋' : n.note_type === 'constraint' ? '⚠' : '❓' }}</span>
                   {{ n.content }}
                 </div>
-                <div v-if="n.status === 'answered' || n.status === 'resolved'">
+                <div v-if="n.status === 'answered'">
                   <div v-if="!noteEditMode[n.id]">
                     <div v-if="n.resolution" style="font-style:italic;color:#374151;margin-top:2px">💬 {{ n.resolution }}</div>
+                    <div v-if="n.rationale" style="font-style:italic;color:#374151;margin-top:2px">🧠 {{ n.rationale }}</div>
                     <button v-if="n.status === 'answered'" @click="startNoteEdit(n.id, n.resolution)"
                       style="padding:2px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray);margin-top:2px">
                       ✏️ Edit
@@ -409,6 +490,10 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
                         style="padding:3px 8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.75rem;color:var(--gray)">Cancel</button>
                     </div>
                   </div>
+                </div>
+                <div v-else>
+                  <div v-if="n.resolution" style="font-style:italic;color:#374151;margin-top:2px">💬 {{ n.resolution }}</div>
+                  <div v-if="n.rationale" style="font-style:italic;color:#374151;margin-top:2px">🧠 {{ n.rationale }}</div>
                 </div>
               </div>
             </template>
@@ -433,7 +518,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
       <!-- Filter row -->
       <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
         <span style="font-size:0.8rem;font-weight:600;color:var(--gray)">Type:</span>
-        <button v-for="t in [{v:'all',l:'All'},{v:'schema',l:'📦 Schemas'},{v:'interface',l:'🔌 Interfaces'},{v:'api',l:'🌐 APIs'},{v:'event',l:'⚡ Events'}]"
+        <button v-for="t in [{v:'all',l:'All'},{v:'schema',l:'📦 Schemas'},{v:'interface',l:'🔌 Interfaces'},{v:'api',l:'🌐 APIs'},{v:'event',l:'⚡ Events'},{v:'data_format',l:'⚙️ Data format'}]"
           :key="t.v" @click="contractsFilter.type = t.v"
           :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',background:contractsFilter.type===t.v?'var(--blue)':'#fff',color:contractsFilter.type===t.v?'#fff':'inherit'}">
           {{ t.l }}
@@ -471,9 +556,10 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
                 <div style="font-size:0.75rem;font-weight:600;color:var(--gray);margin-bottom:4px">Annotations ({{ c.annotations.length }})</div>
                 <div v-for="a in c.annotations" :key="a.id"
                   style="font-size:0.8rem;padding:4px 0;border-bottom:1px solid var(--border)">
-                  <span style="color:var(--gray)">{{ a.note_type === 'question' ? '❓' : a.note_type === 'assumption' ? '🔍' : '📋' }}</span>
+                  <span style="color:var(--gray)">{{ a.note_type === 'assumption' ? '🔍' : a.note_type === 'risk' ? '🚨' : a.note_type === 'decision' ? '📋' : a.note_type === 'constraint' ? '⚠' : '❓' }}</span>
                   {{ a.content }}
                   <div v-if="a.resolution" style="font-style:italic;color:#374151;margin-top:2px;font-size:0.75rem">💬 {{ a.resolution }}</div>
+                  <div v-if="a.rationale" style="font-style:italic;color:#374151;margin-top:2px;font-size:0.75rem">🧠 {{ a.rationale }}</div>
                 </div>
               </div>
             </template>
@@ -503,7 +589,7 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
           {{ t.l }}
         </button>
         <span style="font-size:0.8rem;font-weight:600;color:var(--gray);margin-left:8px">Status:</span>
-        <button v-for="s in [{v:'all',l:'All'},{v:'open',l:'⭕ Open'},{v:'answered',l:'⏳ Answered'},{v:'deferred',l:'⏸️ Deferred'},{v:'resolved',l:'✅ Resolved'}]"
+        <button v-for="s in [{v:'all',l:'All'},{v:'open',l:'⭕ Open'},{v:'answered',l:'⏳ Answered'},{v:'deferred',l:'⏸️ Deferred'},{v:'resolved',l:'✅ Resolved'},{v:'rejected',l:'❌ Rejected'}]"
           :key="s.v" @click="notesFilter.status = s.v"
           :style="{padding:'3px 10px',border:'1px solid var(--border)',borderRadius:'12px',cursor:'pointer',fontSize:'0.8rem',background: notesFilter.status === s.v ? 'var(--blue)' : '#fff',color: notesFilter.status === s.v ? '#fff' : 'inherit'}">
           {{ s.l }}
@@ -634,7 +720,22 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
         </div>
         <div v-for="n in filteredNotes(notes.resolved, notesFilter.type, 'resolved')" :key="n.id" class="card note-card resolved">
           <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : n.note_type === 'decision' ? '📋' : n.note_type === 'constraint' ? '⚠' : '❓'}} {{ n.content }}</div>
-          <div v-if="n.resolution" style="font-size:0.8rem;color:var(--gray);margin-top:4px;font-style:italic">{{ n.resolution }}</div>
+          <div style="font-size:0.8rem;color:var(--gray);margin-bottom:4px">📋 {{ n._task_title || n.task_id }}</div>
+          <div v-if="n.resolution" style="font-size:0.8rem;color:var(--gray);margin-top:4px;font-style:italic">💬 {{ n.resolution }}</div>
+          <div v-if="n.rationale" style="font-size:0.8rem;color:var(--gray);margin-top:4px;font-style:italic">🧠 {{ n.rationale }}</div>
+        </div>
+      </template>
+
+      <!-- Rejected notes -->
+      <template v-if="notesFilter.status === 'all' || notesFilter.status === 'rejected'">
+        <div class="section-hdr" v-if="filteredNotes(notes.rejected, notesFilter.type, 'rejected').length">
+          ❌ Rejected ({{ filteredNotes(notes.rejected, notesFilter.type, 'rejected').length }})
+        </div>
+        <div v-for="n in filteredNotes(notes.rejected, notesFilter.type, 'rejected')" :key="n.id" class="card note-card resolved">
+          <div class="card-title">{{ n.note_type === 'assumption' ? '🔍' : n.note_type === 'risk' ? '🚨' : n.note_type === 'decision' ? '📋' : n.note_type === 'constraint' ? '⚠' : '❓'}} {{ n.content }}</div>
+          <div style="font-size:0.8rem;color:var(--gray);margin-bottom:4px">📋 {{ n._task_title || n.task_id }}</div>
+          <div v-if="n.resolution" style="font-size:0.8rem;color:var(--gray);margin-top:4px;font-style:italic">💬 {{ n.resolution }}</div>
+          <div v-if="n.rationale" style="font-size:0.8rem;color:var(--gray);margin-top:4px;font-style:italic">🧠 {{ n.rationale }}</div>
         </div>
       </template>
 
@@ -697,9 +798,9 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
         <!-- Attention: Ready to Start -->
         <div v-if="roadmapData.attention && roadmapData.attention.ready_to_start && roadmapData.attention.ready_to_start.length">
           <div class="section-hdr">▶ Ready to Start</div>
-          <div class="card" v-for="t in roadmapData.attention.ready_to_start" :key="t.id || t.task_id">
-            <div class="card-title">{{ t.title || t.task_title }}</div>
-            <span class="badge badge-green">{{ t.status || t.task_status }}</span>
+          <div class="card" v-for="t in roadmapData.attention.ready_to_start" :key="t.id">
+            <div class="card-title">{{ t.title }}</div>
+            <span class="badge badge-green">{{ t.status }}</span>
           </div>
         </div>
         <!-- Attention: Unresolved Questions -->
@@ -709,10 +810,22 @@ select { padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px;
             {{ n.content }}
           </div>
         </div>
-        <!-- Attention: Unverified Assumptions -->
+        <!-- Attention -->
         <div v-if="roadmapData.attention && roadmapData.attention.unverified_assumptions && roadmapData.attention.unverified_assumptions.length">
           <div class="section-hdr">🔍 Unverified Assumptions</div>
           <div class="card" v-for="n in roadmapData.attention.unverified_assumptions" :key="n.id">
+            {{ n.content }}
+          </div>
+        </div>
+        <div v-if="roadmapData.attention && roadmapData.attention.unverified_constraints && roadmapData.attention.unverified_constraints.length">
+          <div class="section-hdr">⚠ Unverified Constraints</div>
+          <div class="card" v-for="n in roadmapData.attention.unverified_constraints" :key="n.id">
+            {{ n.content }}
+          </div>
+        </div>
+        <div v-if="roadmapData.attention && roadmapData.attention.unverified_risk && roadmapData.attention.unverified_risk.length">
+          <div class="section-hdr">🚨 Unverified Risk</div>
+          <div class="card" v-for="n in roadmapData.attention.unverified_risk" :key="n.id">
             {{ n.content }}
           </div>
         </div>
@@ -863,18 +976,22 @@ createApp({
     const rootTitle = ref('');
     const rootTask = ref(null);
     const rootTaskForm = reactive({ title: '', description: '' });
+    const isRootTaskEditing = ref(false);
     const rootTaskSaving = ref(false);
-    const c4Data = reactive({ levels: {} });
-    const c4Level = ref('');
+    const c4ArchError = ref(null);
+    const c4Data = reactive({ });
     const c4Loading = ref(false);
     const selectedNode = ref(null);
     const breadcrumb = ref([]);
+    // C4 Zoom Navigator state
+    const zoomLevel = ref('context');
+    const c4ComponentSlug = ref('');
     const nodeAnnotations = ref([]);
     const newAnnotation = ref('');
     const nodeTaskRefs = ref({ tasks: [], contracts: [] });
     const dagData = reactive({ nodes: [], edges: [] });
     const contracts = ref([]);
-    const notes = reactive({ open: [], answered: [], deferred: [], resolved: [] });
+    const notes = reactive({ open: [], answered: [], deferred: [], resolved: [], rejected: [] });
     const roadmapData = ref(null);
     const execOrder = ref(null);
     const timelineData = ref(null);
@@ -903,12 +1020,47 @@ createApp({
     const blastResult = ref(null);
     const leafTasks = ref([]);
 
+    let easyMDE = null;
     let cyArch = null;
     let cyDag = null;
     let _skipBreadcrumb = false;
     let cyContracts = null;
     let cyDf = null;
     let _blastOrigColors = {};  // nodeId -> original bgColor for restore
+
+    function renderRootTaskMarkdown(text) {
+      if (!text) return '<span style="color: #999;">Describe the feature / objective...</span>';
+      return marked.parse(text);
+    }
+
+    function initRootTaskEditor() {
+      isRootTaskEditing.value = true;
+      nextTick(() => {
+        easyMDE = new EasyMDE({
+          element: document.getElementById('root_task_editor'),
+          forceSync: true,
+          spellChecker: false,
+          autosave: { enabled: false },
+          toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "link", "|", "preview"],
+        });
+        easyMDE.value(rootTaskForm.description);
+        easyMDE.codemirror.on("change", () => {
+          rootTaskForm.description = easyMDE.value();
+        });
+        easyMDE.codemirror.on("blur", () => {
+          destroyRootTaskEditor();
+        });
+      });
+    }
+
+    function destroyRootTaskEditor() {
+      if (easyMDE) {
+        // rootTaskForm.value.description = easyMDE.value();
+        easyMDE.toTextArea();
+        easyMDE = null;
+      }
+      isRootTaskEditing.value = false;
+    }
 
     async function api(path) {
       const r = await fetch(path);
@@ -963,6 +1115,7 @@ createApp({
       notes.answered = data.answered || [];
       notes.deferred = data.deferred || [];
       notes.resolved = data.resolved || [];
+      notes.rejected = data.rejected || [];
     }
 
     async function loadContracts() {
@@ -974,23 +1127,20 @@ createApp({
       c4Loading.value = true;
       const data = await api('/api/c4');
       Object.assign(c4Data, data);
-      const keys = Object.keys(data.levels || {});
-      if (keys.length && !c4Level.value) {
-        c4Level.value = keys[0];
-        breadcrumb.value = [{ slug: keys[0], label: getBreadcrumbLabel(keys[0]) }];
+      const title = data.containers && data.containers.title ? data.containers.title : "";
+      if (!!title) {
+        const slug = title.replace(/ /g, '_')
+        breadcrumb.value = [{ slug, label: title }];
       }
+      await loadAnnotations();
       c4Loading.value = false;
+      setArchLevel('container');
     }
 
     async function loadDag() {
       const data = await api('/api/dag');
       dagData.nodes = data.nodes || [];
       dagData.edges = data.edges || [];
-    }
-
-    async function loadExecOrder() {
-      const data = await api('/api/execution-order');
-      execOrder.value = data;
     }
 
     async function loadTimeline() {
@@ -1326,17 +1476,25 @@ createApp({
       if (panel) panel.style.display = 'none';
     }
 
+    function get_c4_element_id(id) {
+      const prefix = zoomLevel.value === 'component' && c4ComponentSlug.value ? `${zoomLevel.value}:${c4ComponentSlug.value}` : `${zoomLevel.value}`;
+      return `${prefix}:${id}`;
+    }
+
     async function submitAnnotationPanel(elementId) {
       const ta = document.getElementById('anno-textarea');
-      if (!ta || !ta.value.trim()) return;
-      const content = ta.value.trim();
+      if (!ta || !selectedNode.value || !ta.value.trim()) return;
       await fetch('/api/annotations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ c4_element_id: elementId, content })
+        body: JSON.stringify({
+          c4_element_id: get_c4_element_id(elementId),
+          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.id} ${selectedNode.value.label}`,
+          resolution: ta.value.trim()
+        })
       });
       await loadAnnotations();
-      buildCyArch(c4Level.value);
+      setArchLevel(zoomLevel.value)
       closeAnnotationPanel();
     }
 
@@ -1368,11 +1526,6 @@ createApp({
       }
     }, true /* capture phase */);
 
-    function getBreadcrumbLabel(slug) {
-      const level = c4Data.levels[slug];
-      return (level && level.title) || slug.replace(/_/g, ' ');
-    }
-
     async function loadNodeDetails(nodeId) {
       nodeAnnotations.value = [];
       nodeTaskRefs.value = { tasks: [], contracts: [] };
@@ -1392,13 +1545,15 @@ createApp({
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-          c4_element_id: selectedNode.value.id,
-          content: selectedNode.value.label || selectedNode.value.id,
+          c4_element_id: get_c4_element_id(selectedNode.value.id),
+          content: `${zoomLevel.value} ${selectedNode.value.kind} ${selectedNode.value.id} ${selectedNode.value.label}`,
           resolution: newAnnotation.value.trim(),
         })
       });
       newAnnotation.value = '';
       await loadNodeDetails(selectedNode.value.id);
+      await loadAnnotations();
+      setArchLevel(zoomLevel.value)
     }
 
     function navigateTo(index) {
@@ -1408,7 +1563,7 @@ createApp({
       breadcrumb.value = breadcrumb.value.slice(0, index + 1);
       selectedNode.value = null;
       nodeAnnotations.value = [];
-      c4Level.value = crumb.slug;
+      if (index === 0) setArchLevel('container');
       nextTick(() => { _skipBreadcrumb = false; });
     }
 
@@ -1417,21 +1572,39 @@ createApp({
       return map[status] || 'badge-gray';
     }
 
-    function buildCyArch(levelSlug) {
-      const level = c4Data.levels[levelSlug];
-      if (!level) return;
+    // ---- C4 Zoom Navigator ----
+    function setArchLevel(level) {
+      zoomLevel.value = level;
+      if (level === 'container') {
+        buildCyArch_level(level, c4Data.containers);
+      } else if (level === 'component' && c4ComponentSlug.value) {
+        buildCyArch_level(level, (c4Data.components || {})[c4ComponentSlug.value]);
+      }
+    }
+
+    function buildCyArch_level(levelName, levelData) {
+      if (!levelData) return;
       nextTick(() => {
         const el = document.getElementById('cy-arch');
         if (!el) return;
-        if (cyArch) { cyArch.destroy(); cyArch = null; }
-        const STATUS_BG = { existing: '#438DD5', modified: '#fff3cd', 'new': '#d4edda' };
-        const STATUS_TEXT = { existing: '#fff', modified: '#856404', 'new': '#155724' };
-        const STATUS_BORDER = { existing: '#438DD5', modified: '#ffc107', 'new': '#28a745' };
+        if (cyArch) {
+          cyArch.destroy();
+          cyArch = null;
+        }
+        const STATUS_BG = {existing: '#438DD5', modified: '#fff3cd', 'new': '#d4edda'};
+        const STATUS_TEXT = {existing: '#fff', modified: '#856404', 'new': '#155724'};
+        const STATUS_BORDER = {existing: '#438DD5', modified: '#ffc107', 'new': '#28a745'};
+        // Build child→parent lookup from parent_child_map
+        const pcm = levelData.parent_child_map || {};
+        const childToParent = {};
+        for (const [pid, childIds] of Object.entries(pcm)) {
+          for (const cid of childIds) childToParent[cid] = pid;
+        }
         const elements = [];
-        (level.nodes || []).forEach(n => {
+        (levelData.nodes || []).forEach(n => {
           const st = n.status || 'existing';
-          const annoCount = (annotations[n.id] || []).length;
-          elements.push({
+          const annoCount = (annotations[get_c4_element_id(n.id)] || []).length;
+          const elem = {
             data: {
               id: n.id,
               label: n.label + (n.sublabel ? '\n' + n.sublabel : ''),
@@ -1446,123 +1619,131 @@ createApp({
               origLabel: n.label,
               annoCount,
             }
+          };
+          if (childToParent[n.id]) elem.data.parent = childToParent[n.id];
+          elements.push(elem);
+        });
+        (levelData.edges || []).forEach(e => {
+          elements.push({
+            data: {id: 'e_' + e.source + '_' + e.target, source: e.source, target: e.target, label: e.label || ''}
           });
         });
-        (level.edges || []).forEach(e => {
-          elements.push({
-            data: {
-              id: 'e_' + e.source + '_' + e.target,
-              source: e.source, target: e.target, label: e.label || ''
+        c4ArchError.value = null
+        try {
+          cyArch = cytoscape({
+            container: el, elements,
+            style: [
+              {
+                selector: 'node', style: {
+                  'background-color': 'data(bgColor)', 'border-color': 'data(borderColor)',
+                  'border-width': 'data(borderWidth)', 'border-style': 'data(borderStyle)',
+                  label: 'data(label)', 'text-valign': 'center', 'text-halign': 'center',
+                  color: 'data(textColor)', 'font-size': '11px', width: 120, height: 60,
+                  shape: 'rectangle', 'text-wrap': 'wrap', 'text-max-width': '110px'
+                }
+              },
+              {
+                selector: ':parent', style: {
+                  'background-opacity': 0.1, 'background-color': '#438DD5',
+                  'border-color': '#438DD5', 'border-width': 1,
+                  'text-valign': 'top', 'text-halign': 'center', 'color': '#000',
+                  'font-size': '12px', 'font-weight': 'bold', 'padding': '15px', shape: 'rectangle'
+                }
+              },
+              {
+                selector: 'node:selected',
+                style: {'border-width': 3, 'border-color': '#1a1a2e', 'border-style': 'solid'}
+              },
+              {
+                selector: 'edge', style: {
+                  width: 1.5, 'line-color': '#999', 'target-arrow-color': '#999',
+                  'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+                  label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
+                }
+              },
+            ],
+          });
+          cyArch.container().addEventListener('contextmenu', (e) => e.preventDefault(), true);
+          cyArch.on('tap', 'node', (evt) => {
+            const d = evt.target.data();
+            selectedNode.value = {
+              id: d.id,
+              label: d.label,
+              sublabel: d.sublabel || '',
+              status: d.status || 'existing',
+              kind: d.kind || ''
+            };
+            newAnnotation.value = '';
+            loadNodeDetails(d.id);
+          });
+          cyArch.on('tap', (evt) => {
+            if (evt.target === cyArch) {
+              selectedNode.value = null;
+              nodeAnnotations.value = [];
             }
           });
-        });
-        cyArch = cytoscape({
-          container: el, elements,
-          style: [
-            { selector: 'node', style: {
-              'background-color': 'data(bgColor)',
-              'border-color': 'data(borderColor)',
-              'border-width': 'data(borderWidth)',
-              'border-style': 'data(borderStyle)',
-              label: 'data(label)',
-              'text-valign': 'center', 'text-halign': 'center',
-              color: 'data(textColor)',
-              'font-size': '11px', width: 120, height: 60, shape: 'rectangle',
-              'text-wrap': 'wrap', 'text-max-width': '110px'
-            }},
-            { selector: 'node:selected', style: {
-              'border-width': 3, 'border-color': '#1a1a2e', 'border-style': 'solid'
-            }},
-            { selector: 'edge', style: {
-              width: 1.5, 'line-color': '#999', 'target-arrow-color': '#999',
-              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
-              label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
-            }},
-          ],
-          layout: { name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
-                    rankDir: 'TB', padding: 30 }
-        });
-        // Suppress the native context menu directly on the Cytoscape container.
-        // Capture phase (true) fires before any canvas child handlers, so
-        // preventDefault() is reliably called regardless of Cytoscape internals.
-        // No stopPropagation — we must not block the event reaching Cytoscape's
-        // own canvas listener that fires the cxttap / annotation-panel flow.
-        cyArch.container().addEventListener('contextmenu', (e) => e.preventDefault(), true);
-        cyArch.on('tap', 'node', (evt) => {
-          const d = evt.target.data();
-          selectedNode.value = {
-            id: d.id,
-            label: d.origLabel || d.label,
-            sublabel: d.sublabel || '',
-            status: d.status || 'existing',
-            kind: d.kind || '',
-          };
-          newAnnotation.value = '';
-          loadNodeDetails(d.id);
-        });
-        cyArch.on('tap', (evt) => {
-          if (evt.target === cyArch) {
-            selectedNode.value = null;
-            nodeAnnotations.value = [];
-          }
-        });
-        cyArch.on('dbltap', 'node', () => {
-          const levelKeys = Object.keys(c4Data.levels);
-          const curIdx = levelKeys.indexOf(c4Level.value);
-          if (curIdx >= 0 && curIdx < levelKeys.length - 1) {
-            const nextSlug = levelKeys[curIdx + 1];
-            _skipBreadcrumb = true;
-            breadcrumb.value = [
-              ...breadcrumb.value,
-              { slug: nextSlug, label: getBreadcrumbLabel(nextSlug) }
-            ];
-            c4Level.value = nextSlug;
-            nextTick(() => { _skipBreadcrumb = false; });
-          }
-        });
-        cyArch.on('cxttap', 'node', (evt) => {
-          const node = evt.target;
-          if (node.data('id') && node.data('id').startsWith('_archbadge_')) return;
-          const pos = evt.renderedPosition || evt.position;
-          showAnnotationPanel(node.data(), pos);
-        });
-        // Annotation badges as ghost overlay nodes, placed after layout runs
-        cyArch.one('layoutstop', () => {
-          elements.forEach(el => {
-            if (!el.data || !el.data.annoCount) return;
-            const cnt = el.data.annoCount;
-            const nodeId = el.data.id;
-            const badgeId = '_archbadge_' + nodeId;
-            const existing = cyArch.getElementById(badgeId);
-            if (existing.length) cyArch.remove(existing);
-            const parentNode = cyArch.getElementById(nodeId);
-            if (!parentNode.length) return;
-            const pos = parentNode.position();
-            const w = parentNode.width();
-            const h = parentNode.height();
-            cyArch.add({
-              group: 'nodes',
-              data: { id: badgeId, label: '\uD83D\uDCAC ' + cnt },
-              position: { x: pos.x + w / 2 - 14, y: pos.y - h / 2 + 8 },
-              style: {
-                'background-color': '#495057',
-                'color': '#fff',
-                'font-size': '9px',
-                'width': 28,
-                'height': 16,
-                'shape': 'round-rectangle',
-                'text-valign': 'center',
-                'text-halign': 'center',
-                'label': '\uD83D\uDCAC ' + cnt,
-                'border-width': 0,
-                'z-index': 999,
-                'events': 'no',
-              }
+          cyArch.on('dbltap', 'node', (evt) => {
+            const d = evt.target.data();
+            if (d.kind === 'Container_Boundary' && c4Data.components) {
+              c4ComponentSlug.value = d.id;
+              setArchLevel('component');
+            }
+            const levelKeys = Object.keys(c4Data.components);
+            const curIdx = levelKeys.indexOf(d.id);
+            if (curIdx >= 0 && curIdx < levelKeys.length - 1) {
+              _skipBreadcrumb = true;
+              breadcrumb.value = [
+                ...breadcrumb.value,
+                {slug: d.id, label: d.id.replace(/_/g, ' ')}
+              ];
+              nextTick(() => {
+                _skipBreadcrumb = false;
+              });
+            }
+          });
+          cyArch.on('cxttap', 'node', (evt) => {
+            const node = evt.target;
+            if (node.data('id') && node.data('id').startsWith('_archbadge_')) return;
+            const pos = evt.renderedPosition || evt.position;
+            showAnnotationPanel(node.data(), pos);
+          });
+          cyArch.one('layoutstop', () => {
+            elements.forEach(el => {
+              if (!el.data || !el.data.annoCount) return;
+              const cnt = el.data.annoCount;
+              const nodeId = el.data.id;
+              const badgeId = '_archbadge_' + nodeId;
+              const existing = cyArch.getElementById(badgeId);
+              if (existing.length) cyArch.remove(existing);
+              const parentNode = cyArch.getElementById(nodeId);
+              if (!parentNode.length) return;
+              const pos = parentNode.position();
+              cyArch.add({
+                group: 'nodes',
+                data: {id: badgeId, label: '💬 ' + cnt},
+                position: {x: pos.x + parentNode.width() / 2 - 14, y: pos.y - parentNode.height() / 2 + 8},
+                style: {
+                  'background-color': '#495057', 'color': '#fff', 'font-size': '9px',
+                  'width': 28, 'height': 16, 'shape': 'round-rectangle',
+                  'text-valign': 'center', 'text-halign': 'center',
+                  'label': '💬 ' + cnt, 'border-width': 0, 'z-index': 999, 'events': 'no',
+                }
+              });
             });
           });
-        });
-      });
+
+          cyArch.layout({
+            name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
+            rankDir: 'TB', padding: 30
+          }).run();
+
+        } catch (e) {
+          c4ArchError.value = e.message
+          throw e;
+        }
+      })
     }
+    // ---- end C4 Zoom Navigator ----
 
     function buildCyDag() {
       nextTick(() => {
@@ -1610,42 +1791,54 @@ createApp({
         cyDag = cytoscape({
           container: el, elements,
           style: [
-            { selector: 'node', style: {
-              'background-color': 'data(color)', label: 'data(label)',
-              'text-valign': 'center', 'text-halign': 'center', color: '#212529',
-              'font-size': '11px', width: 120, height: 50, shape: 'round-rectangle',
-              'text-wrap': 'wrap', 'text-max-width': '110px'
-            }},
-            { selector: ':compound', style: {
-              'background-color': '#f8f9fa',
-              'border-width': 1,
-              'border-color': '#dee2e6',
-              'padding': '15px',
-              'text-valign': 'top',
-              'text-halign': 'center',
-              'font-size': '10px',
-              'color': '#495057',
-            }},
-            { selector: 'edge', style: {
-              width: 1.5, 'line-color': '#adb5bd', 'target-arrow-color': '#adb5bd',
-              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
-              label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
-            }},
-            { selector: 'edge[label="depends_on"]', style: {
-              width: 2.5, 'line-color': '#343a40', 'target-arrow-color': '#343a40',
-              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
-              label: '',
-            }},
-            { selector: 'edge[label="shares_context"]', style: {
-              width: 1.5, 'line-color': '#6c757d', 'target-arrow-color': '#6c757d',
-              'target-arrow-shape': 'triangle', 'line-style': 'dashed', 'curve-style': 'bezier',
-              label: 'shares context', 'font-size': '8px',
-            }},
-            { selector: 'edge[label="conflicts_with"]', style: {
-              width: 2, 'line-color': '#dc3545', 'target-arrow-color': '#dc3545',
-              'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
-              label: 'conflict', 'font-size': '8px',
-            }},
+            {
+              selector: 'node', style: {
+                'background-color': 'data(color)', label: 'data(label)',
+                'text-valign': 'center', 'text-halign': 'center', color: '#212529',
+                'font-size': '11px', width: 120, height: 50, shape: 'round-rectangle',
+                'text-wrap': 'wrap', 'text-max-width': '110px'
+              }
+            },
+            {
+              selector: ':compound', style: {
+                'background-color': '#f8f9fa',
+                'border-width': 1,
+                'border-color': '#dee2e6',
+                'padding': '15px',
+                'text-valign': 'top',
+                'text-halign': 'center',
+                'font-size': '10px',
+                'color': '#495057',
+              }
+            },
+            {
+              selector: 'edge', style: {
+                width: 1.5, 'line-color': '#adb5bd', 'target-arrow-color': '#adb5bd',
+                'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+                label: 'data(label)', 'font-size': '9px', 'text-rotation': 'autorotate'
+              }
+            },
+            {
+              selector: 'edge[label="depends_on"]', style: {
+                width: 2.5, 'line-color': '#343a40', 'target-arrow-color': '#343a40',
+                'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+                label: '',
+              }
+            },
+            {
+              selector: 'edge[label="shares_context"]', style: {
+                width: 1.5, 'line-color': '#6c757d', 'target-arrow-color': '#6c757d',
+                'target-arrow-shape': 'triangle', 'line-style': 'dashed', 'curve-style': 'bezier',
+                label: 'shares context', 'font-size': '8px',
+              }
+            },
+            {
+              selector: 'edge[label="conflicts_with"]', style: {
+                width: 2, 'line-color': '#dc3545', 'target-arrow-color': '#dc3545',
+                'target-arrow-shape': 'triangle', 'curve-style': 'bezier',
+                label: 'conflict', 'font-size': '8px',
+              }
+            },
             // Badge ghost nodes styling (added dynamically after layoutstop)
             { selector: 'node[badge = 1]', style: {
               'background-color': '#495057',
@@ -1659,26 +1852,33 @@ createApp({
               'border-width': 0,
             }},
           ],
-          layout: { name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
-                    rankDir: 'TB', padding: 30 }
         });
 
         // Render annotation badges as ghost overlay nodes after layout completes
         cyDag.one('layoutstop', () => {
           filteredNodes.forEach(n => {
             const cnt = n.data.annotationCount;
-            if (!cnt || parentIds.has(n.data.id)) return;
+            if (!cnt) return;
             const badgeId = '_badge_' + n.data.id;
-            const existing = cyDag.getElementById(badgeId);
-            if (existing.length) cyDag.remove(existing);
             const parentNode = cyDag.getElementById(n.data.id);
-            if (!parentNode.length) return;
-            const pos = parentNode.position();
-            const bb = parentNode.boundingBox();
-            cyDag.add({
+            const getBadgePos = (p) => {
+              const pos = p.position();
+              return {x: pos.x + p.width() / 2 - 5, y: pos.y - p.height() / 2 + 5};
+            };
+            cyDag.remove(`#${badgeId}`);
+            const badge = cyDag.add({
               group: 'nodes',
-              data: { id: badgeId, label: '💬 ' + cnt, badge: 1 },
-              position: { x: bb.x2 - 8, y: bb.y1 + 8 },
+              data: {
+                id: badgeId,
+                label: '💬 ' + cnt,
+                badge: 1,
+                parentRef: n.data.id
+              },
+              position: getBadgePos(parentNode),
+              grabbable: false
+            });
+            parentNode.on('position bounds', () => {
+              badge.position(getBadgePos(parentNode));
             });
           });
         });
@@ -1696,6 +1896,11 @@ createApp({
         cyDag.on('tap', (evt) => {
           if (evt.target === cyDag) { selectedDagTask.value = null; }
         });
+
+        cyDag.layout({
+          name: typeof cytoscapeDagre !== 'undefined' ? 'dagre' : 'breadthfirst',
+          rankDir: 'TB', padding: 30
+        }).run();
       });
     }
 
@@ -1791,23 +1996,9 @@ createApp({
       if (id === 'roadmap') loadRoadmap();
       if (id === 'timeline') loadTimeline();
       if (id === 'sequence') loadSequence();
-    }
-
-    watch(c4Level, (slug) => {
-      if (slug && activeTab.value === 'arch') {
-        if (!_skipBreadcrumb) {
-          breadcrumb.value = [{ slug, label: getBreadcrumbLabel(slug) }];
-        }
-        selectedNode.value = null;
-        nodeAnnotations.value = [];
-        buildCyArch(slug);
-      }
-    });
-
-    watch(activeTab, (id) => {
-      if (id === 'arch') { loadC4().then(() => buildCyArch(c4Level.value)); loadLeafTasks(); }
+      if (id === 'arch') loadC4().then(loadLeafTasks);
       if (id === 'dataflow') loadDfSources();
-    });
+    }
 
     function contractBadgeClass(status) {
       const map = { proposed: 'badge-yellow', agreed: 'badge-blue',
@@ -1827,7 +2018,7 @@ createApp({
       if (rootTask.value) {
         // Root task exists — load data and show roadmap
         activeTab.value = 'roadmap';
-        await Promise.all([loadRoadmap(), loadNotes(), loadContracts()]);
+        await Promise.all([loadRoadmap()]);
       } else {
         // No root task — show root task creation form
         activeTab.value = 'root';
@@ -1835,9 +2026,10 @@ createApp({
     });
 
     return {
-      tabs, activeTab, rootTitle, rootTask, rootTaskForm, rootTaskSaving,
-      c4Data, c4Level, c4Loading, annotations,
+      tabs, activeTab, rootTitle, rootTask, rootTaskForm, isRootTaskEditing, renderRootTaskMarkdown, initRootTaskEditor, rootTaskSaving,
+      c4Data, c4ArchError, c4Loading, annotations,
       selectedNode, breadcrumb, nodeAnnotations, newAnnotation, nodeTaskRefs,
+      zoomLevel, c4ComponentSlug, setArchLevel,
       contracts, notes, roadmapData, execOrder, timelineData, seqDiagram, seqHtml,
       seqMode, seqFlowId, seqFlows, loadSequenceFlow,
       switchTab, saveRootTask, contractBadgeClass, statusBadgeClass,

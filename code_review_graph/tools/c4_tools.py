@@ -65,6 +65,48 @@ def _dict_to_c4element(element_dict: dict[str, Any]) -> C4Element | None:
     )
 
 
+def _find_in_elements(elements: list[C4Element], element_id: str) -> C4Element | None:
+    """Recursively search elements and their children for element_id."""
+    for elem in elements:
+        if elem.id == element_id:
+            return elem
+        found = _find_in_elements(elem.children, element_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_element_recursive(diagram: C4Diagram, element_id: str) -> C4Element | None:
+    """Find element by id in any section of diagram, recursively through children."""
+    for section in diagram.sections:
+        found = _find_in_elements(section.elements, element_id)
+        if found is not None:
+            return found
+    return None
+
+
+def _remove_from_children(
+    elements: list[C4Element], element_id: str
+) -> tuple[list[C4Element], bool]:
+    """Remove element_id from elements and their children recursively.
+
+    Returns:
+        Tuple of (new_elements_list, found_flag).
+    """
+    new_list: list[C4Element] = []
+    found = False
+    for elem in elements:
+        if elem.id == element_id:
+            found = True
+            continue
+        child_list, child_found = _remove_from_children(elem.children, element_id)
+        if child_found:
+            found = True
+            elem.children = child_list
+        new_list.append(elem)
+    return new_list, found
+
+
 # ---------------------------------------------------------------------------
 # Tool 1: get_architecture_skeleton
 # ---------------------------------------------------------------------------
@@ -268,15 +310,8 @@ def update_architecture_skeleton_func(
                 skipped += 1
                 continue
 
-            # Find original element in any section of the target diagram
-            original: C4Element | None = None
-            for section in target_diagram.sections:
-                for elem in section.elements:
-                    if elem.id == element_id:
-                        original = elem
-                        break
-                if original is not None:
-                    break
+            # Find original element in any section of the target diagram (recursively)
+            original = _find_element_recursive(target_diagram, element_id)
 
             if original is None:
                 errors.append(
@@ -316,10 +351,9 @@ def update_architecture_skeleton_func(
 
             # Check if element lives in an AUTO section — those are read-only
             in_auto = any(
-                elem.id == element_id
+                _find_in_elements(section.elements, element_id) is not None
                 for section in target_diagram.sections
                 if section.marker_type == "AUTO"
-                for elem in section.elements
             )
             if in_auto:
                 errors.append(
@@ -328,14 +362,16 @@ def update_architecture_skeleton_func(
                 skipped += 1
                 continue
 
-            # Remove from FEATURE sections
+            # Remove from FEATURE sections (top-level and children recursively)
             removed = False
             for section in target_diagram.sections:
                 if section.marker_type == "FEATURE":
-                    before = len(section.elements)
-                    section.elements = [e for e in section.elements if e.id != element_id]
-                    if len(section.elements) < before:
+                    new_elements, section_found = _remove_from_children(
+                        section.elements, element_id
+                    )
+                    if section_found:
                         removed = True
+                        section.elements = new_elements
 
             if removed:
                 updated_diagrams.add(target_diagram.title)
@@ -345,6 +381,52 @@ def update_architecture_skeleton_func(
                     f"Element '{element_id}' not found in any FEATURE section"
                 )
                 skipped += 1
+
+        # ── add_child ─────────────────────────────────────────────────────────
+        elif op_type == "add_child":
+            parent_id = op.get("parent_id", "")
+            element_dict = op.get("element", {})
+
+            if not parent_id:
+                errors.append("add_child operation missing 'parent_id' field")
+                skipped += 1
+                continue
+
+            if not element_dict:
+                errors.append("add_child operation missing 'element' field")
+                skipped += 1
+                continue
+
+            child_elem = _dict_to_c4element(element_dict)
+            if child_elem is None:
+                errors.append(
+                    f"Invalid element dict (must have 'kind' and 'id'): {element_dict}"
+                )
+                skipped += 1
+                continue
+
+            # Cannot add children to elements in AUTO sections
+            in_auto = any(
+                _find_in_elements(section.elements, parent_id) is not None
+                for section in target_diagram.sections
+                if section.marker_type == "AUTO"
+            )
+            if in_auto:
+                errors.append(f"Cannot add child to AUTO element '{parent_id}'")
+                skipped += 1
+                continue
+
+            parent_elem = _find_element_recursive(target_diagram, parent_id)
+            if parent_elem is None:
+                errors.append(
+                    f"Parent element '{parent_id}' not found in diagram '{diagram_name}'"
+                )
+                skipped += 1
+                continue
+
+            parent_elem.children.append(child_elem)
+            updated_diagrams.add(target_diagram.title)
+            applied += 1
 
         else:
             errors.append(f"Unknown operation type: '{op_type}'")
