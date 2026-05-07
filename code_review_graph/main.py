@@ -544,6 +544,7 @@ def get_community_tool(
     community_name: Optional[str] = None,
     community_id: Optional[int] = None,
     include_members: bool = False,
+    exclude_tests: bool = True,
     repo_root: Optional[str] = None,
 ) -> dict:
     """Get detailed information about a single code community.
@@ -558,12 +559,14 @@ def get_community_tool(
         community_name: Name to search for (partial match). Ignored if community_id given.
         community_id: Database ID of the community.
         include_members: Include full member node details. Default: False.
+        exclude_tests: Exclude tests infrastructure. Default: True.
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return get_community_func(
         community_name=community_name,
         community_id=community_id,
         include_members=include_members,
+        exclude_tests=exclude_tests,
         repo_root=repo_root,
     )
 

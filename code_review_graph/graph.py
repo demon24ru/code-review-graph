@@ -881,13 +881,24 @@ class GraphStore:
         return [r["qualified_name"] for r in rows]
 
     def get_nodes_by_community_id(
-        self, community_id: int,
+        self, community_id: int, exclude_tests: bool = False,
     ) -> list[GraphNode]:
-        """Return all nodes belonging to a community."""
-        rows = self._conn.execute(
-            "SELECT * FROM nodes WHERE community_id = ?",
-            (community_id,),
-        ).fetchall()
+        """Return all nodes belonging to a community.
+
+        Args:
+            community_id: The community to query.
+            exclude_tests: If True, skip nodes where is_test = 1.
+        """
+        if exclude_tests:
+            rows = self._conn.execute(
+                "SELECT * FROM nodes WHERE community_id = ? AND is_test = 0",
+                (community_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM nodes WHERE community_id = ?",
+                (community_id,),
+            ).fetchall()
         return [self._row_to_node(r) for r in rows]
 
     def get_outgoing_targets(

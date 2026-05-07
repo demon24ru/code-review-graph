@@ -81,6 +81,7 @@ def get_community_func(
     community_name: str | None = None,
     community_id: int | None = None,
     include_members: bool = False,
+    exclude_tests: bool = False,
     repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Get details of a single code community.
@@ -132,7 +133,7 @@ def get_community_func(
         if include_members:
             cid = community.get("id")
             if cid is not None:
-                member_nodes = store.get_nodes_by_community_id(cid)
+                member_nodes = store.get_nodes_by_community_id(cid, exclude_tests=exclude_tests)
                 members = [node_to_dict(n) for n in member_nodes]
                 community["member_details"] = members
 

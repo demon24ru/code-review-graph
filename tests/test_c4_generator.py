@@ -1213,3 +1213,84 @@ class TestHierarchicalComponentBoundaries:
         finally:
             store.close()
             Path(store.db_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Test build_c4 — test node exclusion
+# ---------------------------------------------------------------------------
+
+
+class TestBuildC4ExcludesTestNodes:
+    """Verify that is_test=True nodes and their edges are excluded from C4."""
+
+    def _seed(self, store: GraphStore) -> None:
+        """Seed one production node and one test node in the same community."""
+        store.upsert_node(
+            NodeInfo(kind="File", name="app.py", file_path="app.py",
+                     line_start=1, line_end=50, language="python"),
+            file_hash="h1",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Function", name="run_app", file_path="app.py",
+                     line_start=5, line_end=20, language="python"),
+            file_hash="h1",
+        )
+        # Test node — is_test=True
+        store.upsert_node(
+            NodeInfo(kind="File", name="test_app.py", file_path="test_app.py",
+                     line_start=1, line_end=30, language="python", is_test=True),
+            file_hash="h2",
+        )
+        store.upsert_node(
+            NodeInfo(kind="Function", name="test_run", file_path="test_app.py",
+                     line_start=5, line_end=15, language="python", is_test=True),
+            file_hash="h2",
+        )
+        # Edge from test node to production node
+        store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="test_app.py::test_run", target="app.py::run_app",
+            file_path="test_app.py", line=10,
+        ))
+        store.commit()
+        communities = detect_communities(store, min_size=1)
+        store_communities(store, communities)
+
+    def test_test_nodes_not_in_component_diagrams(self):
+        store = make_store()
+        try:
+            self._seed(store)
+            output = build_c4(store)
+            arch = parse_c4_file(output)
+
+            all_labels: set[str] = set()
+
+            def collect(elements: list) -> None:
+                for elem in elements:
+                    all_labels.add(elem.label)
+                    collect(elem.children)
+
+            for diag in arch.diagrams:
+                for section in diag.sections:
+                    collect(section.elements)
+
+            assert "test_run" not in all_labels, "test node 'test_run' must not appear in C4"
+            assert "test_app.py" not in all_labels, "test file must not appear in C4"
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)
+
+    def test_test_node_edge_not_in_component_diagrams(self):
+        """Edge from a test node to a production node must not appear in C4."""
+        store = make_store()
+        try:
+            self._seed(store)
+            output = build_c4(store)
+
+            # Edge would appear as Rel with id=slug(test_app.py::test_run)
+            test_slug = "test_app_py_test_run"
+            assert test_slug not in output, (
+                f"Rel from test node (slug '{test_slug}') must not appear in C4 output"
+            )
+        finally:
+            store.close()
+            Path(store.db_path).unlink(missing_ok=True)

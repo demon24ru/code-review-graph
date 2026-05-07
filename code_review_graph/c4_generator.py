@@ -177,7 +177,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
     comm_info: dict[int, Any] = {c["id"]: c for c in communities}
 
     for comm in communities:
-        for n in store.get_nodes_by_community_id(comm["id"]):
+        for n in store.get_nodes_by_community_id(comm["id"], exclude_tests=True):
             if n.file_path:
                 file_comm_count[n.file_path][comm["id"]] += 1
 
@@ -194,7 +194,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
     # Step 4: collect per-file metadata (prefer File-kind node)
     file_meta: dict[str, dict[str, Any]] = {}
     for comm in communities:
-        for n in store.get_nodes_by_community_id(comm["id"]):
+        for n in store.get_nodes_by_community_id(comm["id"], exclude_tests=True):
             fp = n.file_path
             if not fp:
                 continue
@@ -491,7 +491,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
         files = sorted(comm_files.get(comm_id, []))
         if not files:
             # No-file community: pass all community member nodes
-            member_nodes = store.get_nodes_by_community_id(comm_id)
+            member_nodes = store.get_nodes_by_community_id(comm_id, exclude_tests=True)
             if member_nodes:
                 component_diagrams.append(_build_component_diagram(
                     title=f"{comm['name']} Components",
@@ -501,7 +501,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
         elif len(files) == 1:
             # Single-file: diagram keyed by file name
             fp = files[0]
-            all_nodes_for_file = store.get_nodes_by_community_id(comm_id)
+            all_nodes_for_file = store.get_nodes_by_community_id(comm_id, exclude_tests=True)
             file_nodes = [n for n in all_nodes_for_file if n.file_path == fp]
             if file_nodes:
                 component_diagrams.append(_build_component_diagram(
@@ -511,7 +511,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
                 ))
         else:
             # Multi-file community: all nodes together
-            member_nodes = store.get_nodes_by_community_id(comm_id)
+            member_nodes = store.get_nodes_by_community_id(comm_id, exclude_tests=True)
             if member_nodes:
                 component_diagrams.append(_build_component_diagram(
                     title=f"{comm['name']} Components",
