@@ -124,8 +124,8 @@ def get_architecture_skeleton_func(
     Args:
         level: Optional filter:
             - None → full file content
-            - "containers" → C4Container diagram only
-            - "components:MODULE_SLUG" → specific module's components (case-insensitive)
+            - "container" → C4Container diagram only
+            - "component:MODULE_SLUG" → specific module's components (case-insensitive)
         repo_root: Repository root path. Auto-detected if omitted.
 
     Returns:
@@ -220,10 +220,14 @@ def update_architecture_skeleton_func(
     Only [FEATURE] sections are writable. [AUTO] sections are read-only.
 
     Operations:
-        add:    {"op": "add",    "diagram": "Containers", "element": {kind, id, label, ...}}
-        modify: {"op": "modify", "diagram": "Containers", "element_id": "auth",
+        add:    {"op": "add",    "diagram": "container", "element": {kind, id, label, ...}}
+        modify: {"op": "modify", "diagram": "container", "element_id": "auth",
                  "changes": {"description": "new desc"}}
-        remove: {"op": "remove", "diagram": "Containers", "element_id": "oauth"}
+        remove: {"op": "remove", "diagram": "container", "element_id": "oauth"}
+        add:    {"op": "add",    "diagram": "component:MODULE_SLUG", "element": {kind, id, label, ...}}
+        modify: {"op": "modify", "diagram": "component:MODULE_SLUG", "element_id": "auth",
+                 "changes": {"description": "new desc"}}
+        remove: {"op": "remove", "diagram": "component:MODULE_SLUG", "element_id": "oauth"}
 
     Args:
         feature_tag: Feature identifier, e.g. "oauth:t1".
@@ -268,7 +272,7 @@ def update_architecture_skeleton_func(
                 break
             elif level_lower.startswith("component:") and d.diagram_type == "C4Component":
                 slug = level_lower[len("component:"):].lower()
-                if slug in d.title.lower():
+                if slug == d.title.lower():
                     target_diagram = d
                     break
 

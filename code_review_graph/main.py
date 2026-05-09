@@ -2108,10 +2108,8 @@ def get_architecture_skeleton_tool(
     Args:
         level: Optional filter:
             - None → full file content
-            - "context" → C4Context diagram only
-            - "containers" → C4Container diagram only
-            - "components" → all C4Component diagrams
-            - "components:MODULE_SLUG" → specific module's components (case-insensitive)
+            - "container" → C4Container diagram only
+            - "component:MODULE_SLUG" → specific module's components (case-insensitive)
         repo_root: Repository root path. Auto-detected if omitted.
     """
     return get_architecture_skeleton_func(level=level, repo_root=repo_root)
@@ -2129,10 +2127,14 @@ def update_architecture_skeleton_tool(
     Only [FEATURE] sections are writable. [AUTO] sections are read-only.
 
     Operations:
-        add:    {"op": "add",    "diagram": "Containers", "element": {kind, id, label, ...}}
-        modify: {"op": "modify", "diagram": "Containers", "element_id": "auth",
+        add:    {"op": "add",    "diagram": "container", "element": {kind, id, label, ...}}
+        modify: {"op": "modify", "diagram": "container", "element_id": "auth",
                  "changes": {"description": "new desc"}}
-        remove: {"op": "remove", "diagram": "Containers", "element_id": "oauth"}
+        remove: {"op": "remove", "diagram": "container", "element_id": "oauth"}
+        add:    {"op": "add",    "diagram": "component:MODULE_SLUG", "element": {kind, id, label, ...}}
+        modify: {"op": "modify", "diagram": "component:MODULE_SLUG", "element_id": "auth",
+                 "changes": {"description": "new desc"}}
+        remove: {"op": "remove", "diagram": "component:MODULE_SLUG", "element_id": "oauth"}
 
     Args:
         feature_tag: Feature identifier, e.g. "oauth:t1".
