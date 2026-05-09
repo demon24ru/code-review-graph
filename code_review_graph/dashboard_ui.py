@@ -1014,8 +1014,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             rows = conn.execute(
                 "SELECT id, name, qualified_name, kind, file_path "
-                "FROM nodes WHERE kind IN ('Function', 'Class') "
-                "ORDER BY name LIMIT 100"
+                "FROM nodes WHERE kind IN ('Function', 'Class') and is_test = 0 "
+                "ORDER BY name"
             ).fetchall()
             sources = [
                 {
