@@ -1706,20 +1706,21 @@ createApp({
             if ((d.kind === 'Container_Boundary' || d.kind === 'Container') && c4Data.components) {
               c4ComponentSlug.value = d.id;
               setArchLevel('component');
+
+              const levelKeys = Object.keys(c4Data.components);
+              const curIdx = levelKeys.indexOf(d.id);
+              if (curIdx >= 0 && curIdx < levelKeys.length - 1) {
+                _skipBreadcrumb = true;
+                breadcrumb.value = [
+                  ...breadcrumb.value,
+                  {slug: d.id, label: d.id.replace(/_/g, ' ')}
+                ];
+                nextTick(() => {
+                  _skipBreadcrumb = false;
+                });
+              }
             }
-            const levelKeys = Object.keys(c4Data.components);
-            const curIdx = levelKeys.indexOf(d.id);
-            if (curIdx >= 0 && curIdx < levelKeys.length - 1) {
-              _skipBreadcrumb = true;
-              breadcrumb.value = [
-                ...breadcrumb.value,
-                {slug: d.id, label: d.id.replace(/_/g, ' ')}
-              ];
-              nextTick(() => {
-                _skipBreadcrumb = false;
-              });
-            }
-          });
+          })
           cyArch.on('cxttap', 'node', (evt) => {
             const node = evt.target;
             if (node.data('id') && node.data('id').startsWith('_archbadge_')) return;
