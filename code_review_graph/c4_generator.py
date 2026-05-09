@@ -305,12 +305,8 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
     ) -> C4Diagram:
         members_set: set[str] = {n.qualified_name for n in member_nodes}
 
-        private_helper_qns: set[str] = {
-            n.qualified_name
-            for n in member_nodes
-            if n.name.startswith("_") and not n.name.startswith("__")
-        }
-        visible_qns: set[str] = members_set - private_helper_qns
+        private_helper_qns: set[str] = {}
+        visible_qns: set[str] = members_set
 
         incoming_calls_count: dict[str, int] = defaultdict(int)
         calls_adj: dict[str, set[str]] = defaultdict(set)
@@ -326,8 +322,6 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
 
         qn_to_slug: dict[str, str] = {}
         for node in member_nodes:
-            if node.qualified_name in private_helper_qns:
-                continue
             raw = node.qualified_name if len(node.qualified_name) <= 60 else node.name
             qn_to_slug[node.qualified_name] = _slugify(raw)
 
@@ -336,12 +330,12 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
         component_elements: list[C4Element] = []
 
         for file_node in member_nodes:
-            if file_node.kind != "File" or file_node.qualified_name in private_helper_qns:
+            if file_node.kind != "File":
                 continue
             fqn = file_node.qualified_name
             placed_qns.add(fqn)
             file_children = [
-                c for c in contains_map.get(fqn, []) if c not in private_helper_qns
+                c for c in contains_map.get(fqn, [])
             ]
             if not file_children:
                 is_hub = incoming_calls_count[fqn] > 10
@@ -363,7 +357,7 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
                 if child_node is None:
                     continue
                 class_children = [
-                    c for c in contains_map.get(child_qn, []) if c not in private_helper_qns
+                    c for c in contains_map.get(child_qn, [])
                 ]
                 if child_node.kind == "Class" and class_children:
                     method_elems: list[C4Element] = []
@@ -407,10 +401,56 @@ def build_c4(store: GraphStore, repo_name: str = "") -> str:
                 label=file_node.name,
                 children=file_boundary_children,
             ))
+        # Fallback: if no File nodes were placed, use Class nodes as anchors
+        if not placed_qns:
+            for class_node in member_nodes:
+                if class_node.kind != "Class":
+                    continue
+                cqn = class_node.qualified_name
+                placed_qns.add(cqn)
+                class_children = [
+                    c for c in contains_map.get(cqn, [])
+                ]
+                if not class_children:
+                    is_hub = incoming_calls_count[cqn] > 10
+                    desc = f"{class_node.file_path}:{class_node.line_start}"
+                    if is_hub:
+                        desc += " (hub)"
+                    component_elements.append(C4Element(
+                        kind="Component",
+                        id=qn_to_slug.get(cqn, _slugify(class_node.name)),
+                        label=class_node.name,
+                        technology=class_node.kind,
+                        description=desc,
+                    ))
+                    continue
+                method_elems: list[C4Element] = []
+                for method_qn in class_children:
+                    placed_qns.add(method_qn)
+                    method_node = qn_to_node.get(method_qn)
+                    if method_node is None:
+                        continue
+                    is_hub = incoming_calls_count[method_qn] > 10
+                    desc = f"{method_node.file_path}:{method_node.line_start}"
+                    if is_hub:
+                        desc += " (hub)"
+                    method_elems.append(C4Element(
+                        kind="Component",
+                        id=qn_to_slug.get(method_qn, _slugify(method_node.name)),
+                        label=method_node.name,
+                        technology=method_node.kind,
+                        description=desc,
+                    ))
+                component_elements.append(C4Element(
+                    kind="Component_Boundary",
+                    id=qn_to_slug.get(cqn, _slugify(class_node.name)),
+                    label=class_node.name,
+                    children=method_elems,
+                ))
 
         # Orphan nodes not reachable as children of any File
         for node in member_nodes:
-            if node.qualified_name in private_helper_qns or node.qualified_name in placed_qns:
+            if node.qualified_name in placed_qns:
                 continue
             if node.qualified_name not in qn_to_slug:
                 continue

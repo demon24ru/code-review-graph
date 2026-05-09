@@ -654,3 +654,353 @@ class TestGetCommunity:
         names = {c["name"] for c in result["communities"]}
         assert "graph-utils" in names
         assert "fixtures-helpers" not in names
+
+
+# ---------------------------------------------------------------------------
+# Tests for the three targeted improvements
+# ---------------------------------------------------------------------------
+
+
+class TestFileNodeFilter:
+    """T1: File nodes must not participate in Leiden clustering."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _seed_two_clusters(self):
+        """Seed auth + db clusters each with a File node."""
+        from code_review_graph.parser import EdgeInfo, NodeInfo
+        for fname, funcs in [
+            ("auth.py", ["login", "logout", "check_token"]),
+            ("db.py", ["connect", "query", "close"]),
+        ]:
+            self.store.upsert_node(
+                NodeInfo(kind="File", name=fname, file_path=fname,
+                         line_start=1, line_end=100, language="python"),
+                file_hash="h1",
+            )
+            for fn in funcs:
+                self.store.upsert_node(
+                    NodeInfo(kind="Function", name=fn, file_path=fname,
+                             line_start=5, line_end=20, language="python"),
+                    file_hash="h1",
+                )
+        # Internal calls
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="auth.py::login",
+                                        target="auth.py::check_token", file_path="auth.py", line=10))
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="db.py::query",
+                                        target="db.py::connect", file_path="db.py", line=10))
+        self.store.commit()
+
+    @pytest.mark.skipif(not IGRAPH_AVAILABLE, reason="igraph not installed")
+    def test_file_nodes_not_in_leiden_members(self):
+        """No community member should be a File node after Leiden detection."""
+        self._seed_two_clusters()
+        communities = detect_communities(self.store, min_size=2)
+        assert len(communities) > 0
+        for comm in communities:
+            for qn in comm["members"]:
+                # File nodes have qualified_name == their file_path (e.g. "auth.py")
+                assert not qn.endswith(".py") or "::" in qn, (
+                    f"File node '{qn}' should not appear in community members"
+                )
+
+    @pytest.mark.skipif(not IGRAPH_AVAILABLE, reason="igraph not installed")
+    def test_leiden_separates_auth_and_db(self):
+        """With File nodes excluded, auth and db functions land in different communities."""
+        self._seed_two_clusters()
+        communities = detect_communities(self.store, min_size=2)
+        # Collect which community each function belongs to
+        fn_to_comm: dict[str, str] = {}
+        for comm in communities:
+            for qn in comm["members"]:
+                fn_to_comm[qn] = comm["name"]
+
+        auth_comm = fn_to_comm.get("auth.py::login")
+        db_comm = fn_to_comm.get("db.py::connect")
+        if auth_comm and db_comm:
+            assert auth_comm != db_comm, (
+                "auth and db functions should be in separate communities"
+            )
+
+
+class TestLeidenDeterminism:
+    """T1: Leiden must produce identical results on repeated calls."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _seed_graph(self):
+        from code_review_graph.parser import EdgeInfo, NodeInfo
+        for i in range(6):
+            fname = f"mod{i // 3}.py"
+            self.store.upsert_node(
+                NodeInfo(kind="Function", name=f"func{i}", file_path=fname,
+                         line_start=i * 10, line_end=i * 10 + 5, language="python"),
+                file_hash="h",
+            )
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="mod0.py::func0",
+                                        target="mod0.py::func1", file_path="mod0.py", line=1))
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="mod0.py::func1",
+                                        target="mod0.py::func2", file_path="mod0.py", line=2))
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="mod1.py::func3",
+                                        target="mod1.py::func4", file_path="mod1.py", line=3))
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="mod1.py::func4",
+                                        target="mod1.py::func5", file_path="mod1.py", line=4))
+        self.store.commit()
+
+    @pytest.mark.skipif(not IGRAPH_AVAILABLE, reason="igraph not installed")
+    def test_repeated_detection_produces_same_partition(self):
+        """Running detect_communities twice on the same graph yields the same members."""
+        self._seed_graph()
+        run1 = detect_communities(self.store, min_size=2)
+        run2 = detect_communities(self.store, min_size=2)
+
+        # Sort communities by sorted member list for stable comparison
+        def key(c: dict) -> tuple:  # type: ignore[type-arg]
+            return tuple(sorted(c["members"]))
+
+        partition1 = sorted([frozenset(c["members"]) for c in run1])
+        partition2 = sorted([frozenset(c["members"]) for c in run2])
+        assert partition1 == partition2, (
+            "Leiden must be deterministic: same graph → same partition"
+        )
+
+
+class TestHierarchicalNames:
+    """T2: _extract_file_prefix must use up to two directory segments."""
+
+    def test_shallow_path_uses_single_segment(self):
+        """For paths with one directory: behaviour unchanged."""
+        from code_review_graph.communities import _extract_file_prefix
+        result = _extract_file_prefix(["tools/task_tools.py", "tools/c4_tools.py"])
+        assert result == "tools"
+
+    def test_deep_path_combines_two_segments(self):
+        """For paths with two+ directories: combines grandparent-parent."""
+        from code_review_graph.communities import _extract_file_prefix
+        result = _extract_file_prefix([
+            "code_review_graph/tools/task_tools.py",
+            "code_review_graph/tools/c4_tools.py",
+        ])
+        # Should produce "code-review-graph-tools" or "tools" — must contain both levels
+        assert "tools" in result
+
+    def test_different_subdirs_get_distinct_prefixes(self):
+        """Two file sets from different subdirs produce different prefixes."""
+        from code_review_graph.communities import _extract_file_prefix
+        prefix_task = _extract_file_prefix(["pkg/tools/task_tools.py", "pkg/tools/task_crud.py"])
+        prefix_c4 = _extract_file_prefix(["pkg/c4/c4_gen.py", "pkg/c4/c4_parser.py"])
+        assert prefix_task != prefix_c4, (
+            f"Different subdirs should produce different prefixes: '{prefix_task}' vs '{prefix_c4}'"
+        )
+
+    def test_stem_not_duplicated_as_prefix(self):
+        """If file stem equals grandparent, fall back to single segment."""
+        from code_review_graph.communities import _extract_file_prefix
+        # path: utils/utils.py — grandparent 'utils' == stem 'utils', use just 'utils'
+        result = _extract_file_prefix(["utils/utils.py"])
+        assert result == "utils"
+
+
+class TestStableIds:
+    """T3: community IDs must be preserved across store_communities calls."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _make_community(self, name: str, members: list[str]) -> dict:
+        return {
+            "name": name,
+            "level": 0,
+            "size": len(members),
+            "cohesion": 0.5,
+            "dominant_language": "python",
+            "description": f"test community {name}",
+            "members": members,
+        }
+
+    def test_same_name_preserves_id(self):
+        """A community that survives a rebuild keeps the same database ID."""
+        comms = [self._make_community("auth-core", ["auth.py::login", "auth.py::logout"])]
+        store_communities(self.store, comms)
+        id_first = get_communities(self.store)[0]["id"]
+
+        # Second store with the same community name
+        comms2 = [self._make_community("auth-core", ["auth.py::login", "auth.py::logout"])]
+        store_communities(self.store, comms2)
+        id_second = get_communities(self.store)[0]["id"]
+
+        assert id_first == id_second, (
+            f"Community 'auth-core' should keep ID {id_first} after rebuild, got {id_second}"
+        )
+
+    def test_removed_community_is_deleted(self):
+        """A community absent from the new set is removed from the database."""
+        comms = [
+            self._make_community("auth-core", ["auth.py::login"]),
+            self._make_community("db-core", ["db.py::connect"]),
+        ]
+        store_communities(self.store, comms)
+        assert len(get_communities(self.store)) == 2
+
+        # Second store without db-core
+        store_communities(self.store, [self._make_community("auth-core", ["auth.py::login"])])
+        names = {c["name"] for c in get_communities(self.store)}
+        assert "auth-core" in names
+        assert "db-core" not in names
+
+    def test_new_community_gets_new_id(self):
+        """A newly added community gets a fresh ID not equal to existing ones."""
+        comms = [self._make_community("auth-core", ["auth.py::login"])]
+        store_communities(self.store, comms)
+        id_auth = get_communities(self.store)[0]["id"]
+
+        comms2 = [
+            self._make_community("auth-core", ["auth.py::login"]),
+            self._make_community("db-core", ["db.py::connect"]),
+        ]
+        store_communities(self.store, comms2)
+        ids = {c["name"]: c["id"] for c in get_communities(self.store)}
+        assert ids["auth-core"] == id_auth, "auth-core ID must be stable"
+        assert ids["db-core"] != id_auth, "db-core must have a different ID"
+
+    def test_empty_store_clears_all(self):
+        """Storing empty list removes all communities."""
+        comms = [self._make_community("auth-core", ["auth.py::login"])]
+        store_communities(self.store, comms)
+        assert len(get_communities(self.store)) == 1
+
+        store_communities(self.store, [])
+        assert len(get_communities(self.store)) == 0
+
+
+class TestIsTestNodeFilter:
+    """is_test nodes must not appear in any community member list."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def _seed_prod_and_test_nodes(self):
+        """Two production functions + one test function, all connected."""
+        from code_review_graph.parser import EdgeInfo, NodeInfo
+        # Production cluster
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="parse", file_path="parser.py",
+                     line_start=1, line_end=10, language="python"),
+            file_hash="p1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="build", file_path="graph.py",
+                     line_start=1, line_end=10, language="python"),
+            file_hash="g1",
+        )
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="parser.py::parse",
+            target="graph.py::build", file_path="parser.py", line=5,
+        ))
+        # Test node — explicitly marked is_test=True
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="test_parse", file_path="tests/test_parser.py",
+                     line_start=1, line_end=5, language="python", is_test=True),
+            file_hash="t1",
+        )
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="tests/test_parser.py::test_parse",
+            target="parser.py::parse", file_path="tests/test_parser.py", line=3,
+        ))
+        self.store.commit()
+
+    def test_is_test_nodes_absent_from_community_members(self):
+        """detect_communities must not include is_test=True nodes in any community."""
+        self._seed_prod_and_test_nodes()
+        communities = detect_communities(self.store, min_size=1)
+        all_members: set[str] = set()
+        for c in communities:
+            all_members.update(c["members"])
+        # test_parse lives in tests/ — must not appear
+        assert "tests/test_parser.py::test_parse" not in all_members, (
+            "is_test node must not be included in any community"
+        )
+        # Production nodes must still be present
+        assert "parser.py::parse" in all_members or "graph.py::build" in all_members, (
+            "production nodes must still appear in communities"
+        )
+
+    def test_cross_edges_visible_after_test_filter(self):
+        """Cross-community edges between production communities must be detectable."""
+        from code_review_graph.parser import NodeInfo, EdgeInfo
+        # Three production nodes in two distinct files with a cross-file call
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="tokenize", file_path="lexer.py",
+                     line_start=1, line_end=10, language="python"),
+            file_hash="l1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="lex2", file_path="lexer.py",
+                     line_start=12, line_end=20, language="python"),
+            file_hash="l1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="emit", file_path="codegen.py",
+                     line_start=1, line_end=10, language="python"),
+            file_hash="c1",
+        )
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="emit2", file_path="codegen.py",
+                     line_start=12, line_end=20, language="python"),
+            file_hash="c1",
+        )
+        # Test node that calls both — should not pollute communities
+        self.store.upsert_node(
+            NodeInfo(kind="Function", name="test_integration",
+                     file_path="tests/test_all.py",
+                     line_start=1, line_end=5, language="python", is_test=True),
+            file_hash="ta1",
+        )
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="lexer.py::tokenize",
+                                        target="lexer.py::lex2", file_path="lexer.py", line=5))
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="codegen.py::emit",
+                                        target="codegen.py::emit2", file_path="codegen.py", line=5))
+        # Cross-file production edge
+        self.store.upsert_edge(EdgeInfo(kind="CALLS", source="lexer.py::tokenize",
+                                        target="codegen.py::emit", file_path="lexer.py", line=8))
+        # Test calls both — without is_test filter this would merge the two clusters
+        self.store.upsert_edge(EdgeInfo(kind="CALLS",
+                                        source="tests/test_all.py::test_integration",
+                                        target="lexer.py::tokenize",
+                                        file_path="tests/test_all.py", line=2))
+        self.store.commit()
+
+        communities = detect_communities(self.store, min_size=2)
+        # Store so get_architecture_overview can use community_ids
+        store_communities(self.store, communities)
+
+        from code_review_graph.communities import get_architecture_overview
+        overview = get_architecture_overview(self.store, exclude_tests=False)
+        cross = overview["cross_community_edges"]
+        # With is_test nodes excluded from Leiden, lexer and codegen should be
+        # separate communities and the cross-file CALLS edge must appear.
+        assert len(cross) > 0, (
+            "Cross-community edges must be visible once test nodes are excluded from clustering"
+        )

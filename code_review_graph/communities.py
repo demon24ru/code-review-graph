@@ -95,16 +95,28 @@ def _generate_community_name(members: list[GraphNode]) -> str:
 
 
 def _extract_file_prefix(file_paths: list[str]) -> str:
-    """Find the most common short directory or module name from file paths."""
+    """Find the most common short directory or module name from file paths.
+
+    Takes up to two directory segments to produce hierarchical names like
+    'tools-task' instead of just 'tools' for deeply nested paths.
+    """
     if not file_paths:
         return ""
-    # Extract the parent directory or file stem
     parts: list[str] = []
     for fp in file_paths:
-        # Use the last directory component or file stem
         segments = fp.replace("\\", "/").split("/")
-        # Take the parent dir if it exists, otherwise the file stem
-        if len(segments) >= 2:
+        # Three or more segments: combine the two innermost directory components
+        # e.g. code_review_graph/tools/task_tools.py -> "tools-task"
+        if len(segments) >= 3:
+            parent = segments[-2]
+            grandparent = segments[-3]
+            # Only use grandparent if it adds information (not just the file stem)
+            stem = segments[-1].rsplit(".", 1)[0]
+            if grandparent != stem:
+                parts.append(f"{grandparent}-{parent}")
+            else:
+                parts.append(parent)
+        elif len(segments) >= 2:
             parts.append(segments[-2])
         else:
             stem = segments[-1].rsplit(".", 1)[0]
@@ -198,10 +210,14 @@ def _detect_leiden(
     if ig is None:
         return []
 
+    # Exclude File nodes: they act as high-degree hubs (via CONTAINS edges) and
+    # bias Leiden toward grouping by file structure rather than call semantics.
+    code_nodes = [n for n in nodes if n.kind != "File"]
+
     # Build mapping from qualified_name to index
     qn_to_idx: dict[str, int] = {}
     idx_to_node: dict[int, GraphNode] = {}
-    for i, node in enumerate(nodes):
+    for i, node in enumerate(code_nodes):
         qn_to_idx[node.qualified_name] = i
         idx_to_node[i] = node
 
@@ -231,10 +247,14 @@ def _detect_leiden(
     g.add_edges(edge_list)
     g.es["weight"] = weights
 
-    # Run Leiden
+    # Run Leiden with deterministic settings:
+    # beta=0.0 disables the random refinement step; n_iterations=-1 runs
+    # until convergence, making the result reproducible across builds.
     partition = g.community_leiden(
         objective_function="modularity",
         weights="weight",
+        beta=0.0,
+        n_iterations=-1,
     )
 
     # Build communities from partition
@@ -341,6 +361,8 @@ def _detect_leiden_sub(
     partition = g.community_leiden(
         objective_function="modularity",
         weights="weight",
+        beta=0.0,
+        n_iterations=-1,
     )
 
     subs: list[dict[str, Any]] = []
@@ -443,11 +465,12 @@ def detect_communities(
     for fp in edge_files - set(all_files):
         nodes.extend(store.get_nodes_by_file(fp))
 
-    # Deduplicate by qualified_name
+    # Deduplicate by qualified_name; exclude test nodes so they don't pull
+    # production code into test-dominated communities and hide cross-edges.
     seen_qns: set[str] = set()
     unique_nodes: list[GraphNode] = []
     for n in nodes:
-        if n.qualified_name not in seen_qns:
+        if n.qualified_name not in seen_qns and not n.is_test:
             seen_qns.add(n.qualified_name)
             unique_nodes.append(n)
 
@@ -487,29 +510,53 @@ def store_communities(
         Number of communities stored.
     """
     # NOTE: store_communities uses _conn directly because it performs
-    # multi-statement batch writes (DELETE + INSERT loop + UPDATE loop)
-    # that are tightly coupled to the DB transaction lifecycle.
+    # multi-statement batch writes that are tightly coupled to the DB
+    # transaction lifecycle.
     conn = store._conn
 
-    # Clear existing data
-    conn.execute("DELETE FROM communities")
+    # Build a name→id map for existing communities so we can preserve IDs
+    # across rebuilds.  Stable IDs let external tools (C4 files, dashboards,
+    # MCP clients) refer to a community by ID without it changing on every build.
+    existing: dict[str, int] = {
+        row[0]: row[1]
+        for row in conn.execute("SELECT name, id FROM communities").fetchall()
+    }
+
+    new_names = {comm["name"] for comm in communities}
+
+    # Remove communities that no longer exist
+    for name, cid in existing.items():
+        if name not in new_names:
+            conn.execute("DELETE FROM communities WHERE id = ?", (cid,))
+
+    # Reset all community assignments before re-assigning below
     conn.execute("UPDATE nodes SET community_id = NULL")
 
     count = 0
     for comm in communities:
-        cursor = conn.execute(
-            """INSERT INTO communities (name, level, cohesion, size, dominant_language, description)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                comm["name"],
-                comm.get("level", 0),
-                comm.get("cohesion", 0.0),
-                comm["size"],
-                comm.get("dominant_language", ""),
-                comm.get("description", ""),
-            ),
-        )
-        community_id = cursor.lastrowid
+        name = comm["name"]
+        level = comm.get("level", 0)
+        cohesion = comm.get("cohesion", 0.0)
+        size = comm["size"]
+        lang = comm.get("dominant_language", "")
+        desc = comm.get("description", "")
+
+        if name in existing:
+            # Preserve the existing ID — just update the metadata in place
+            community_id = existing[name]
+            conn.execute(
+                """UPDATE communities
+                   SET level=?, cohesion=?, size=?, dominant_language=?, description=?
+                   WHERE id=?""",
+                (level, cohesion, size, lang, desc, community_id),
+            )
+        else:
+            cursor = conn.execute(
+                """INSERT INTO communities (name, level, cohesion, size, dominant_language, description)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (name, level, cohesion, size, lang, desc),
+            )
+            community_id = cursor.lastrowid
 
         # Update community_id on member nodes
         member_qns = comm.get("members", [])
@@ -519,6 +566,87 @@ def store_communities(
                 (community_id, qn),
             )
         count += 1
+
+    # Post-processing: assign file-based fallback communities to any non-test,
+    # non-File nodes that Leiden left without a community_id (e.g. main.py whose
+    # functions have few cross-file CALLS edges and land in sub-min_size clusters).
+    # Only run when Leiden produced at least one community; skip when the caller
+    # passes communities=[] to intentionally clear everything.
+    if communities:
+        orphans = conn.execute(
+            "SELECT id, qualified_name, file_path, language FROM nodes "
+            "WHERE community_id IS NULL AND is_test = 0 AND kind != 'File'"
+        ).fetchall()
+
+        if orphans:
+            # Group orphans by file_path
+            orphans_by_file: dict[str, list[Any]] = defaultdict(list)
+            for row in orphans:
+                orphans_by_file[row["file_path"]].append(row)
+
+            for file_path, file_orphans in orphans_by_file.items():
+                # Check if other nodes in this file already have a community_id.
+                dominant_row = conn.execute(
+                    "SELECT community_id, COUNT(*) as cnt FROM nodes "
+                    "WHERE file_path = ? AND community_id IS NOT NULL "
+                    "GROUP BY community_id ORDER BY cnt DESC LIMIT 1",
+                    (file_path,),
+                ).fetchone()
+
+                if dominant_row:
+                    # Mixed file: pull orphans into the community that already owns
+                    # the majority of this file's nodes.
+                    fallback_id = dominant_row["community_id"]
+                    for row in file_orphans:
+                        conn.execute(
+                            "UPDATE nodes SET community_id = ? WHERE id = ?",
+                            (fallback_id, row["id"]),
+                        )
+                    # Update size on the community to reflect the new members
+                    new_size = conn.execute(
+                        "SELECT COUNT(*) FROM nodes WHERE community_id = ? AND is_test = 0",
+                        (fallback_id,),
+                    ).fetchone()[0]
+                    conn.execute(
+                        "UPDATE communities SET size = ? WHERE id = ?",
+                        (new_size, fallback_id),
+                    )
+                else:
+                    # Whole-file orphan: create a new file-based fallback community
+                    stem = file_path.replace("\\", "/").split("/")[-1].rsplit(".", 1)[0]
+                    fallback_name = _to_slug(stem)
+
+                    lang_counts: Counter[str] = Counter(
+                        row["language"] for row in file_orphans if row["language"]
+                    )
+                    dominant_lang = lang_counts.most_common(1)[0][0] if lang_counts else ""
+                    size = len(file_orphans)
+
+                    existing_row = conn.execute(
+                        "SELECT id FROM communities WHERE name = ?", (fallback_name,)
+                    ).fetchone()
+                    if existing_row:
+                        fallback_id = existing_row[0]
+                        conn.execute(
+                            "UPDATE communities SET size=?, dominant_language=? WHERE id=?",
+                            (size, dominant_lang, fallback_id),
+                        )
+                    else:
+                        cursor = conn.execute(
+                            "INSERT INTO communities "
+                            "(name, level, cohesion, size, dominant_language, description) "
+                            "VALUES (?, 0, 0.0, ?, ?, ?)",
+                            (fallback_name, size, dominant_lang,
+                             f"File-based fallback: {file_path}"),
+                        )
+                        fallback_id = cursor.lastrowid
+
+                    for row in file_orphans:
+                        conn.execute(
+                            "UPDATE nodes SET community_id = ? WHERE id = ?",
+                            (fallback_id, row["id"]),
+                        )
+                    count += 1
 
     conn.commit()
     return count
